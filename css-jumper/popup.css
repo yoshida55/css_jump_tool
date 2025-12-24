@@ -1,0 +1,369 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Segoe UI", "メイリオ", sans-serif;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: #e0e0e0;
+  min-width: 380px;
+  max-width: 420px;
+}
+
+.container {
+  padding: 20px;
+}
+
+h1 {
+  font-size: 20px;
+  margin-bottom: 8px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.description {
+  font-size: 13px;
+  color: #a0a0a0;
+  margin-bottom: 20px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #b0b0b0;
+}
+
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 12px;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  background: #252540;
+  color: #fff;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  outline: none;
+  border-color: #6c63ff;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.2);
+}
+
+input[type="text"]::placeholder,
+input[type="number"]::placeholder {
+  color: #555;
+  font-size: 11px;
+}
+
+/* エラー時のハイライト */
+input.input-error {
+  border-color: #f44336 !important;
+  background: rgba(244, 67, 54, 0.1) !important;
+  animation: shake 0.3s ease-in-out;
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+.hint {
+  font-size: 11px;
+  color: #666;
+  margin-top: 4px;
+}
+
+.size-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #252540;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.radio-label:hover {
+  background: #2f2f50;
+  transform: translateX(2px);
+}
+
+.radio-label input[type="radio"] {
+  cursor: pointer;
+  accent-color: #6c63ff;
+}
+
+.radio-label input[type="number"] {
+  width: 80px;
+  padding: 4px 8px;
+  margin-left: 4px;
+}
+
+.button-group {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.btn {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #6c63ff 0%, #5a52d5 100%);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #7b73ff 0%, #6962e5 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(108, 99, 255, 0.3);
+}
+
+.btn-secondary {
+  flex: 1;
+  background: #3a3a5a;
+  color: #ccc;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #4a4a6a;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-success {
+  flex: 1;
+  background: linear-gradient(135deg, #4caf50 0%, #388e3c 100%);
+  color: #fff;
+}
+
+.btn-success:hover {
+  background: linear-gradient(135deg, #5cb860 0%, #43a047 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+}
+
+.btn-danger {
+  flex: 1;
+  background: #5a3a3a;
+  color: #e57373;
+}
+
+.btn-danger:hover {
+  background: #6a4a4a;
+}
+
+.status {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: center;
+  display: none;
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.status.success {
+  display: block;
+  background: rgba(76, 175, 80, 0.2);
+  color: #81c784;
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.status.error {
+  display: block;
+  background: rgba(244, 67, 54, 0.2);
+  color: #e57373;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.status.warning {
+  display: block;
+  background: rgba(255, 193, 7, 0.2);
+  color: #ffc107;
+  border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+.status.info {
+  display: block;
+  background: rgba(33, 150, 243, 0.2);
+  color: #64b5f6;
+  border: 1px solid rgba(33, 150, 243, 0.3);
+}
+
+.css-files-list {
+  margin-top: 16px;
+}
+
+.css-files-list h3 {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.css-files-list ul {
+  list-style: none;
+  max-height: 140px;
+  overflow-y: auto;
+  background: #252540;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+/* カスタムスクロールバー */
+.css-files-list ul::-webkit-scrollbar {
+  width: 6px;
+}
+
+.css-files-list ul::-webkit-scrollbar-track {
+  background: #1a1a2e;
+  border-radius: 3px;
+}
+
+.css-files-list ul::-webkit-scrollbar-thumb {
+  background: #4a4a6a;
+  border-radius: 3px;
+}
+
+.css-files-list ul::-webkit-scrollbar-thumb:hover {
+  background: #5a5a7a;
+}
+
+.css-files-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid #3a3a5a;
+  transition: background 0.2s;
+}
+
+.css-files-list li:hover {
+  background: rgba(108, 99, 255, 0.1);
+}
+
+.css-files-list li:last-child {
+  border-bottom: none;
+}
+
+.file-name {
+  color: #90caf9;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-name small {
+  color: #666;
+  font-size: 10px;
+}
+
+.file-name.excluded {
+  color: #666;
+  text-decoration: line-through;
+}
+
+.file-info {
+  color: #666;
+  font-size: 11px;
+}
+
+.usage {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #3a3a5a;
+}
+
+.usage h2 {
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: #b0b0b0;
+}
+
+.usage ol {
+  font-size: 12px;
+  line-height: 1.8;
+  padding-left: 20px;
+  color: #888;
+}
+
+.usage strong {
+  color: #81c784;
+}
+
+/* ショートカットヒント */
+.shortcut-hint {
+  margin-top: 16px;
+  padding: 10px;
+  background: rgba(108, 99, 255, 0.1);
+  border-radius: 6px;
+  border-left: 3px solid #6c63ff;
+}
+
+.shortcut-hint p {
+  font-size: 11px;
+  color: #90caf9;
+  margin-bottom: 4px;
+}
+
+.shortcut-hint code {
+  background: #252540;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "Consolas", monospace;
+  color: #ffc107;
+}

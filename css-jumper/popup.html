@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CSS Jumper 設定</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>🎯 CSS Jumper</h1>
+      <p class="description">
+        HTMLの要素を右クリック → CSSの該当行へ直接ジャンプ
+      </p>
+
+      <!-- Step 1: プロジェクトパス入力 -->
+      <div class="form-group">
+        <label>① プロジェクトパス（フルパス）</label>
+        <input
+          type="text"
+          id="projectPath"
+          placeholder="D:\02_作業\00_リンクワーク\HTML自動化\01_step_05"
+        />
+        <p class="hint">VS Codeで開いているプロジェクトのフルパス</p>
+      </div>
+
+      <!-- Step 2: CSSファイル選択 -->
+      <div class="form-group">
+        <label>② CSSファイル</label>
+        <div class="button-group" style="margin-bottom: 8px">
+          <button id="autoDetectBtn" class="btn btn-success btn-full">
+            🔍 ページから自動検出
+          </button>
+        </div>
+        <input
+          type="file"
+          id="cssFileInput"
+          multiple
+          accept=".css"
+          style="display: none"
+        />
+        <button id="selectFilesBtn" class="btn btn-secondary btn-full">
+          📄 手動でファイル選択
+        </button>
+        <p class="hint">
+          Live Serverで開いているページから自動検出、または手動選択
+        </p>
+      </div>
+
+      <div id="cssFilesList" class="css-files-list"></div>
+
+      <div id="status" class="status"></div>
+
+      <!-- サイズ・距離表示 -->
+      <div class="form-group">
+        <label>📏 サイズ・距離表示</label>
+        <div class="size-options">
+          <label class="radio-label">
+            <input type="radio" name="screenWidth" value="1280" checked />
+            1280px（デスクトップ）
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="screenWidth" value="375" />
+            375px（モバイル）
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="screenWidth" value="custom" />
+            カスタム:
+            <input
+              type="number"
+              id="customWidth"
+              placeholder="768"
+              min="320"
+              max="3840"
+              style="width: 80px"
+            />px
+          </label>
+        </div>
+        <div class="button-group" style="margin-top: 10px">
+          <button id="showSizeBtn" class="btn btn-primary" style="flex: 1">
+            📐 サイズ
+          </button>
+          <button id="showSpacingBtn" class="btn btn-secondary" style="flex: 1">
+            ↕️ 距離
+          </button>
+          <button id="showBothBtn" class="btn btn-success" style="flex: 1">
+            📐+↕️
+          </button>
+        </div>
+      </div>
+
+      <div class="button-group">
+        <button id="reloadBtn" class="btn btn-secondary">🔄 再読込</button>
+        <button id="clearBtn" class="btn btn-danger">🗑️ クリア</button>
+      </div>
+
+      <div class="usage">
+        <h2>使い方</h2>
+        <ol>
+          <li>①にプロジェクトの<strong>フルパス</strong>を入力</li>
+          <li>
+            ②で<strong>CSSファイルを選択</strong>（Ctrl+クリックで複数選択）
+          </li>
+          <li>Webページで要素を右クリック</li>
+          <li>「VS CodeでCSS開く」を選択</li>
+          <li>→ <strong>既存のVS Codeで該当行に自動ジャンプ！</strong></li>
+        </ol>
+      </div>
+
+      <div class="form-group">
+        <label>🖱️ クイックリサイズ</label>
+        <div
+          style="
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+          "
+        >
+          <input
+            type="number"
+            id="quickResizeWidth"
+            value="1400"
+            min="320"
+            max="3840"
+            style="width: 100px"
+          />
+          <span>px</span>
+          <button
+            id="saveQuickResizeBtn"
+            class="btn btn-primary"
+            style="margin-left: auto"
+          >
+            保存
+          </button>
+        </div>
+        <div class="size-options" style="margin-top: 8px">
+          <label class="radio-label">
+            <input type="radio" name="resizeTrigger" value="both" checked />
+            両方
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="resizeTrigger" value="wheel" />
+            ホイールクリック
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="resizeTrigger" value="ctrlRight" />
+            Ctrl + 右クリック
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="resizeTrigger" value="ctrlDown" />
+            Ctrl + ↓
+          </label>
+        </div>
+      </div>
+
+      <div class="shortcut-hint">
+        <p>💡 <strong>ショートカット</strong></p>
+        <p>
+          <code>Alt + クリック</code> → CSSへ直接ジャンプ<br />
+          <code>ホイール</code> / <code>Ctrl+右クリック</code> /
+          <code>Ctrl+↓</code> → 幅トグル
+        </p>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
