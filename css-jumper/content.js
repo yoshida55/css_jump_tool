@@ -194,7 +194,7 @@ function autoDetectCssIfLiveServer() {
             }
           })
           .catch(function(err) {
-            console.error("CSS Jumper: CSS取得失敗", cssUrl, err);
+            console.warn("CSS Jumper: CSS取得失敗（スキップ）", cssUrl, err);
             errorCount++;
             if (loadedCount + errorCount === cssLinks.length) {
               saveCssFilesAuto(cssFiles);
