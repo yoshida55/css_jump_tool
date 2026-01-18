@@ -3,9 +3,7 @@ var MIN_WINDOW_WIDTH = 400;
 
 document.addEventListener("DOMContentLoaded", function() {
   var projectPathInput = document.getElementById("projectPath");
-  var selectFilesBtn = document.getElementById("selectFilesBtn");
   var autoDetectBtn = document.getElementById("autoDetectBtn");
-  var cssFileInput = document.getElementById("cssFileInput");
   var reloadBtn = document.getElementById("reloadBtn");
   var clearBtn = document.getElementById("clearBtn");
   var showSizeBtn = document.getElementById("showSizeBtn");
@@ -16,6 +14,8 @@ document.addEventListener("DOMContentLoaded", function() {
   var status = document.getElementById("status");
   var quickResizeWidthInput = document.getElementById("quickResizeWidth");
   var saveQuickResizeBtn = document.getElementById("saveQuickResizeBtn");
+  var pathHistorySelect = document.getElementById("pathHistory");
+  var browseFolderBtn = document.getElementById("browseFolderBtn");
 
   // 保存された情報を読み込み
   loadSavedData();
@@ -46,7 +46,7 @@ document.addEventListener("DOMContentLoaded", function() {
     });
   }
 
-  // プロジェクトパス入力時に自動保存
+  // プロジェクトパス入力時に自動保存（履歴にも追加）
   projectPathInput.addEventListener("change", function() {
     var path = projectPathInput.value.trim();
     if (path) {
@@ -54,9 +54,69 @@ document.addEventListener("DOMContentLoaded", function() {
       path = normalizePath(path);
       projectPathInput.value = path;
       
+      // パスを保存し、履歴にも追加
+      savePathToHistory(path);
       chrome.storage.local.set({ projectPath: path }, function() {
         showStatus("✓ パスを保存しました", "success");
       });
+    }
+  });
+  
+  // フォルダ参照ボタン（履歴から親パスを使用）
+  browseFolderBtn.addEventListener("click", async function() {
+    // File System Access API が利用可能かチェック
+    if (!window.showDirectoryPicker) {
+      showStatus("⚠️ このブラウザはフォルダ選択に対応していません", "error");
+      return;
+    }
+    
+    // 履歴から親パスを取得
+    chrome.storage.local.get(["pathHistory", "projectPath"], async function(result) {
+      var parentPath = "";
+      
+      // 現在のパスまたは履歴の最初のパスから親パスを取得
+      var basePath = result.projectPath || (result.pathHistory && result.pathHistory[0]);
+      
+      if (!basePath || !/^[A-Za-z]:/.test(basePath)) {
+        showStatus("⚠️ 先にパスを1回入力してください\n（履歴がないため親パスが分かりません）", "error");
+        return;
+      }
+      
+      // 親パスを取得（最後のフォルダを除去）
+      parentPath = basePath.replace(/\/[^\/]+$/, "");
+      
+      try {
+        var dirHandle = await window.showDirectoryPicker();
+        var folderName = dirHandle.name;
+        
+        // 親パス + 選択したフォルダ名
+        var fullPath = parentPath + "/" + folderName;
+        fullPath = normalizePath(fullPath);
+        
+        projectPathInput.value = fullPath;
+        savePathToHistory(fullPath);
+        chrome.storage.local.set({ projectPath: fullPath }, function() {
+          showStatus("✓ " + folderName + " に切り替えました", "success");
+        });
+      } catch (e) {
+        // ユーザーがキャンセルした場合は何もしない
+        if (e.name !== "AbortError") {
+          console.error("CSS Jumper: フォルダ選択エラー", e);
+        }
+      }
+    });
+  });
+
+  // 履歴ドロップダウンから選択
+  pathHistorySelect.addEventListener("change", function() {
+    var selectedPath = pathHistorySelect.value;
+    if (selectedPath) {
+      projectPathInput.value = selectedPath;
+      chrome.storage.local.set({ projectPath: selectedPath }, function() {
+        showStatus("✓ 履歴からパスを選択しました", "success");
+      });
+      // 選択をリセット（同じパスを再選択できるように）
+      pathHistorySelect.value = "";
     }
   });
 
@@ -70,79 +130,6 @@ document.addEventListener("DOMContentLoaded", function() {
     var customRadio = document.querySelector('input[name="screenWidth"][value="custom"]');
     if (customRadio.checked) {
       saveScreenWidth();
-    }
-  });
-
-  // ファイル選択ボタン
-  selectFilesBtn.addEventListener("click", function() {
-    var projectPath = projectPathInput.value.trim();
-    
-    if (!projectPath) {
-      showStatus("⚠️ 先にプロジェクトパスを入力してください", "error");
-      projectPathInput.focus();
-      projectPathInput.classList.add("input-error");
-      setTimeout(function() {
-        projectPathInput.classList.remove("input-error");
-      }, 2000);
-      return;
-    }
-    
-    cssFileInput.click();
-  });
-
-  // ファイルが選択された時
-  cssFileInput.addEventListener("change", function(event) {
-    var files = event.target.files;
-    
-    if (!files || files.length === 0) {
-      return;
-    }
-    
-    var projectPath = normalizePath(projectPathInput.value.trim());
-    showStatus("📂 CSSファイルを読み込み中...", "info");
-    
-    var cssFiles = [];
-    var loadedCount = 0;
-    var errorCount = 0;
-    
-    for (var i = 0; i < files.length; i++) {
-      (function(file) {
-        var reader = new FileReader();
-        
-        reader.onload = function(e) {
-          var content = e.target.result;
-          
-          var relativePath = file.webkitRelativePath || file.name;
-          var fullPath = projectPath + "/" + relativePath;
-          fullPath = normalizePath(fullPath);
-          
-          cssFiles.push({
-            name: file.name,
-            relativePath: relativePath,
-            path: fullPath,
-            content: content,
-            lines: content.split("\n").length,
-            size: file.size
-          });
-          
-          loadedCount++;
-          
-          if (loadedCount + errorCount === files.length) {
-            saveCssFiles(cssFiles, errorCount);
-          }
-        };
-        
-        reader.onerror = function() {
-          console.error("ファイル読み込みエラー:", file.name);
-          errorCount++;
-          
-          if (loadedCount + errorCount === files.length) {
-            saveCssFiles(cssFiles, errorCount);
-          }
-        };
-        
-        reader.readAsText(file);
-      })(files[i]);
     }
   });
 
@@ -515,15 +502,18 @@ document.addEventListener("DOMContentLoaded", function() {
   });
 
   clearBtn.addEventListener("click", function() {
-    if (!confirm("設定をクリアしますか？")) {
+    if (!confirm("設定をクリアしますか？（履歴も含む）")) {
       return;
     }
     
-    chrome.storage.local.remove(["projectPath", "cssFiles"], function() {
+    chrome.storage.local.remove(["projectPath", "cssFiles", "pathHistory"], function() {
       projectPathInput.value = "";
       cssFilesList.innerHTML = "";
-      cssFileInput.value = "";
-      showStatus("✓ 設定をクリアしました", "success");
+      // 履歴ドロップダウンもクリア
+      while (pathHistorySelect.options.length > 1) {
+        pathHistorySelect.remove(1);
+      }
+      showStatus("✓ 設定と履歴をクリアしました", "success");
     });
   });
 
@@ -564,7 +554,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
   // 保存されたデータを読み込み
   function loadSavedData() {
-    chrome.storage.local.get(["projectPath", "cssFiles", "screenWidth", "customScreenWidth", "quickResizeWidth", "quickResizeTrigger"], function(result) {
+    chrome.storage.local.get(["projectPath", "cssFiles", "screenWidth", "customScreenWidth", "quickResizeWidth", "quickResizeTrigger", "pathHistory"], function(result) {
       if (result.projectPath) {
         projectPathInput.value = result.projectPath;
       }
@@ -599,6 +589,11 @@ document.addEventListener("DOMContentLoaded", function() {
         if (triggerRadio) {
           triggerRadio.checked = true;
         }
+      }
+      
+      // パス履歴を復元
+      if (result.pathHistory && result.pathHistory.length > 0) {
+        updatePathHistoryDropdown(result.pathHistory);
       }
     });
   }
@@ -648,6 +643,50 @@ document.addEventListener("DOMContentLoaded", function() {
       setTimeout(function() {
         status.className = "status";
       }, 4000);
+    }
+  }
+  
+  // パスを履歴に保存（最大10件）
+  function savePathToHistory(path) {
+    chrome.storage.local.get(["pathHistory"], function(result) {
+      var history = result.pathHistory || [];
+      
+      // 既存の同じパスを削除
+      history = history.filter(function(p) {
+        return p !== path;
+      });
+      
+      // 先頭に追加
+      history.unshift(path);
+      
+      // 最大10件に制限
+      if (history.length > 10) {
+        history = history.slice(0, 10);
+      }
+      
+      chrome.storage.local.set({ pathHistory: history }, function() {
+        updatePathHistoryDropdown(history);
+      });
+    });
+  }
+  
+  // 履歴ドロップダウンを更新
+  function updatePathHistoryDropdown(history) {
+    // 既存のオプションをクリア（最初のプレースホルダー以外）
+    while (pathHistorySelect.options.length > 1) {
+      pathHistorySelect.remove(1);
+    }
+    
+    // 履歴を追加
+    for (var i = 0; i < history.length; i++) {
+      var option = document.createElement("option");
+      option.value = history[i];
+      // パスが長い場合は末尾のフォルダ名を強調
+      var displayPath = history[i];
+      var parts = displayPath.split("/");
+      var folderName = parts[parts.length - 1] || parts[parts.length - 2];
+      option.textContent = folderName + " - " + displayPath;
+      pathHistorySelect.appendChild(option);
     }
   }
 });

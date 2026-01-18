@@ -202,7 +202,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log("CSS Jumper: メッセージ受信", message);
   
   if (message.action === "classNameResult") {
-    handleClassName(message.className, message.allClasses);
+    handleSelectorInfo(message.id, message.className, message.allClasses);
   }
   
   // クイックリサイズ
@@ -310,12 +310,12 @@ function handleQuickResize(message, sender, sendResponse) {
   });
 }
 
-// クラス名を処理（最新のCSS内容を取得してから検索）
-async function handleClassName(className, allClasses) {
-  console.log("CSS Jumper: クラス名処理開始", className, allClasses);
+// セレクタ情報（ID, クラス）を処理（最新のCSS内容を取得してから検索）
+async function handleSelectorInfo(id, className, allClasses) {
+  console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, allClasses: allClasses });
   
-  if (!className) {
-    notifyUser("クラス名が見つかりません（クラスのある要素を右クリックしてください）", "error");
+  if (!id && !className) {
+    notifyUser("IDまたはクラスが見つかりません（適用されている要素を右クリックしてください）", "error");
     return;
   }
 
@@ -345,31 +345,54 @@ async function handleClassName(className, allClasses) {
   // 各CSSファイルの最新内容をLive Serverから取得
   var refreshedCssFiles = await refreshCssContents(cssFiles, projectPath);
   
+  // 除外ファイルをフィルタリング
+  var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
+  var targetCssFiles = refreshedCssFiles.filter(function(file) {
+    for (var e = 0; e < excludeFiles.length; e++) {
+      if (file.name.toLowerCase() === excludeFiles[e].toLowerCase()) {
+        return false;
+      }
+    }
+    return true;
+  });
+  
   console.log("CSS Jumper: 最新CSS取得完了", { 
     projectPath: projectPath, 
-    cssFilesCount: refreshedCssFiles.length,
-    cssFileNames: refreshedCssFiles.map(function(f) { return f.name; })
+    allFilesCount: refreshedCssFiles.length,
+    targetFilesCount: targetCssFiles.length,
+    targetFileNames: targetCssFiles.map(function(f) { return f.name; })
   });
 
-  // CSSファイルからクラス名を検索
-  var searchResult = searchClassInCss(className, refreshedCssFiles, projectPath);
-  
-  console.log("CSS Jumper: 検索結果", searchResult);
-  
-  if (searchResult) {
-    // VS Codeで該当行を開く
-    var vscodeUrl = "vscode://file/" + searchResult.filePath + ":" + searchResult.lineNumber;
-    console.log("CSS Jumper: VS Code URL", vscodeUrl);
+  // 1. IDで検索（最優先）
+  if (id) {
+    var idResult = searchSelectorInCss(id, "id", targetCssFiles, projectPath);
+    if (idResult) {
+      var vscodeUrl = "vscode://file/" + idResult.filePath + ":" + idResult.lineNumber;
+      openInVscode(vscodeUrl);
+      notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
+      return;
+    }
+  }
+
+  // 2. クラス名で検索
+  if (className) {
+    var classResult = searchSelectorInCss(className, "class", targetCssFiles, projectPath);
     
-    openInVscode(vscodeUrl);
-    notifyUser("✓ ." + className + " → " + searchResult.fileName + ":" + searchResult.lineNumber, "success");
-  } else {
-    // 見つからない場合、全クラスで再検索
+    if (classResult) {
+      var vscodeUrl = "vscode://file/" + classResult.filePath + ":" + classResult.lineNumber;
+      openInVscode(vscodeUrl);
+      notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
+      return;
+    }
+  }
+  
+  // 3. 見つからない場合、全クラスで再検索
+  if (allClasses && allClasses.length > 0) {
     for (var i = 0; i < allClasses.length; i++) {
       var cls = allClasses[i];
       if (cls === className) continue;
       
-      var altResult = searchClassInCss(cls, refreshedCssFiles, projectPath);
+      var altResult = searchSelectorInCss(cls, "class", targetCssFiles, projectPath);
       if (altResult) {
         var url = "vscode://file/" + altResult.filePath + ":" + altResult.lineNumber;
         openInVscode(url);
@@ -377,11 +400,12 @@ async function handleClassName(className, allClasses) {
         return;
       }
     }
-    
-    // 検索失敗時に詳細情報を表示
-    var fileNames = refreshedCssFiles.map(function(f) { return f.name; }).join(", ");
-    notifyUser("「." + className + "」が見つかりません\n検索対象: " + fileNames, "error");
   }
+    
+  // 検索失敗時に詳細情報を表示
+  var fileNames = targetCssFiles.map(function(f) { return f.name; }).join(", ");
+  var targetName = id ? "#" + id : "." + className;
+  notifyUser("「" + targetName + "」が見つかりません\n検索対象: " + fileNames, "error");
 }
 
 // CSSファイルの内容をLive Serverから取得して更新
@@ -422,22 +446,10 @@ async function refreshCssContents(cssFiles, projectPath) {
 }
 
 // CSSファイル内でクラス名を検索
-function searchClassInCss(className, cssFiles, projectPath) {
-  // 除外ファイル
-  var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
-  
+// CSSファイル内でセレクタ（ID/クラス）を検索
+function searchSelectorInCss(selector, type, cssFiles, projectPath) {
   for (var f = 0; f < cssFiles.length; f++) {
     var file = cssFiles[f];
-    
-    // 除外ファイルをスキップ
-    var isExcluded = false;
-    for (var e = 0; e < excludeFiles.length; e++) {
-      if (file.name.toLowerCase() === excludeFiles[e].toLowerCase()) {
-        isExcluded = true;
-        break;
-      }
-    }
-    if (isExcluded) continue;
     
     // ファイル内容がない場合はスキップ
     if (!file.content) {
@@ -447,11 +459,14 @@ function searchClassInCss(className, cssFiles, projectPath) {
     
     var lines = file.content.split("\n");
     
+    // 正規表現の構築
+    // IDの場合: #id-name
+    // クラスの場合: .class-name
+    var prefix = type === "id" ? "#" : "\\.";
+    var regex = new RegExp(prefix + "(" + escapeRegex(selector) + ")(?:\\s*[{,:\\[]|\\s*$)", "i");
+    
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
-      
-      // .クラス名 { または .クラス名, または .クラス名: にマッチ
-      var regex = new RegExp("\\.(" + escapeRegex(className) + ")(?:\\s*[{,:\\[]|\\s*$)", "i");
       
       if (regex.test(line)) {
         // 【修正】relativePath を使用してフルパスを構築
@@ -468,7 +483,8 @@ function searchClassInCss(className, cssFiles, projectPath) {
         filePath = filePath.replace(/\/+/g, "/");
         
         console.log("CSS Jumper: マッチ発見", {
-          className: className,
+          selector: selector,
+          type: type,
           file: file.name,
           line: i + 1,
           filePath: filePath

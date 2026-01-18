@@ -29,7 +29,11 @@ chrome.storage.onChanged.addListener(function(changes) {
 
 console.log("CSS Jumper: content.js読み込み完了");
 
+// CSS自動検出済みフラグ（連続実行防止）
+var cssAutoDetected = false;
+
 // ページロード完了時にセクション一覧を事前に取得してメニューを準備
+// + Live Serverの場合は自動でプロジェクト切替とCSS取得
 window.addEventListener("load", function() {
   setTimeout(function() {
     // セクション一覧を取得してbackground.jsに送信
@@ -41,8 +45,180 @@ window.addEventListener("load", function() {
       });
       console.log("CSS Jumper: セクションメニュー事前ロード", sections.length + "件");
     }
+    
+    // Live Serverのページなら自動でプロジェクト切替とCSS検出
+    autoSwitchProjectFromUrl();
   }, 500);
 });
+
+// URLからプロジェクトを自動切替
+function autoSwitchProjectFromUrl() {
+  var url = window.location.href;
+  
+  // Live Serverかどうかをチェック（localhost or 127.0.0.1）
+  if (!url.includes("127.0.0.1") && !url.includes("localhost")) {
+    return;
+  }
+  
+  console.log("CSS Jumper: Live Server検出、プロジェクト自動切替チェック");
+  
+  // URLからフォルダ名を抽出（例: /61_応用編：スクール/index.html → 61_応用編：スクール）
+  var urlObj = new URL(url);
+  var pathname = urlObj.pathname; // 例: /61_応用編：スクール/index.html
+  var pathParts = pathname.split("/").filter(function(p) { return p.length > 0; });
+  
+  if (pathParts.length === 0) {
+    console.log("CSS Jumper: URLからフォルダ名を抽出できません");
+    autoDetectCssIfLiveServer();
+    return;
+  }
+  
+  // 最初のフォルダ名を取得（プロジェクト名）
+  var projectFolderFromUrl = pathParts[0];
+  console.log("CSS Jumper: URLから検出したフォルダ名:", projectFolderFromUrl);
+  
+  // 履歴から一致するパスを探す
+  chrome.storage.local.get(["pathHistory", "projectPath"], function(result) {
+    var currentPath = result.projectPath || "";
+    var history = result.pathHistory || [];
+    
+    // 現在のパスのフォルダ名を取得
+    var currentFolderName = currentPath.split("/").pop();
+    
+    // 既に正しいプロジェクトが設定されている場合はCSS検出のみ
+    if (currentFolderName === projectFolderFromUrl) {
+      console.log("CSS Jumper: 既に正しいプロジェクトが設定済み");
+      autoDetectCssIfLiveServer();
+      return;
+    }
+    
+    // 履歴から一致するパスを探す
+    var matchedPath = null;
+    for (var i = 0; i < history.length; i++) {
+      var historyFolderName = history[i].split("/").pop();
+      if (historyFolderName === projectFolderFromUrl) {
+        matchedPath = history[i];
+        break;
+      }
+    }
+    
+    if (matchedPath) {
+      // 一致するパスが見つかった！自動切替
+      console.log("CSS Jumper: プロジェクト自動切替:", matchedPath);
+      chrome.storage.local.set({ projectPath: matchedPath }, function() {
+        showNotification("✓ プロジェクト自動切替: " + projectFolderFromUrl, "success");
+        autoDetectCssIfLiveServer();
+      });
+    } else {
+      // 一致するパスがない場合は通常のCSS検出のみ
+      console.log("CSS Jumper: 履歴に一致するパスなし、CSS検出のみ実行");
+      autoDetectCssIfLiveServer();
+    }
+  });
+}
+
+
+// Live Serverのページなら自動でCSS検出
+function autoDetectCssIfLiveServer() {
+  var url = window.location.href;
+  
+  // Live Serverかどうかをチェック（localhost or 127.0.0.1）
+  if (!url.includes("127.0.0.1") && !url.includes("localhost")) {
+    return;
+  }
+  
+  console.log("CSS Jumper: Live Serverを検出、自動CSS取得開始");
+  
+  // プロジェクトパスが設定されているかチェック
+  chrome.storage.local.get(["projectPath"], function(result) {
+    if (!result.projectPath) {
+      console.log("CSS Jumper: プロジェクトパス未設定、自動検出スキップ");
+      return;
+    }
+    
+    // ページ内のCSSリンクを取得
+    var links = document.querySelectorAll('link[rel="stylesheet"]');
+    var cssLinks = [];
+    
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].href;
+      // 外部CDN等は除外（ローカルのみ）
+      if (href && (href.includes('127.0.0.1') || href.includes('localhost'))) {
+        cssLinks.push(href);
+      }
+    }
+    
+    if (cssLinks.length === 0) {
+      console.log("CSS Jumper: ローカルCSSリンクなし");
+      return;
+    }
+    
+    console.log("CSS Jumper: CSSリンク検出", cssLinks.length + "件");
+    
+    // 各CSSファイルをfetchで読み込み
+    var cssFiles = [];
+    var loadedCount = 0;
+    var errorCount = 0;
+    var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
+    
+    for (var j = 0; j < cssLinks.length; j++) {
+      (function(cssUrl) {
+        fetch(cssUrl)
+          .then(function(res) { return res.text(); })
+          .then(function(content) {
+            var urlObj = new URL(cssUrl);
+            var pathname = urlObj.pathname;
+            var relativePath = pathname.replace(/^\//, '');
+            var fileName = relativePath.split('/').pop();
+            
+            // 除外ファイルをチェック
+            var isExcluded = false;
+            for (var e = 0; e < excludeFiles.length; e++) {
+              if (fileName.toLowerCase() === excludeFiles[e].toLowerCase()) {
+                isExcluded = true;
+                break;
+              }
+            }
+            
+            cssFiles.push({
+              name: fileName,
+              relativePath: relativePath,
+              content: content,
+              lines: content.split('\n').length,
+              excluded: isExcluded
+            });
+            loadedCount++;
+            
+            if (loadedCount + errorCount === cssLinks.length) {
+              saveCssFilesAuto(cssFiles);
+            }
+          })
+          .catch(function(err) {
+            console.error("CSS Jumper: CSS取得失敗", cssUrl, err);
+            errorCount++;
+            if (loadedCount + errorCount === cssLinks.length) {
+              saveCssFilesAuto(cssFiles);
+            }
+          });
+      })(cssLinks[j]);
+    }
+  });
+}
+
+// 自動検出したCSSファイルを保存
+function saveCssFilesAuto(cssFiles) {
+  if (cssFiles.length === 0) {
+    return;
+  }
+  
+  // 検出済みフラグを立てる（連続実行防止）
+  cssAutoDetected = true;
+  
+  chrome.storage.local.set({ cssFiles: cssFiles }, function() {
+    console.log("CSS Jumper: 自動検出CSS保存完了", cssFiles.length + "件");
+    showNotification("✓ CSSを自動検出しました（" + cssFiles.length + "件）", "success");
+  });
+}
 
 // クイックリサイズ実行
 function executeQuickResize() {
@@ -121,36 +297,53 @@ document.addEventListener("click", function(event) {
     var classString = "";
     var targetElement = clickedElement;
     
-    // クリックした要素からクラスを持つ要素を探す（親を遡る）
+    // クリックした要素からIDまたはクラスを持つ要素を探す（親を遡る）
+    var foundId = "";
+    var foundClassString = "";
+    
     while (targetElement && targetElement !== document.body) {
-      var classAttr = targetElement.className;
+      // IDをチェック
+      if (targetElement.id) {
+        foundId = targetElement.id;
+        // IDが見つかったら、その要素のクラスも取得してループ終了（ID優先）
+        var classAttr = targetElement.className;
+        if (typeof classAttr === "string") {
+          foundClassString = classAttr;
+        } else if (classAttr && classAttr.baseVal) {
+          foundClassString = classAttr.baseVal;
+        }
+        break;
+      }
       
+      // クラスをチェック
+      var classAttr = targetElement.className;
       if (typeof classAttr === "string" && classAttr.trim()) {
-        classString = classAttr.trim();
+        foundClassString = classAttr.trim();
+        // クラスが見つかったらループ終了（ただし親にIDがあるかもしれないので本来は遡るべきだが、直感的にはクリックした要素に近い方が良い）
         break;
       } else if (classAttr && classAttr.baseVal && classAttr.baseVal.trim()) {
-        // SVG要素の場合
-        classString = classAttr.baseVal.trim();
+        foundClassString = classAttr.baseVal.trim();
         break;
       }
       
       targetElement = targetElement.parentElement;
     }
     
-    if (!classString) {
-      console.log("CSS Jumper: Alt+クリック - クラスなし（親要素も含めて）");
-      showNotification("クラスが見つかりません", "error");
+    if (!foundId && !foundClassString) {
+      console.log("CSS Jumper: Alt+クリック - IDもクラスもなし");
+      showNotification("IDまたはクラスが見つかりません", "error");
       return;
     }
     
-    var classes = classString.split(/\s+/);
-    var className = classes[0] || null;
+    var classes = foundClassString ? foundClassString.trim().split(/\s+/) : [];
+    var className = classes[0] || "";
     var allClasses = classes;
     
-    console.log("CSS Jumper: Alt+クリック", className, allClasses, "要素:", targetElement.tagName);
+    console.log("CSS Jumper: Alt+クリック", { id: foundId, className: className, tagName: targetElement.tagName });
     
     chrome.runtime.sendMessage({
       action: "classNameResult",
+      id: foundId,
       className: className,
       allClasses: allClasses
     });
@@ -176,13 +369,15 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log("CSS Jumper: content.jsメッセージ受信", message);
   
   if (message.action === "getClassName") {
+    var id = lastRightClickedElement ? lastRightClickedElement.id : "";
     var className = getFirstClassName();
     var allClasses = getAllClassNames();
     
-    console.log("CSS Jumper: クラス名取得", className, allClasses);
+    console.log("CSS Jumper: 要素情報取得", { id: id, className: className, allClasses: allClasses });
     
     chrome.runtime.sendMessage({
       action: "classNameResult",
+      id: id,
       className: className,
       allClasses: allClasses
     });

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
@@ -16,35 +16,37 @@
       <!-- Step 1: プロジェクトパス入力 -->
       <div class="form-group">
         <label>① プロジェクトパス（フルパス）</label>
-        <input
-          type="text"
-          id="projectPath"
-          placeholder="D:\02_作業\00_リンクワーク\HTML自動化\01_step_05"
-        />
-        <p class="hint">VS Codeで開いているプロジェクトのフルパス</p>
+        <div class="path-input-group">
+          <input
+            type="text"
+            id="projectPath"
+            placeholder="D:\02_作業\00_リンクワーク\HTML自動化\01_step_05"
+          />
+          <button
+            id="browseFolderBtn"
+            class="btn btn-small"
+            title="フォルダを参照（履歴から親パスを使用）"
+          >
+            📁
+          </button>
+        </div>
+        <div class="path-history-group">
+          <select id="pathHistory">
+            <option value="">-- 履歴から選択 --</option>
+          </select>
+        </div>
+        <p class="hint">
+          履歴があれば📁で同じ親フォルダから別プロジェクトを選択可能
+        </p>
       </div>
 
       <!-- Step 2: CSSファイル選択 -->
       <div class="form-group">
         <label>② CSSファイル</label>
-        <div class="button-group" style="margin-bottom: 8px">
-          <button id="autoDetectBtn" class="btn btn-success btn-full">
-            🔍 ページから自動検出
-          </button>
-        </div>
-        <input
-          type="file"
-          id="cssFileInput"
-          multiple
-          accept=".css"
-          style="display: none"
-        />
-        <button id="selectFilesBtn" class="btn btn-secondary btn-full">
-          📄 手動でファイル選択
+        <button id="autoDetectBtn" class="btn btn-success btn-full">
+          🔍 ページから自動検出
         </button>
-        <p class="hint">
-          Live Serverで開いているページから自動検出、または手動選択
-        </p>
+        <p class="hint">Live Serverで開いているページから自動検出</p>
       </div>
 
       <div id="cssFilesList" class="css-files-list"></div>

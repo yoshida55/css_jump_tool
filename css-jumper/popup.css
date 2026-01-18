@@ -52,7 +52,10 @@ input[type="number"] {
   border-radius: 6px;
   background: #252540;
   color: #fff;
-  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    background 0.2s;
 }
 
 input[type="text"]:focus,
@@ -110,7 +113,9 @@ input.input-error {
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
-  transition: background 0.2s, transform 0.1s;
+  transition:
+    background 0.2s,
+    transform 0.1s;
 }
 
 .radio-label:hover {
@@ -366,4 +371,60 @@ input.input-error {
   border-radius: 3px;
   font-family: "Consolas", monospace;
   color: #ffc107;
+}
+
+/* パス入力グループ */
+.path-input-group {
+  display: flex;
+  gap: 6px;
+}
+
+.path-input-group input[type="text"] {
+  flex: 1;
+}
+
+.btn-small {
+  padding: 8px 12px;
+  font-size: 14px;
+  background: #3a3a5a;
+  color: #ccc;
+  border: 1px solid #4a4a6a;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-small:hover {
+  background: #4a4a6a;
+}
+
+/* パス履歴ドロップダウン */
+.path-history-group {
+  margin-top: 8px;
+}
+
+.path-history-group select {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 12px;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  background: #252540;
+  color: #90caf9;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.path-history-group select:hover {
+  border-color: #6c63ff;
+}
+
+.path-history-group select:focus {
+  outline: none;
+  border-color: #6c63ff;
+}
+
+.path-history-group select option {
+  background: #252540;
+  color: #e0e0e0;
 }
