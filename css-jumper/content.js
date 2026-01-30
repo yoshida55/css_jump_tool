@@ -12,10 +12,17 @@ var quickResizeActive = false;
 var quickResizeTrigger = "both"; // "wheel", "ctrlRight", "both"
 var preventContextMenu = false;
 
+// Flex情報自動表示用
+var flexInfoVisible = false;
+var autoShowFlexEnabled = false;
+
 // 設定を読み込み
-chrome.storage.local.get(["quickResizeTrigger"], function(result) {
+chrome.storage.local.get(["quickResizeTrigger", "autoShowFlex"], function(result) {
   if (result.quickResizeTrigger) {
     quickResizeTrigger = result.quickResizeTrigger;
+  }
+  if (result.autoShowFlex) {
+    autoShowFlexEnabled = result.autoShowFlex;
   }
 });
 
@@ -24,6 +31,10 @@ chrome.storage.onChanged.addListener(function(changes) {
   if (changes.quickResizeTrigger) {
     quickResizeTrigger = changes.quickResizeTrigger.newValue;
     console.log("CSS Jumper: トリガー設定変更", quickResizeTrigger);
+  }
+  if (changes.autoShowFlex) {
+    autoShowFlexEnabled = changes.autoShowFlex.newValue;
+    console.log("CSS Jumper: Flex自動表示設定変更", autoShowFlexEnabled);
   }
 });
 
@@ -45,9 +56,21 @@ window.addEventListener("load", function() {
       });
       console.log("CSS Jumper: セクションメニュー事前ロード", sections.length + "件");
     }
-    
+
     // Live Serverのページなら自動でプロジェクト切替とCSS検出
     autoSwitchProjectFromUrl();
+
+    // Flex情報自動表示（設定ONかつLive Serverの場合のみ）
+    var url = window.location.href;
+    if (url.includes("127.0.0.1") || url.includes("localhost")) {
+      chrome.storage.local.get(["autoShowFlex"], function(result) {
+        if (result.autoShowFlex) {
+          setTimeout(function() {
+            showFlexInfo();
+          }, 300);
+        }
+      });
+    }
   }, 500);
 });
 
@@ -194,7 +217,8 @@ function autoDetectCssIfLiveServer() {
             }
           })
           .catch(function(err) {
-            console.warn("CSS Jumper: CSS取得失敗（スキップ）", cssUrl, err);
+            // サーバー未起動時は正常動作なのでログのみ（warnだとChrome拡張ページにエラー表示される）
+            console.log("CSS Jumper: CSS取得スキップ（サーバー未起動の可能性）", cssUrl);
             errorCount++;
             if (loadedCount + errorCount === cssLinks.length) {
               saveCssFilesAuto(cssFiles);
@@ -216,7 +240,8 @@ function saveCssFilesAuto(cssFiles) {
   
   chrome.storage.local.set({ cssFiles: cssFiles }, function() {
     console.log("CSS Jumper: 自動検出CSS保存完了", cssFiles.length + "件");
-    showNotification("✓ CSSを自動検出しました（" + cssFiles.length + "件）", "success");
+    // 通知は出さない（毎回出ると邪魔なので）
+    // showNotification("✓ CSSを自動検出しました（" + cssFiles.length + "件）", "success");
   });
 }
 
@@ -287,13 +312,17 @@ document.addEventListener("keydown", function(event) {
   }
 }, true);
 
-// Alt+クリックでVS Codeを開く
+// Alt+クリックでVS Codeを開く（右クリックで選択した要素を使用）
 document.addEventListener("click", function(event) {
   if (event.altKey) {
     event.preventDefault();
     event.stopPropagation();
-    
-    var clickedElement = event.target;
+
+    // 右クリックで記録した要素を使用（なければクリック要素）
+    var clickedElement = lastRightClickedElement || event.target;
+    if (!lastRightClickedElement) {
+      console.log("CSS Jumper: 右クリック要素なし、クリック要素を使用");
+    }
     var classString = "";
     var targetElement = clickedElement;
     
@@ -341,12 +370,25 @@ document.addEventListener("click", function(event) {
     
     console.log("CSS Jumper: Alt+クリック", { id: foundId, className: className, tagName: targetElement.tagName });
     
-    chrome.runtime.sendMessage({
-      action: "classNameResult",
-      id: foundId,
-      className: className,
-      allClasses: allClasses
-    });
+    // 拡張機能のコンテキストが有効かチェック
+    if (!chrome.runtime || !chrome.runtime.id) {
+      console.log("CSS Jumper: 拡張機能のコンテキストが無効です。ページをリロードしてください。");
+      showNotification("拡張機能が更新されました。ページをリロードしてください。", "error");
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({
+        action: "classNameResult",
+        id: foundId,
+        className: className,
+        allClasses: allClasses,
+        viewportWidth: window.innerWidth
+      });
+    } catch (e) {
+      console.log("CSS Jumper: メッセージ送信エラー", e);
+      showNotification("通信エラー: ページをリロードしてください", "error");
+    }
   }
 }, true);
 
@@ -379,12 +421,22 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
       action: "classNameResult",
       id: id,
       className: className,
-      allClasses: allClasses
+      allClasses: allClasses,
+      viewportWidth: window.innerWidth
     });
     
     sendResponse({ received: true });
   }
   
+  if (message.action === "copyToClipboard") {
+    console.log("CSS Jumper: クリップボードにコピー", message.text);
+    // クリップボードAPIを使用
+    navigator.clipboard.writeText(message.text).catch(function(err) {
+      console.error("CSS Jumper: クリップボードコピー失敗", err);
+    });
+    return true; // 非同期応答の可能性のためにtrueを返す（念のため）
+  }
+
   if (message.action === "openUrl") {
     console.log("CSS Jumper: VS Code URLを開く", message.url);
     openVscodeUrl(message.url);
@@ -712,6 +764,93 @@ function removeSectionOutline() {
     outlines[i].remove();
   }
   sectionOutlineVisible = false;
+}
+
+// Flex情報を表示
+function showFlexInfo() {
+  // 既存のFlex情報ラベルを削除
+  removeFlexInfo();
+
+  console.log("CSS Jumper: Flex情報表示開始");
+
+  var elements = document.querySelectorAll("*");
+  var flexCount = 0;
+
+  elements.forEach(function(elem) {
+    // CSS Jumperのオーバーレイは除外
+    if (elem.classList && (
+      elem.classList.contains("css-jumper-flex-info") ||
+      elem.classList.contains("css-jumper-size-overlay") ||
+      elem.classList.contains("css-jumper-spacing-overlay") ||
+      elem.classList.contains("css-jumper-outline")
+    )) {
+      return;
+    }
+
+    var style = window.getComputedStyle(elem);
+
+    // Flexコンテナのみ対象
+    if (style.display !== "flex" && style.display !== "inline-flex") {
+      return;
+    }
+
+    var rect = elem.getBoundingClientRect();
+
+    // 小さすぎる要素は除外
+    if (rect.width < 30 || rect.height < 20) {
+      return;
+    }
+
+    // Flex情報を収集（シンプルに縦/横のみ）
+    var dir = style.flexDirection;
+    var dirLabel = "横";
+    if (dir === "column" || dir === "column-reverse") {
+      dirLabel = "縦";
+    }
+
+    // ラベルを作成
+    var label = document.createElement("div");
+    label.className = "css-jumper-flex-info";
+    label.textContent = "flex " + dirLabel;
+
+    // 画面からはみ出さないよう位置調整
+    var labelLeft = rect.left + window.scrollX;
+    if (labelLeft < 5) labelLeft = 5;
+
+    label.style.cssText =
+      "position: absolute !important;" +
+      "left: " + labelLeft + "px !important;" +
+      "top: " + (rect.top + window.scrollY - 28) + "px !important;" +
+      "background: rgba(156, 39, 176, 0.9) !important;" +
+      "color: white !important;" +
+      "padding: 4px 10px !important;" +
+      "font-size: 13px !important;" +
+      "font-family: 'Segoe UI', sans-serif !important;" +
+      "border-radius: 4px !important;" +
+      "z-index: 999995 !important;" +
+      "pointer-events: none !important;" +
+      "white-space: nowrap !important;" +
+      "box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;";
+
+    document.body.appendChild(label);
+    flexCount++;
+  });
+
+  flexInfoVisible = true;
+  console.log("CSS Jumper: Flex情報表示完了", flexCount + "件");
+
+  if (flexCount > 0) {
+    showNotification("🎨 Flex情報を表示（" + flexCount + "件）", "success");
+  }
+}
+
+// Flex情報を削除
+function removeFlexInfo() {
+  var labels = document.querySelectorAll(".css-jumper-flex-info");
+  for (var i = 0; i < labels.length; i++) {
+    labels[i].remove();
+  }
+  flexInfoVisible = false;
 }
 
 // デザイン基準（1rem = 10px）でmargin値を変換
@@ -1603,37 +1742,29 @@ function removeSpacingOverlay() {
   spacingOverlayVisible = false;
 }
 
-// VS Code URLを開く
+// VS Code URLを開く（iframe方式でエンコード回避）
 function openVscodeUrl(url) {
   console.log("CSS Jumper: openVscodeUrl実行", url);
-  
+
   try {
-    var link = document.createElement("a");
-    link.href = url;
-    link.style.display = "none";
-    document.body.appendChild(link);
-    link.click();
-    
+    // iframe方式（URLエンコードを回避）
+    var iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = url;
+    document.body.appendChild(iframe);
+
     setTimeout(function() {
-      if (link.parentNode) {
-        document.body.removeChild(link);
+      if (iframe.parentNode) {
+        document.body.removeChild(iframe);
       }
-    }, 100);
-    
-    console.log("CSS Jumper: aタグクリック成功");
-    return;
+    }, 500);
+
+    console.log("CSS Jumper: iframe方式成功");
   } catch (err) {
-    console.log("CSS Jumper: aタグクリック失敗", err);
-  }
-  
-  try {
-    window.location.href = url;
-    console.log("CSS Jumper: location.href成功");
-  } catch (err) {
-    console.log("CSS Jumper: location.href失敗", err);
+    console.log("CSS Jumper: iframe方式失敗", err);
   }
 }
-
+  
 // 最初のクラス名を取得
 function getFirstClassName() {
   if (!lastRightClickedElement) {

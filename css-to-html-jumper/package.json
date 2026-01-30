@@ -1,0 +1,96 @@
+{
+  "name": "css-to-html-jumper",
+  "publisher": "yoshida55",
+  "displayName": "CSS to HTML Jumper",
+  "description": "CSSのセレクタからHTMLでの使用箇所にジャンプ",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yoshida55/css-to-html-jumper"
+  },
+  "version": "1.4.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onLanguage:css",
+    "onLanguage:javascript",
+    "onUri:vscode"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cssToHtmlJumper.findUsage",
+        "title": "HTMLで使用箇所を検索",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.jumpToSection",
+        "title": "セクションにジャンプ",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.askCopilot",
+        "title": "✨ Copilotに解説を求める",
+        "category": "CSS to HTML"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "editorLangId == css",
+          "command": "cssToHtmlJumper.findUsage",
+          "group": "navigation"
+        },
+        {
+          "command": "cssToHtmlJumper.askCopilot",
+          "when": "editorTextFocus",
+          "group": "navigation@100"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "cssToHtmlJumper.findUsage",
+        "key": "ctrl+shift+h",
+        "when": "editorLangId == css"
+      },
+      {
+        "command": "cssToHtmlJumper.jumpToSection",
+        "key": "ctrl+shift+l",
+        "when": "editorLangId == css"
+      },
+      {
+        "command": "cssToHtmlJumper.askCopilot",
+        "key": "ctrl+shift+/",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "CSS to HTML Jumper",
+      "properties": {
+        "cssToHtmlJumper.targetFiles": {
+          "type": "string",
+          "default": "**/*.html",
+          "description": "検索対象のHTMLファイル（glob形式）。複数指定する場合はカンマ区切り。例: **/index.html, **/*.html"
+        },
+        "cssToHtmlJumper.copilotPrompt": {
+          "type": "string",
+          "default": "このコードの目的を簡潔に説明して",
+          "description": "Copilot解説機能で使用するプロンプトのテンプレート。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0"
+  }
+}

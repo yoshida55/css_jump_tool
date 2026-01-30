@@ -202,7 +202,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log("CSS Jumper: メッセージ受信", message);
   
   if (message.action === "classNameResult") {
-    handleSelectorInfo(message.id, message.className, message.allClasses);
+    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth);
   }
   
   // クイックリサイズ
@@ -311,8 +311,10 @@ function handleQuickResize(message, sender, sendResponse) {
 }
 
 // セレクタ情報（ID, クラス）を処理（最新のCSS内容を取得してから検索）
-async function handleSelectorInfo(id, className, allClasses) {
-  console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, allClasses: allClasses });
+async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
+  // モバイル幅（768px未満）の場合はメディアクエリ内を優先
+  var preferMediaQuery = viewportWidth && viewportWidth < 768;
+  console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, viewportWidth: viewportWidth, preferMediaQuery: preferMediaQuery });
   
   if (!id && !className) {
     notifyUser("IDまたはクラスが見つかりません（適用されている要素を右クリックしてください）", "error");
@@ -365,9 +367,8 @@ async function handleSelectorInfo(id, className, allClasses) {
 
   // 1. IDで検索（最優先）
   if (id) {
-    var idResult = searchSelectorInCss(id, "id", targetCssFiles, projectPath);
     if (idResult) {
-      var vscodeUrl = "vscode://file/" + idResult.filePath + ":" + idResult.lineNumber;
+      var vscodeUrl = buildVscodeUrl(idResult.filePath, idResult.lineNumber);
       openInVscode(vscodeUrl);
       notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
       return;
@@ -376,25 +377,25 @@ async function handleSelectorInfo(id, className, allClasses) {
 
   // 2. クラス名で検索
   if (className) {
-    var classResult = searchSelectorInCss(className, "class", targetCssFiles, projectPath);
-    
+    var classResult = searchSelectorInCss(className, "class", targetCssFiles, projectPath, preferMediaQuery);
+
     if (classResult) {
-      var vscodeUrl = "vscode://file/" + classResult.filePath + ":" + classResult.lineNumber;
+      var vscodeUrl = buildVscodeUrl(classResult.filePath, classResult.lineNumber);
       openInVscode(vscodeUrl);
       notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
       return;
     }
   }
-  
+
   // 3. 見つからない場合、全クラスで再検索
   if (allClasses && allClasses.length > 0) {
     for (var i = 0; i < allClasses.length; i++) {
       var cls = allClasses[i];
       if (cls === className) continue;
-      
-      var altResult = searchSelectorInCss(cls, "class", targetCssFiles, projectPath);
+
+      var altResult = searchSelectorInCss(cls, "class", targetCssFiles, projectPath, preferMediaQuery);
       if (altResult) {
-        var url = "vscode://file/" + altResult.filePath + ":" + altResult.lineNumber;
+        var url = buildVscodeUrl(altResult.filePath, altResult.lineNumber);
         openInVscode(url);
         notifyUser("✓ ." + cls + " → " + altResult.fileName + ":" + altResult.lineNumber, "success");
         return;
@@ -447,7 +448,11 @@ async function refreshCssContents(cssFiles, projectPath) {
 
 // CSSファイル内でクラス名を検索
 // CSSファイル内でセレクタ（ID/クラス）を検索
-function searchSelectorInCss(selector, type, cssFiles, projectPath) {
+// preferMediaQuery: trueの場合、@media内のマッチを優先
+function searchSelectorInCss(selector, type, cssFiles, projectPath, preferMediaQuery) {
+  var firstMatch = null;  // 最初に見つかったマッチ（フォールバック用）
+  var mediaMatch = null;  // メディアクエリ内で見つかったマッチ
+  
   for (var f = 0; f < cssFiles.length; f++) {
     var file = cssFiles[f];
     
@@ -465,42 +470,94 @@ function searchSelectorInCss(selector, type, cssFiles, projectPath) {
     var prefix = type === "id" ? "#" : "\\.";
     var regex = new RegExp(prefix + "(" + escapeRegex(selector) + ")(?:\\s*[{,:\\[]|\\s*$)", "i");
     
+    // 波括弧の深さと@media開始位置を追跡
+    var braceDepth = 0;
+    var mediaQueryStartDepth = -1;  // @mediaの開始時の深さ（-1 = @media外）
+    
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       
+      // 波括弧をカウント
+      var openBraces = (line.match(/{/g) || []).length;
+      var closeBraces = (line.match(/}/g) || []).length;
+      
+      // @media の開始を検出
+      if (/@media\s/.test(line)) {
+        mediaQueryStartDepth = braceDepth;
+      }
+      
+      // 波括弧による深さ更新（この行の開き括弧を加算）
+      braceDepth += openBraces;
+      
+      // 現在@media内かどうかを判定
+      var isInMediaQuery = mediaQueryStartDepth >= 0 && braceDepth > mediaQueryStartDepth;
+      
       if (regex.test(line)) {
-        // 【修正】relativePath を使用してフルパスを構築
+        // パスを構築
         var filePath;
         if (file.relativePath && file.relativePath !== file.name) {
-          // 相対パスがある場合はそれを使用
           filePath = projectPath + "/" + file.relativePath;
         } else {
-          // 後方互換性: css/ ディレクトリを仮定
           filePath = projectPath + "/css/" + file.name;
         }
-        filePath = filePath.replace(/\\/g, "/");
-        // 重複スラッシュを除去
-        filePath = filePath.replace(/\/+/g, "/");
+        filePath = filePath.replace(/\\/g, "/").replace(/\/+/g, "/");
         
-        console.log("CSS Jumper: マッチ発見", {
-          selector: selector,
-          type: type,
-          file: file.name,
-          line: i + 1,
-          filePath: filePath
-        });
-        
-        return {
+        var matchResult = {
           filePath: filePath,
           fileName: file.name,
           lineNumber: i + 1,
-          lineContent: line.trim()
+          lineContent: line.trim(),
+          isInMediaQuery: isInMediaQuery
         };
+        
+        // 最初のマッチを記録
+        if (!firstMatch) {
+          firstMatch = matchResult;
+        }
+        
+        // メディアクエリ内のマッチを記録（優先モード時）
+        if (preferMediaQuery && isInMediaQuery && !mediaMatch) {
+          mediaMatch = matchResult;
+          console.log("CSS Jumper: メディアクエリ内マッチ発見", { selector: selector, line: i + 1, braceDepth: braceDepth });
+        }
+        
+        // 優先モードでない場合、または最初のマッチがメディアクエリ外なら即座に返す
+        if (!preferMediaQuery) {
+          console.log("CSS Jumper: マッチ発見", { selector: selector, type: type, file: file.name, line: i + 1, filePath: filePath });
+          return matchResult;
+        }
+      }
+      
+      // 波括弧による深さ更新（この行の閉じ括弧を減算）
+      braceDepth -= closeBraces;
+      
+      // @mediaブロックが終了したかチェック
+      if (mediaQueryStartDepth >= 0 && braceDepth <= mediaQueryStartDepth) {
+        mediaQueryStartDepth = -1;  // @media外に戻る
       }
     }
   }
   
-  return null;
+  // 優先モードの場合：メディアクエリ内マッチがあればそれを、なければ最初のマッチを返す
+  if (preferMediaQuery && mediaMatch) {
+    console.log("CSS Jumper: メディアクエリ優先マッチを返す", { selector: selector, line: mediaMatch.lineNumber });
+    return mediaMatch;
+  }
+  
+  if (firstMatch) {
+    console.log("CSS Jumper: フォールバックマッチを返す", { selector: selector, line: firstMatch.lineNumber });
+  }
+  
+  return firstMatch;
+}
+
+// VS Code URLを構築
+function buildVscodeUrl(filePath, lineNumber) {
+  // バックスラッシュをスラッシュに統一
+  var cleanPath = filePath.replace(/\\/g, "/");
+  // 標準の vscode://file/ 形式
+  var url = "vscode://file/" + cleanPath + ":" + lineNumber;
+  return url;
 }
 
 // 正規表現の特殊文字をエスケープ
@@ -508,31 +565,22 @@ function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// VS Codeを開く（content.js経由）
+// VS Codeを開く（Native Messaging経由）
 function openInVscode(url) {
-  console.log("CSS Jumper: VS Codeを開く", url);
-  
-  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-    if (tabs[0]) {
-      chrome.tabs.sendMessage(tabs[0].id, {
-        action: "openUrl",
-        url: url
-      }, function(response) {
-        if (chrome.runtime.lastError) {
-          console.error("CSS Jumper: openUrl送信エラー", chrome.runtime.lastError);
-          // フォールバック: chrome.tabs.createを試す
-          chrome.tabs.create({ url: url, active: false }, function() {
-            if (chrome.runtime.lastError) {
-              console.error("CSS Jumper: tabs.createも失敗", chrome.runtime.lastError);
-              notifyUser("VS Codeを開けませんでした\nvscodeプロトコルの登録を確認してください", "error");
-            }
-          });
-        } else {
-          console.log("CSS Jumper: openUrl送信成功");
-        }
-      });
+  console.log("CSS Jumper: VS Codeを開く (Native Messaging)", url);
+
+  chrome.runtime.sendNativeMessage(
+    "com.cssjumper.open_vscode",
+    { url: url },
+    function(response) {
+      if (chrome.runtime.lastError) {
+        console.error("CSS Jumper: Native Messaging失敗", chrome.runtime.lastError.message);
+        notifyUser("VS Codeを開けませんでした: " + chrome.runtime.lastError.message, "error");
+      } else {
+        console.log("CSS Jumper: Native Messaging成功", response);
+      }
     }
-  });
+  );
 }
 
 // ユーザーに通知（アクティブタブへ）

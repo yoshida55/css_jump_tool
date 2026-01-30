@@ -1,0 +1,29 @@
+# Node modules
+node_modules/
+
+# VS Code拡張ビルド成果物
+*.vsix
+css-to-html-jumper/out/
+
+# Chrome拡張配布用（一時フォルダ）
+css-jumper-dist/
+
+# Native Hostビルド
+css-jumper/native-host/build/
+css-jumper/native-host/dist/
+css-jumper/native-host/__pycache__/
+*.pyc
+
+# 一時ファイル
+tmpclaude-*
+nul
+
+# IDE
+.vscode/
+
+# ログ
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

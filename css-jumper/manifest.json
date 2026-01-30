@@ -9,7 +9,8 @@
     "activeTab",
     "scripting",
     "clipboardWrite",
-    "tabs"
+    "tabs",
+    "nativeMessaging"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

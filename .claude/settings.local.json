@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where:*)",
+      "Bash(powershell:*)",
+      "Bash(findstr:*)",
+      "Bash(start \"\" \"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" \"vscode://file/D:/test.txt:1\")",
+      "Bash(start \"\" \"C:\\\\Program Files \\(x86\\)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" \"vscode://file/D:/test.txt:1\")",
+      "Bash(start \"\" \"%LocalAppData%\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" \"vscode://file/D:/test.txt:1\")",
+      "Bash(echo:*)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(pyinstaller:*)",
+      "Bash(copy \"D:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-jumper\\\\native-host\\\\dist\\\\open_vscode.exe\" \"D:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-jumper\\\\native-host\"\")",
+      "Bash(npm run compile:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node node_modules/typescript/bin/tsc:*)",
+      "Bash(node_modules/.bin/tsc:*)",
+      "Bash(npx vsce:*)"
+    ]
+  }
+}
