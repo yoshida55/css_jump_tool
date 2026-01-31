@@ -14,6 +14,7 @@
   "categories": ["Other"],
   "activationEvents": [
     "onLanguage:css",
+    "onLanguage:html",
     "onLanguage:javascript",
     "onUri:vscode"
   ],
@@ -34,6 +35,16 @@
         "command": "cssToHtmlJumper.askCopilot",
         "title": "✨ Copilotに解説を求める",
         "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.removeAllRedBorders",
+        "title": "🗑️ 赤枠をすべて削除",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.askClaude",
+        "title": "✨ Claude AIに質問",
+        "category": "CSS to HTML"
       }
     ],
     "menus": {
@@ -47,6 +58,11 @@
           "command": "cssToHtmlJumper.askCopilot",
           "when": "editorTextFocus",
           "group": "navigation@100"
+        },
+        {
+          "command": "cssToHtmlJumper.askClaude",
+          "when": "editorTextFocus",
+          "group": "navigation@101"
         }
       ]
     },
@@ -65,6 +81,11 @@
         "command": "cssToHtmlJumper.askCopilot",
         "key": "ctrl+shift+/",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.askClaude",
+        "key": "ctrl+i",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
@@ -79,6 +100,17 @@
           "type": "string",
           "default": "このコードの目的を簡潔に説明して",
           "description": "Copilot解説機能で使用するプロンプトのテンプレート。"
+        },
+        "cssToHtmlJumper.claudeApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Claude API キー（sk-ant-...）"
+        },
+        "cssToHtmlJumper.claudeModel": {
+          "type": "string",
+          "enum": ["claude-opus-4-5-20251124", "claude-sonnet-4-5-20250929"],
+          "default": "claude-sonnet-4-5-20250929",
+          "description": "使用するClaudeモデル"
         }
       }
     }

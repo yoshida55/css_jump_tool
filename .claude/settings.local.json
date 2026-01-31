@@ -16,7 +16,8 @@
       "Bash(npx tsc:*)",
       "Bash(node node_modules/typescript/bin/tsc:*)",
       "Bash(node_modules/.bin/tsc:*)",
-      "Bash(npx vsce:*)"
+      "Bash(npx vsce:*)",
+      "Bash(code --install-extension:*)"
     ]
   }
 }

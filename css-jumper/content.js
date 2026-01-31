@@ -2,6 +2,10 @@
 var lastRightClickedElement = null;
 var sizeOverlayVisible = false;
 
+// VS Codeからのブラウザハイライト用
+var vscodeHighlightPolling = null;
+var lastHighlightedElement = null;
+
 // Ctrl+クリック距離測定用
 var distanceMeasureFirstElement = null;
 var distanceMeasureHighlight = null;
@@ -43,6 +47,115 @@ console.log("CSS Jumper: content.js読み込み完了");
 // CSS自動検出済みフラグ（連続実行防止）
 var cssAutoDetected = false;
 
+// ========================================
+// VS Codeからのブラウザハイライト機能
+// ========================================
+
+// VS Codeサーバーをポーリングしてセレクタ情報を取得
+function startVSCodeHighlightPolling() {
+  // 既にポーリング中なら何もしない
+  if (vscodeHighlightPolling) return;
+
+  console.log("CSS Jumper: VS Codeハイライトポーリング開始");
+
+  vscodeHighlightPolling = setInterval(function() {
+    fetch("http://127.0.0.1:3847/selector")
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        if (data && data.type && data.name) {
+          highlightElementBySelector(data.type, data.name);
+        }
+      })
+      .catch(function(err) {
+        // VS Codeサーバーが起動していない場合は無視
+      });
+  }, 500); // 500ms間隔でポーリング
+}
+
+// セレクタに一致する要素をハイライト
+function highlightElementBySelector(type, name) {
+  console.log("CSS Jumper: ブラウザハイライト", type, name);
+
+  // 前回のハイライトを削除
+  removeVSCodeHighlight();
+
+  // セレクタで要素を検索
+  var elements = [];
+  if (type === "class") {
+    elements = document.querySelectorAll("." + name);
+  } else if (type === "id") {
+    var elem = document.getElementById(name);
+    if (elem) elements = [elem];
+  } else if (type === "tag") {
+    elements = document.querySelectorAll(name);
+  }
+
+  if (elements.length === 0) {
+    console.log("CSS Jumper: 該当要素なし");
+    return;
+  }
+
+  // 最初の要素をハイライト
+  var target = elements[0];
+  lastHighlightedElement = target;
+
+  // ハイライト用のオーバーレイを作成
+  var rect = target.getBoundingClientRect();
+  var overlay = document.createElement("div");
+  overlay.className = "css-jumper-vscode-highlight";
+  overlay.style.cssText =
+    "position: fixed !important;" +
+    "left: " + rect.left + "px !important;" +
+    "top: " + rect.top + "px !important;" +
+    "width: " + rect.width + "px !important;" +
+    "height: " + rect.height + "px !important;" +
+    "background: rgba(255, 200, 50, 0.4) !important;" +
+    "border: 3px solid rgba(255, 150, 0, 0.9) !important;" +
+    "pointer-events: none !important;" +
+    "z-index: 999999 !important;" +
+    "box-sizing: border-box !important;" +
+    "transition: all 0.2s ease !important;";
+  document.body.appendChild(overlay);
+
+  // セレクタ名ラベルを追加
+  var label = document.createElement("div");
+  label.className = "css-jumper-vscode-highlight";
+  var selectorText = type === "class" ? "." + name : (type === "id" ? "#" + name : name);
+  label.textContent = selectorText;
+  label.style.cssText =
+    "position: fixed !important;" +
+    "left: " + rect.left + "px !important;" +
+    "top: " + (rect.top - 28) + "px !important;" +
+    "background: rgba(255, 150, 0, 0.95) !important;" +
+    "color: white !important;" +
+    "padding: 4px 10px !important;" +
+    "font-size: 14px !important;" +
+    "font-weight: bold !important;" +
+    "font-family: monospace !important;" +
+    "border-radius: 4px !important;" +
+    "pointer-events: none !important;" +
+    "z-index: 999999 !important;" +
+    "box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;";
+  document.body.appendChild(label);
+
+  // 要素が見えるようにスクロール
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  // 2秒後にハイライトを削除
+  setTimeout(function() {
+    removeVSCodeHighlight();
+  }, 2000);
+}
+
+// VS Codeハイライトを削除
+function removeVSCodeHighlight() {
+  var highlights = document.querySelectorAll(".css-jumper-vscode-highlight");
+  for (var i = 0; i < highlights.length; i++) {
+    highlights[i].remove();
+  }
+  lastHighlightedElement = null;
+}
+
 // ページロード完了時にセクション一覧を事前に取得してメニューを準備
 // + Live Serverの場合は自動でプロジェクト切替とCSS取得
 window.addEventListener("load", function() {
@@ -70,6 +183,9 @@ window.addEventListener("load", function() {
           }, 100);
         }
       });
+
+      // VS Codeからのブラウザハイライトポーリング開始
+      startVSCodeHighlightPolling();
     }
   }, 100);
 });

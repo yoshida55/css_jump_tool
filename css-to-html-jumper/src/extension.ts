@@ -1,10 +1,304 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as http from 'http';
+import * as https from 'https';
 import { cssProperties, analyzeValue } from './cssProperties';
 import { jsMethods } from './jsProperties';
 
+// ========================================
+// Claude API 呼び出し関数
+// ========================================
+async function askClaudeAPI(code: string, question: string, htmlContext?: string): Promise<string> {
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const apiKey = config.get<string>('claudeApiKey', '');
+  const model = config.get<string>('claudeModel', 'claude-sonnet-4-5-20250929');
+
+  if (!apiKey) {
+    throw new Error('Claude API キーが設定されていません。設定 → cssToHtmlJumper.claudeApiKey を確認してください。');
+  }
+
+  let prompt = '';
+  if (code.trim() && htmlContext) {
+    prompt = `以下のCSSコードと、それが使われているHTMLについて質問があります。
+
+【CSSコード】
+\`\`\`css
+${code}
+\`\`\`
+
+【HTMLでの使用箇所】
+\`\`\`html
+${htmlContext}
+\`\`\`
+
+【質問】
+${question}
+
+日本語で簡潔に回答してください。`;
+  } else if (code.trim()) {
+    prompt = `以下のコードについて質問があります。
+
+【コード】
+\`\`\`
+${code}
+\`\`\`
+
+【質問】
+${question}
+
+日本語で簡潔に回答してください。`;
+  } else {
+    prompt = `【質問】
+${question}
+
+日本語で簡潔に回答してください。`;
+  }
+
+  const requestBody = JSON.stringify({
+    model: model,
+    max_tokens: 4096,
+    messages: [
+      { role: 'user', content: prompt }
+    ]
+  });
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.anthropic.com',
+      port: 443,
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.error) {
+            reject(new Error(json.error.message || 'API エラー'));
+          } else if (json.content && json.content[0] && json.content[0].text) {
+            resolve(json.content[0].text);
+          } else {
+            reject(new Error('予期しないレスポンス形式'));
+          }
+        } catch (e) {
+          reject(new Error('レスポンスの解析に失敗'));
+        }
+      });
+    });
+
+    req.on('error', (e) => reject(e));
+    req.write(requestBody);
+    req.end();
+  });
+}
+
+// CSSコードからクラス名/ID名を抽出
+function extractSelectorsFromCSS(cssCode: string): string[] {
+  const selectors: string[] = [];
+  // クラス名を抽出 (.class-name)
+  const classMatches = cssCode.match(/\.[\w-]+/g);
+  if (classMatches) {
+    classMatches.forEach(m => selectors.push(m.substring(1))); // . を除去
+  }
+  // ID名を抽出 (#id-name)
+  const idMatches = cssCode.match(/#[\w-]+/g);
+  if (idMatches) {
+    idMatches.forEach(m => selectors.push(m.substring(1))); // # を除去
+  }
+  return [...new Set(selectors)]; // 重複除去
+}
+
+// カーソル位置から親のCSSセレクタを検出
+function findParentSelector(document: vscode.TextDocument, position: vscode.Position): { selectors: string[]; selectorText: string; fullRule: string } {
+  const text = document.getText();
+  const offset = document.offsetAt(position);
+
+  // カーソル位置より前のテキスト
+  const beforeCursor = text.substring(0, offset);
+
+  // 最後の { を探す（CSSルールの開始）
+  const lastOpenBrace = beforeCursor.lastIndexOf('{');
+  if (lastOpenBrace === -1) return { selectors: [], selectorText: '', fullRule: '' };
+
+  // { の前のセレクタ部分を取得
+  const prevCloseBrace = beforeCursor.lastIndexOf('}', lastOpenBrace);
+  const selectorStart = prevCloseBrace === -1 ? 0 : prevCloseBrace + 1;
+  const selectorText = beforeCursor.substring(selectorStart, lastOpenBrace).trim();
+
+  // カーソル位置より後の } を探す（CSSルールの終了）
+  const afterCursor = text.substring(offset);
+  const nextCloseBrace = afterCursor.indexOf('}');
+  const ruleEnd = nextCloseBrace === -1 ? text.length : offset + nextCloseBrace + 1;
+
+  // フルルールを取得
+  const fullRule = text.substring(selectorStart, ruleEnd).trim();
+
+  // セレクタからクラス名/IDを抽出
+  const selectors = extractSelectorsFromCSS(selectorText);
+
+  return { selectors, selectorText, fullRule };
+}
+
+// HTMLファイルからセレクタの使用箇所を検索
+async function findHtmlUsage(selectors: string[]): Promise<string> {
+  if (selectors.length === 0) return '';
+
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const targetPattern = config.get<string>('targetFiles', '**/*.html');
+  const htmlFiles = await vscode.workspace.findFiles(targetPattern, '**/node_modules/**');
+
+  const results: string[] = [];
+  const maxResults = 10; // 最大10件まで
+
+  for (const fileUri of htmlFiles) {
+    if (results.length >= maxResults) break;
+
+    try {
+      const htmlDoc = await vscode.workspace.openTextDocument(fileUri);
+      const text = htmlDoc.getText();
+      const lines = text.split('\n');
+
+      for (let i = 0; i < lines.length; i++) {
+        if (results.length >= maxResults) break;
+
+        for (const selector of selectors) {
+          // class="...selector..." または id="selector" を検索
+          const classPattern = new RegExp(`class\\s*=\\s*["'][^"']*\\b${selector}\\b[^"']*["']`, 'i');
+          const idPattern = new RegExp(`id\\s*=\\s*["']${selector}["']`, 'i');
+
+          if (classPattern.test(lines[i]) || idPattern.test(lines[i])) {
+            results.push(`${path.basename(fileUri.fsPath)}:${i + 1}: ${lines[i].trim()}`);
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      // エラー無視
+    }
+  }
+
+  return results.join('\n');
+}
+
+// HTMLからクラス/ID抽出
+function extractClassesAndIdsFromHtml(html: string): { classes: string[]; ids: string[] } {
+  const classes: string[] = [];
+  const ids: string[] = [];
+
+  // class="class1 class2" を抽出
+  const classMatches = html.matchAll(/class\s*=\s*["']([^"']+)["']/gi);
+  for (const match of classMatches) {
+    const classList = match[1].split(/\s+/).filter(c => c.trim());
+    classes.push(...classList);
+  }
+
+  // id="idname" を抽出
+  const idMatches = html.matchAll(/id\s*=\s*["']([^"']+)["']/gi);
+  for (const match of idMatches) {
+    ids.push(match[1].trim());
+  }
+
+  return {
+    classes: [...new Set(classes)],
+    ids: [...new Set(ids)]
+  };
+}
+
+// HTMLファイルからリンクされているCSSファイルを検出
+async function findLinkedCssFiles(htmlDocument: vscode.TextDocument): Promise<string[]> {
+  const htmlText = htmlDocument.getText();
+  const cssFiles: string[] = [];
+
+  // <link rel="stylesheet" href="xxx.css"> を検索
+  const linkMatches = htmlText.matchAll(/<link[^>]*rel\s*=\s*["']stylesheet["'][^>]*>/gi);
+  for (const match of linkMatches) {
+    const hrefMatch = match[0].match(/href\s*=\s*["']([^"']+)["']/i);
+    if (hrefMatch && hrefMatch[1]) {
+      let cssPath = hrefMatch[1];
+
+      // 相対パスを絶対パスに変換
+      if (!path.isAbsolute(cssPath)) {
+        const htmlDir = path.dirname(htmlDocument.uri.fsPath);
+        cssPath = path.resolve(htmlDir, cssPath);
+      }
+
+      cssFiles.push(cssPath);
+    }
+  }
+
+  return cssFiles;
+}
+
+// ブラウザハイライト用のセレクタ情報を保持
+let currentBrowserSelector: { type: 'class' | 'id' | 'tag'; name: string; timestamp: number } | null = null;
+
 export function activate(context: vscode.ExtensionContext) {
   console.log('CSS to HTML Jumper: 拡張機能が有効化されました');
+
+  // ========================================
+  // ブラウザハイライト用HTTPサーバー（ポート3847）
+  // ========================================
+  const browserHighlightServer = http.createServer((req, res) => {
+    // CORSヘッダー
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Content-Type', 'application/json');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.url === '/selector') {
+      const now = Date.now();
+      // 3秒以内のセレクタ情報のみ返す（古いものは無視）
+      if (currentBrowserSelector && (now - currentBrowserSelector.timestamp) < 3000) {
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          type: currentBrowserSelector.type,
+          name: currentBrowserSelector.name
+        }));
+        // 一度返したらクリア（連続ハイライト防止）
+        currentBrowserSelector = null;
+      } else {
+        res.writeHead(200);
+        res.end(JSON.stringify({ type: null, name: null }));
+      }
+    } else {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Not found' }));
+    }
+  });
+
+  browserHighlightServer.listen(3847, '127.0.0.1', () => {
+    console.log('CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port 3847)');
+  });
+
+  browserHighlightServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log('CSS to HTML Jumper: ポート3847は既に使用中');
+    } else {
+      console.error('CSS to HTML Jumper: サーバーエラー', err);
+    }
+  });
+
+  // 拡張機能終了時にサーバーを閉じる
+  context.subscriptions.push({
+    dispose: () => {
+      browserHighlightServer.close();
+      console.log('CSS to HTML Jumper: ブラウザハイライトサーバー停止');
+    }
+  });
 
   // ========================================
   // ハイライト用の装飾タイプ（グローバルで定義）
@@ -168,6 +462,183 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(cssHoverProvider);
+
+  // ========================================
+  // CSSセレクタホバー機能（HTML使用箇所表示+ハイライト）
+  // ========================================
+  const htmlHighlightDecorationType = vscode.window.createTextEditorDecorationType({
+    backgroundColor: 'rgba(255, 200, 50, 0.4)',
+    isWholeLine: true,
+    border: '2px solid rgba(255, 150, 0, 0.8)'
+  });
+
+  // ホバー解除時にハイライトをクリアするためのタイマー
+  let hoverHighlightTimer: NodeJS.Timeout | null = null;
+
+  const cssSelectorHoverProvider = vscode.languages.registerHoverProvider(
+    { scheme: 'file', language: 'css' },
+    {
+      async provideHover(document, position) {
+        const line = document.lineAt(position.line).text;
+
+        // セレクタ行かどうかを判定（{ の前、または行頭のセレクタ）
+        // プロパティ行（: を含む）は除外
+        if (line.includes(':') && !line.includes('{')) {
+          // プロパティ行の可能性が高い
+          const colonIndex = line.indexOf(':');
+          const cursorColumn = position.character;
+          // カーソルがプロパティ名部分にある場合はスキップ（cssHoverProviderに任せる）
+          if (cursorColumn <= colonIndex + 10) {
+            return null;
+          }
+        }
+
+        // カーソル位置のセレクタを取得
+        const wordRange = document.getWordRangeAtPosition(position, /[.#]?[\w-]+/);
+        if (!wordRange) {
+          return null;
+        }
+
+        let selector = document.getText(wordRange);
+
+        // セレクタのタイプと名前を判定
+        let selectorType: 'class' | 'id' | 'tag' | null = null;
+        let selectorName: string = '';
+
+        if (selector.startsWith('.')) {
+          selectorType = 'class';
+          selectorName = selector.substring(1);
+        } else if (selector.startsWith('#')) {
+          selectorType = 'id';
+          selectorName = selector.substring(1);
+        } else {
+          // プレフィックスがない場合、行の内容から判定
+          if (line.includes(`.${selector}`)) {
+            selectorType = 'class';
+            selectorName = selector;
+          } else if (line.includes(`#${selector}`)) {
+            selectorType = 'id';
+            selectorName = selector;
+          } else if (/^[a-z]+$/i.test(selector) && (line.trim().startsWith(selector) || line.includes(` ${selector}`))) {
+            // 小文字のみでタグっぽい
+            selectorType = 'tag';
+            selectorName = selector;
+          }
+        }
+
+        if (!selectorType || !selectorName) {
+          return null;
+        }
+
+        // ブラウザハイライト用にセレクタ情報を保存
+        currentBrowserSelector = {
+          type: selectorType,
+          name: selectorName,
+          timestamp: Date.now()
+        };
+
+        // HTMLファイルを検索
+        const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+        const targetPattern = config.get<string>('targetFiles', '**/*.html');
+        const htmlFiles = await vscode.workspace.findFiles(targetPattern, '**/node_modules/**');
+
+        if (htmlFiles.length === 0) {
+          return null;
+        }
+
+        // 検索パターンを構築
+        let searchPattern: RegExp;
+        if (selectorType === 'class') {
+          searchPattern = new RegExp(`class\\s*=\\s*["'][^"']*\\b${escapeRegex(selectorName)}\\b[^"']*["']`, 'gi');
+        } else if (selectorType === 'id') {
+          searchPattern = new RegExp(`id\\s*=\\s*["']${escapeRegex(selectorName)}["']`, 'gi');
+        } else {
+          searchPattern = new RegExp(`<${escapeRegex(selectorName)}[\\s>]`, 'gi');
+        }
+
+        // 検索結果
+        const results: { uri: vscode.Uri; line: number; text: string }[] = [];
+
+        for (const fileUri of htmlFiles) {
+          try {
+            const htmlDoc = await vscode.workspace.openTextDocument(fileUri);
+            const text = htmlDoc.getText();
+            const lines = text.split('\n');
+
+            for (let i = 0; i < lines.length; i++) {
+              if (searchPattern.test(lines[i])) {
+                results.push({
+                  uri: fileUri,
+                  line: i,
+                  text: lines[i].trim().substring(0, 80)
+                });
+              }
+              searchPattern.lastIndex = 0;
+            }
+          } catch (e) {
+            // エラー無視
+          }
+        }
+
+        if (results.length === 0) {
+          return null;
+        }
+
+        // HTMLファイルをハイライト（CSSにフォーカスを残したまま）
+        const firstResult = results[0];
+        try {
+          // 既に開いているエディタを探す
+          let htmlEditor = vscode.window.visibleTextEditors.find(
+            e => e.document.uri.fsPath === firstResult.uri.fsPath
+          );
+
+          if (!htmlEditor) {
+            // 開いていなければサイドで開く（フォーカスはCSSに残す）
+            const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
+            htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
+              viewColumn: vscode.ViewColumn.Beside,
+              preserveFocus: true,
+              preview: true
+            });
+          }
+
+          // 該当行にスクロール
+          const targetLine = firstResult.line;
+          const targetRange = new vscode.Range(targetLine, 0, targetLine, 1000);
+          htmlEditor.revealRange(targetRange, vscode.TextEditorRevealType.InCenter);
+
+          // ハイライト適用
+          htmlEditor.setDecorations(htmlHighlightDecorationType, [targetRange]);
+
+          // 前のタイマーをクリア
+          if (hoverHighlightTimer) {
+            clearTimeout(hoverHighlightTimer);
+          }
+
+          // 2秒後にハイライトを消す
+          hoverHighlightTimer = setTimeout(() => {
+            htmlEditor?.setDecorations(htmlHighlightDecorationType, []);
+          }, 2000);
+
+        } catch (e) {
+          console.error('CSS to HTML Jumper: HTMLハイライトエラー', e);
+        }
+
+        // ホバー内容を構築（赤枠追加リンク）
+        const md = new vscode.MarkdownString();
+        md.isTrusted = true; // コマンドリンクを有効化
+
+        const selectorDisplay = selectorType === 'class' ? `.${selectorName}` : (selectorType === 'id' ? `#${selectorName}` : selectorName);
+        const args = encodeURIComponent(JSON.stringify({ line: position.line }));
+
+        md.appendMarkdown(`[🔴 赤枠を追加](command:cssToHtmlJumper.addRedBorder?${args})\n`);
+
+        return new vscode.Hover(md, wordRange);
+      }
+    }
+  );
+
+  context.subscriptions.push(cssSelectorHoverProvider);
 
   // ========================================
   // JavaScript日本語ホバー機能
@@ -352,6 +823,400 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(copilotCommander);
+
+  // ========================================
+  // Claude AI 質問機能
+  // ========================================
+  const claudeOutputChannel = vscode.window.createOutputChannel('Claude AI');
+
+  const presetQuestions = [
+    { label: '🔧 改善して', prompt: `このコードを改善してください。
+
+【重要な制約】
+- シンプルに保つ（HTMLタグをむやみに増やさない）
+- タグ名をクラス名に使わない（例: .div, .span は禁止）
+- 今の実装をできるだけ活かす（大幅な書き換えは避ける）
+- 必要最小限の変更に留める
+- クラス名はハイフン(-)ではなくアンダースコア(_)で区切る
+- 既存のクラス名の命名規則を踏襲する
+
+【出力形式】
+1. 変更した行の右側に短いコメントで変更内容を記載する
+   - 例: button#hamburger_btn { /* div→button */
+   - 例: <nav class="side_sns"> <!-- div→nav -->
+   - 変更のない行にはコメント不要
+2. コードの後に「# 主な変更点」としてまとめも記載する`, showBeside: true },
+    { label: '🐛 バグチェック', prompt: 'このコードにバグや問題点がないかチェックしてください。', showBeside: true },
+    { label: '📖 説明して', prompt: 'このコードが何をしているか説明してください。', showBeside: false },
+    { label: '🎨 SVGで図解', prompt: `このコードの動作や構造をSVGで図解してください。
+
+【重要な制約】
+- できるだけわかりやすく、シンプルな図にする
+- 日本語でラベルを付ける
+- 色を使って区別をつける
+- 矢印やボックスで関係性を示す
+- SVGコードのみ出力（説明文は不要）
+- 必ず </svg> で終わること`, showBeside: false },
+    { label: '📝 CSSスケルトン生成', prompt: `以下のHTMLからclass名とid名を抽出し、CSSスケルトン（空のルールセット）を生成してください。
+
+【重要な制約】
+- HTMLに含まれるclass名・id名のみ抽出する
+- class名は . 、id名は # をつける
+- 中身は空（プロパティなし）
+- HTML構造の順番通りに出力する
+- HTMLコメント（<!-- xxx -->）はそのままCSSコメント（/* xxx */）として同じ位置に出力する
+- コメントの文言は一切変更しない（HTMLに書いてあるものと完全に同じ）
+- クラス名はそのまま使う（変更しない）
+- 説明文は不要、CSSコードのみ出力`, showBeside: false }
+  ];
+
+  const claudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage('エディタを開いてください');
+      return;
+    }
+
+    const selection = editor.selection;
+    const code = editor.document.getText(selection).trim();
+
+    // プリセット選択 or 直接入力
+    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; showBeside: boolean } | undefined>((resolve) => {
+      const quickPick = vscode.window.createQuickPick();
+      quickPick.items = presetQuestions;
+      quickPick.placeholder = '質問を入力してEnter、またはプリセット選択';
+
+      quickPick.onDidAccept(() => {
+        const selected = quickPick.selectedItems[0] as typeof presetQuestions[0] | undefined;
+        if (selected && selected.prompt) {
+          resolve({
+            question: selected.prompt,
+            isSvg: selected.label.includes('SVG'),
+            isSkeleton: selected.label.includes('スケルトン'),
+            showBeside: selected.showBeside
+          });
+        } else if (quickPick.value.trim()) {
+          resolve({ question: quickPick.value.trim(), isSvg: false, isSkeleton: false, showBeside: false });
+        } else {
+          resolve(undefined);
+        }
+        quickPick.hide();
+      });
+
+      quickPick.onDidHide(() => {
+        resolve(undefined);
+        quickPick.dispose();
+      });
+
+      quickPick.show();
+    });
+
+    if (!result) {
+      return; // キャンセル
+    }
+
+    const { question, isSvg, isSkeleton, showBeside } = result;
+
+    // プログレス表示
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: '✨ Claude AIに質問中...',
+      cancellable: false
+    }, async () => {
+      try {
+        // CSSファイルの場合、HTMLでの使用箇所も検索
+        let htmlContext = '';
+        let codeToSend = code;
+
+        if (editor.document.languageId === 'css') {
+          // まず選択範囲からセレクタを探す
+          let selectors = code ? extractSelectorsFromCSS(code) : [];
+
+          // 選択範囲にセレクタがない場合、親のCSSルールからセレクタを検出
+          if (selectors.length === 0) {
+            const parentInfo = findParentSelector(editor.document, selection.start);
+            selectors = parentInfo.selectors;
+            // 選択範囲が空または親ルール全体を含まない場合、親ルール全体を使用
+            if (!code && parentInfo.fullRule) {
+              codeToSend = parentInfo.fullRule;
+            } else if (code && parentInfo.selectorText) {
+              // セレクタ情報を追加
+              codeToSend = `/* セレクタ: ${parentInfo.selectorText} */\n${code}`;
+            }
+          }
+
+          if (selectors.length > 0) {
+            htmlContext = await findHtmlUsage(selectors);
+          }
+        }
+
+        const answer = await askClaudeAPI(codeToSend, question, htmlContext || undefined);
+
+        // コードブロック（```css など）を削除
+        const cleanAnswer = answer
+          .replace(/```[\w]*\n?/g, '')  // ```css, ```html 等を削除
+          .replace(/```/g, '')           // 残りの ``` を削除
+          .trim();
+
+        if (isSkeleton) {
+          // スケルトン生成：リンク先CSSファイルに追記
+          const cssFiles = await findLinkedCssFiles(editor.document);
+
+          if (cssFiles.length === 0) {
+            // CSSファイルが見つからない場合は右側に表示
+            const doc = await vscode.workspace.openTextDocument({
+              content: cleanAnswer,
+              language: 'css'
+            });
+            await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+          } else {
+            // CSS選択（複数ある場合）
+            let targetCssPath: string;
+            if (cssFiles.length > 1) {
+              const items = cssFiles.map(f => ({
+                label: path.basename(f),
+                description: f,
+                path: f
+              }));
+              const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'CSSファイルを選択'
+              });
+              if (!selected) { return; }
+              targetCssPath = selected.path;
+            } else {
+              targetCssPath = cssFiles[0];
+            }
+
+            // CSSファイルを開いて末尾に追記
+            const cssUri = vscode.Uri.file(targetCssPath);
+            const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+            const cssEditor = await vscode.window.showTextDocument(cssDoc, vscode.ViewColumn.Beside);
+
+            const lastLine = cssDoc.lineCount - 1;
+            const lastLineText = cssDoc.lineAt(lastLine).text;
+            const insertPosition = new vscode.Position(lastLine, lastLineText.length);
+
+            await cssEditor.edit(editBuilder => {
+              editBuilder.insert(insertPosition, `\n${cleanAnswer}\n`);
+            });
+
+            vscode.window.showInformationMessage(`✅ CSSスケルトンを ${path.basename(targetCssPath)} に追加しました`);
+          }
+        } else if (showBeside) {
+          // 改善・バグチェック：右側に新しいドキュメントを開く
+          const doc = await vscode.workspace.openTextDocument({
+            content: `✨ Claude AI 回答\n${'='.repeat(40)}\n\n${cleanAnswer}`,
+            language: editor.document.languageId
+          });
+          await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+        } else if (isSvg) {
+          // SVGの場合：<svg>～</svg>を抽出してクリップボードにコピー
+          const svgMatch = cleanAnswer.match(/<svg[\s\S]*<\/svg>/i);
+          const svgCode = svgMatch ? svgMatch[0] : cleanAnswer;
+
+          await vscode.env.clipboard.writeText(svgCode);
+          vscode.window.showInformationMessage('✅ SVGをクリップボードにコピーしました');
+
+          // エディタにも挿入
+          const endPosition = selection.end;
+          const insertPosition = new vscode.Position(endPosition.line, editor.document.lineAt(endPosition.line).text.length);
+          const insertText = `\n${svgCode}\n`;
+          await editor.edit(editBuilder => {
+            editBuilder.insert(insertPosition, insertText);
+          });
+        } else {
+          // 説明：コメントとして挿入
+          const endPosition = selection.end;
+          const insertPosition = new vscode.Position(endPosition.line, editor.document.lineAt(endPosition.line).text.length);
+          const lang = editor.document.languageId;
+
+          let insertText: string;
+          if (lang === 'html') {
+            insertText = `\n<!-- ✨\n${cleanAnswer}\n-->\n`;
+          } else {
+            insertText = `\n/* ✨\n${cleanAnswer}\n*/\n`;
+          }
+
+          await editor.edit(editBuilder => {
+            editBuilder.insert(insertPosition, insertText);
+          });
+        }
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Claude API エラー: ${e.message}`);
+      }
+    });
+  });
+
+  context.subscriptions.push(claudeCommand);
+
+  // ========================================
+  // 赤枠追加コマンド
+  // ========================================
+  const addRedBorderCommand = vscode.commands.registerCommand('cssToHtmlJumper.addRedBorder', async (args: { line: number }) => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'css') {
+      return;
+    }
+
+    if (!args || typeof args.line !== 'number') {
+      return;
+    }
+
+    const document = editor.document;
+    const startLine = args.line;
+    const text = document.getText();
+    const lines = text.split('\n');
+
+    // ホバー行の種類に応じて { を探す
+    const currentLine = lines[startLine] || '';
+    let braceOpenLine = -1;
+
+    if (currentLine.includes('{')) {
+      // セレクタ行にホバー → この行を使う
+      braceOpenLine = startLine;
+    } else if (currentLine.includes(':') && !currentLine.trim().startsWith('/*') && !currentLine.trim().startsWith('//')) {
+      // プロパティ行にホバー → 上に向かって { を探す
+      let tempBraceCount = 0;
+      for (let i = startLine; i >= 0; i--) {
+        const lineText = lines[i];
+        for (let j = lineText.length - 1; j >= 0; j--) {
+          const char = lineText[j];
+          if (char === '}') tempBraceCount++;
+          if (char === '{') {
+            if (tempBraceCount > 0) {
+              tempBraceCount--;
+            } else {
+              braceOpenLine = i;
+              break;
+            }
+          }
+        }
+        if (braceOpenLine !== -1) break;
+      }
+    } else {
+      // コメント行やセレクタ名のみの行 → 下に向かって { を探す
+      for (let i = startLine; i < lines.length; i++) {
+        if (lines[i].includes('{')) {
+          braceOpenLine = i;
+          break;
+        }
+      }
+    }
+
+    if (braceOpenLine === -1) {
+      return;
+    }
+
+    // { から対応する } を探す（シンプル版）
+    // braceOpenLine から下に向かって、最初の } を探す
+    let braceCloseLine = -1;
+    let depth = 0;
+    for (let i = braceOpenLine; i < lines.length; i++) {
+      const lineText = lines[i];
+      for (let j = 0; j < lineText.length; j++) {
+        const c = lineText[j];
+        if (c === '{') depth++;
+        if (c === '}') {
+          depth--;
+          if (depth === 0) {
+            braceCloseLine = i;
+            break;
+          }
+        }
+      }
+      if (braceCloseLine !== -1) break;
+    }
+
+    if (braceCloseLine === -1) {
+      return;
+    }
+
+    // } の直前の行にborderを追加
+    // インデントを取得
+    const prevLine = lines[braceCloseLine - 1] || lines[braceOpenLine];
+    const indentMatch = prevLine.match(/^(\s*)/);
+    const indent = indentMatch ? indentMatch[1] : '  ';
+
+    // 既にborder: 0.5rem solid red;があるか確認
+    let hasBorder = false;
+    for (let i = braceOpenLine; i <= braceCloseLine; i++) {
+      if (lines[i].includes('border: 0.5rem solid red') || lines[i].includes('border:0.5rem solid red')) {
+        hasBorder = true;
+        break;
+      }
+    }
+
+    if (hasBorder) {
+      vscode.window.showInformationMessage('既に赤枠が追加されています');
+      return;
+    }
+
+    // } の直前に挿入
+    const closeBraceLine = lines[braceCloseLine];
+    const closeBraceIndex = closeBraceLine.lastIndexOf('}');
+
+    if (closeBraceIndex === -1) {
+      return;
+    }
+
+    // } の位置に挿入（} を押し出す形で）
+    const insertPosition = new vscode.Position(braceCloseLine, closeBraceIndex);
+    const newLine = `${indent}border: 0.5rem solid red;\n`;
+
+    const success = await editor.edit(editBuilder => {
+      editBuilder.insert(insertPosition, newLine);
+    });
+
+    if (success) {
+      await document.save();
+    }
+  });
+
+  context.subscriptions.push(addRedBorderCommand);
+
+  // ========================================
+  // 赤枠一括削除コマンド
+  // ========================================
+  const removeAllRedBordersCommand = vscode.commands.registerCommand('cssToHtmlJumper.removeAllRedBorders', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'css') {
+      vscode.window.showWarningMessage('CSSファイルを開いてください');
+      return;
+    }
+
+    const document = editor.document;
+    const text = document.getText();
+    const lines = text.split('\n');
+
+    // border: 0.5rem solid を含む行を削除
+    const linesToDelete: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('border: 0.5rem solid') || lines[i].includes('border:0.5rem solid')) {
+        linesToDelete.push(i);
+      }
+    }
+
+    if (linesToDelete.length === 0) {
+      vscode.window.showInformationMessage('削除する赤枠がありません');
+      return;
+    }
+
+    // 後ろから削除（行番号がずれないように）
+    const success = await editor.edit(editBuilder => {
+      for (let i = linesToDelete.length - 1; i >= 0; i--) {
+        const lineNum = linesToDelete[i];
+        const range = new vscode.Range(lineNum, 0, lineNum + 1, 0);
+        editBuilder.delete(range);
+      }
+    });
+
+    if (success) {
+      await document.save();
+      vscode.window.showInformationMessage(`${linesToDelete.length}件の赤枠を削除しました`);
+    }
+  });
+
+  context.subscriptions.push(removeAllRedBordersCommand);
 
   const disposable = vscode.commands.registerCommand('cssToHtmlJumper.findUsage', async () => {
     const editor = vscode.window.activeTextEditor;
@@ -665,14 +1530,14 @@ export function activate(context: vscode.ExtensionContext) {
         capturedTitle = false;
       }
 
-      // ┌～└ 内の │ 行からタイトルだけ取得
+      // ┌～└ 内の │ or | 行からタイトルだけ取得（半角パイプも対応）
       if (inBox && !capturedTitle) {
-        const pipeIndex = line.indexOf('│');
+        const pipeIndex = line.search(/[│|]/);
         if (pipeIndex !== -1) {
           const prefix = line.substring(0, pipeIndex).trim();
           if (prefix === '' || prefix === '/*' || prefix.endsWith('/*')) {
             let content = line.substring(pipeIndex + 1);
-            const lastPipeIndex = content.lastIndexOf('│');
+            const lastPipeIndex = Math.max(content.lastIndexOf('│'), content.lastIndexOf('|'));
             if (lastPipeIndex !== -1) {
               content = content.substring(0, lastPipeIndex);
             }
@@ -766,60 +1631,82 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const position = editor.selection.active;
-    const text = editor.document.getText(new vscode.Range(0, 0, position.line + 1, 0));
-    
-    // 簡易的なメディアクエリ判定
-    // カーソル位置より前の @media と } の数をカウント
-    const mediaMatches = (text.match(/@media[^{]*{/g) || []);
-    const openBraces = (text.match(/{/g) || []).length;
-    const closeBraces = (text.match(/}/g) || []).length;
-    
-    // 開いている波括弧の数で判定（簡易ロジック）
-    // @media { selector { ... } } なので、深さが外部より深い場所を探す必要があるが、
-    // ここでは単純に「直近の @media 宣言を見つける」方式で実装
-    
-    let currentMediaQuery = '';
-    const lines = text.split('\n');
-    let braceDepth = 0;
-    
-    // 現在の行から上に遡って、未閉の @media を探す
-    // ※ 厳密なパースではないが、実用上は多くのケースで動作する
-    // バッファの全テキストを取得して解析するのは重いので、現在の行から上へ探索
-    
-    // シンプルなアプローチ: 
-    // カーソル位置を含むブロックが @media かどうかを確認
-    
-    let depth = 0;
-    let foundMedia = false;
-    
-    // 全文検索で現在のブロックを特定（パフォーマンス考慮しつつ）
+    const cursorLine = position.line;
     const fullText = editor.document.getText();
+    const allLines = fullText.split('\n');
+
+    // ========================================
+    // セクション名を取得（カーソル位置より前の最後のセクション）
+    // ========================================
+    let currentSection = '';
+
+    // 罫線ボックス形式のセクションコメントを検出
+    // /* ┌───────────────────┐
+    //    │ セクション名      │  ← この1行目だけを採用
+    //    │ 説明文...         │  ← 除外
+    //    └───────────────────┘ */
+
+    let inBox = false;
+    let capturedTitle = false;
+
+    for (let i = 0; i <= cursorLine && i < allLines.length; i++) {
+      const line = allLines[i];
+
+      // ┌ でボックス開始を検出
+      if (line.includes('┌')) {
+        inBox = true;
+        capturedTitle = false;
+      }
+
+      // ボックス内で、まだタイトルを取得していない場合
+      if (inBox && !capturedTitle) {
+        // │ セクション名 │ or | 形式を検出（半角パイプも対応）
+        const pipeMatch = line.match(/[│|]\s*(.+?)\s*[│|]/);
+        if (pipeMatch && pipeMatch[1]) {
+          let content = pipeMatch[1].trim();
+          // 罫線だけの行は除外
+          if (content && !/^[─━┈┄┌┐└┘├┤┬┴┼\-=]+$/.test(content)) {
+            content = content.replace(/\*\/$/, '').trim();
+            if (content.length > 0) {
+              currentSection = content;
+              capturedTitle = true; // 最初の1行だけ採用
+            }
+          }
+        }
+      }
+
+      // └ でボックス終了
+      if (line.includes('└')) {
+        inBox = false;
+      }
+    }
+
+    // ========================================
+    // メディアクエリ判定
+    // ========================================
+    let currentMediaQuery = '';
+    let foundMedia = false;
+
     const cursorOffset = editor.document.offsetAt(position);
     const textBefore = fullText.substring(0, cursorOffset);
-    
-    // 最後の @media を探す
+
     const lastMediaIndex = textBefore.lastIndexOf('@media');
-    
+
     if (lastMediaIndex !== -1) {
-      // @media があった場合、それが閉じられているか確認
       const textFromMedia = textBefore.substring(lastMediaIndex);
-      
-      // 波括弧のバランスを確認
+
       let open = 0;
       let close = 0;
       let mediaHeaderEnd = textFromMedia.indexOf('{');
-      
+
       if (mediaHeaderEnd !== -1) {
-        // @media の条件部分を取得
         const mediaCondition = textFromMedia.substring(6, mediaHeaderEnd).trim();
-        
-        // オフセット以降の波括弧をカウント
+
         for (let i = 0; i < textFromMedia.length; i++) {
           if (textFromMedia[i] === '{') open++;
           if (textFromMedia[i] === '}') close++;
         }
-        
-        // 開いている数が閉じた数より多ければ、メディアクエリ内
+
         if (open > close) {
           foundMedia = true;
           currentMediaQuery = mediaCondition;
@@ -827,28 +1714,30 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
 
-    if (foundMedia) {
-      // 条件に応じてアイコンを変更
-      let icon = '🎨';
-      if (currentMediaQuery.includes('max-width')) {
-        icon = '📱'; // スマホ/タブレット
-        // スマホ時は背景色を警告色（黄色/オレンジ）にしてアピール！
-        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-      } else if (currentMediaQuery.includes('min-width')) {
-        icon = '💻'; // PC
-        // PC時は色は通常（またはお好みで変更可能）
-        statusBarItem.backgroundColor = undefined;
-      } else {
-        statusBarItem.backgroundColor = undefined;
-      }
-      
-      statusBarItem.text = `${icon} Media: ${currentMediaQuery}`;
-      statusBarItem.show();
+    // ========================================
+    // ステータスバーのテキストを構築
+    // - 通常/PC(min-width): 📍 セクション名
+    // - スマホ/タブレット(max-width): 📱 セクション名 | メディアクエリ
+    // ========================================
+    let statusText = '';
+    let icon = '📍';
+
+    // セクション名
+    const sectionName = currentSection || 'Global CSS';
+
+    // max-width（スマホ/タブレット）の時だけメディアクエリ表示
+    if (foundMedia && currentMediaQuery.includes('max-width')) {
+      icon = '📱';
+      statusText = `${icon} ${sectionName} | ${currentMediaQuery}`;
+      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
-      statusBarItem.text = `Global CSS`;
-      statusBarItem.backgroundColor = undefined; // 色をリセット
-      statusBarItem.show();
+      // 通常時またはPC(min-width)時はセクション名だけ
+      statusText = `${icon} ${sectionName}`;
+      statusBarItem.backgroundColor = undefined;
     }
+
+    statusBarItem.text = statusText;
+    statusBarItem.show();
   }
 }
 
