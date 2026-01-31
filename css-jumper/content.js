@@ -67,11 +67,11 @@ window.addEventListener("load", function() {
         if (result.autoShowFlex) {
           setTimeout(function() {
             showFlexInfo();
-          }, 300);
+          }, 100);
         }
       });
     }
-  }, 500);
+  }, 100);
 });
 
 // URLからプロジェクトを自動切替
@@ -839,9 +839,7 @@ function showFlexInfo() {
   flexInfoVisible = true;
   console.log("CSS Jumper: Flex情報表示完了", flexCount + "件");
 
-  if (flexCount > 0) {
-    showNotification("🎨 Flex情報を表示（" + flexCount + "件）", "success");
-  }
+  // 通知は手動実行時のみ（自動リロード時にうるさいため削除）
 }
 
 // Flex情報を削除

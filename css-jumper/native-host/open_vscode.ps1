@@ -1,28 +1,30 @@
-# Native Messaging Host for CSS Jumper
-$input = [Console]::OpenStandardInput()
-$output = [Console]::OpenStandardOutput()
+# Native Messaging host for CSS Jumper
+# stdin から Chrome のメッセージを読み、vscode:// プロトコルで VS Code を開く
 
-# メッセージ長を読み取り（4バイト）
-$lengthBytes = New-Object byte[] 4
-$input.Read($lengthBytes, 0, 4) | Out-Null
-$length = [BitConverter]::ToInt32($lengthBytes, 0)
+# stdin からメッセージ長（4バイト）を読む
+$stdin = [Console]::OpenStandardInput()
+$lenBuf = New-Object byte[] 4
+$stdin.Read($lenBuf, 0, 4) | Out-Null
+$msgLen = [BitConverter]::ToUInt32($lenBuf, 0)
 
-# メッセージ本体を読み取り
-$messageBytes = New-Object byte[] $length
-$input.Read($messageBytes, 0, $length) | Out-Null
-$message = [System.Text.Encoding]::UTF8.GetString($messageBytes)
+# メッセージ本文を読む
+$msgBuf = New-Object byte[] $msgLen
+$stdin.Read($msgBuf, 0, $msgLen) | Out-Null
+$msg = [Text.Encoding]::UTF8.GetString($msgBuf)
 
-# JSONをパース
-$json = $message | ConvertFrom-Json
-$url = $json.url
+# JSON パース
+$data = $msg | ConvertFrom-Json
+$url = $data.url
 
-# VS Codeを開く
+# vscode:// プロトコルで VS Code を起動
 Start-Process $url
 
 # 成功レスポンスを返す
-$response = '{"success":true}'
-$responseBytes = [System.Text.Encoding]::UTF8.GetBytes($response)
-$responseLengthBytes = [BitConverter]::GetBytes($responseBytes.Length)
-$output.Write($responseLengthBytes, 0, 4)
-$output.Write($responseBytes, 0, $responseBytes.Length)
-$output.Flush()
+$resp = '{"success":true}'
+$respBytes = [Text.Encoding]::UTF8.GetBytes($resp)
+$respLen = [BitConverter]::GetBytes([uint32]$respBytes.Length)
+
+$stdout = [Console]::OpenStandardOutput()
+$stdout.Write($respLen, 0, 4)
+$stdout.Write($respBytes, 0, $respBytes.Length)
+$stdout.Flush()

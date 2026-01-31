@@ -367,9 +367,9 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
 
   // 1. IDで検索（最優先）
   if (id) {
+    var idResult = searchSelectorInCss(id, "id", targetCssFiles, projectPath, preferMediaQuery);
     if (idResult) {
-      var vscodeUrl = buildVscodeUrl(idResult.filePath, idResult.lineNumber);
-      openInVscode(vscodeUrl);
+      openInVscode(idResult.filePath, idResult.lineNumber);
       notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
       return;
     }
@@ -380,8 +380,7 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
     var classResult = searchSelectorInCss(className, "class", targetCssFiles, projectPath, preferMediaQuery);
 
     if (classResult) {
-      var vscodeUrl = buildVscodeUrl(classResult.filePath, classResult.lineNumber);
-      openInVscode(vscodeUrl);
+      openInVscode(classResult.filePath, classResult.lineNumber);
       notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
       return;
     }
@@ -395,8 +394,7 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
 
       var altResult = searchSelectorInCss(cls, "class", targetCssFiles, projectPath, preferMediaQuery);
       if (altResult) {
-        var url = buildVscodeUrl(altResult.filePath, altResult.lineNumber);
-        openInVscode(url);
+        openInVscode(altResult.filePath, altResult.lineNumber);
         notifyUser("✓ ." + cls + " → " + altResult.fileName + ":" + altResult.lineNumber, "success");
         return;
       }
@@ -551,27 +549,18 @@ function searchSelectorInCss(selector, type, cssFiles, projectPath, preferMediaQ
   return firstMatch;
 }
 
-// VS Code URLを構築
-function buildVscodeUrl(filePath, lineNumber) {
-  // バックスラッシュをスラッシュに統一
-  var cleanPath = filePath.replace(/\\/g, "/");
-  // 標準の vscode://file/ 形式
-  var url = "vscode://file/" + cleanPath + ":" + lineNumber;
-  return url;
-}
-
 // 正規表現の特殊文字をエスケープ
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// VS Codeを開く（Native Messaging経由）
-function openInVscode(url) {
-  console.log("CSS Jumper: VS Codeを開く (Native Messaging)", url);
+// VS Codeを開く（Native Messaging経由、code --goto方式）
+function openInVscode(filePath, lineNumber) {
+  console.log("CSS Jumper: VS Codeを開く", filePath, lineNumber);
 
   chrome.runtime.sendNativeMessage(
     "com.cssjumper.open_vscode",
-    { url: url },
+    { file: filePath, line: lineNumber },
     function(response) {
       if (chrome.runtime.lastError) {
         console.error("CSS Jumper: Native Messaging失敗", chrome.runtime.lastError.message);
