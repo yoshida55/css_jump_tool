@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/yoshida55/css-to-html-jumper"
   },
-  "version": "1.6.0",
+  "version": "1.7.0",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -54,6 +54,11 @@
       {
         "command": "cssToHtmlJumper.quiz",
         "title": "🎯 クイズ",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.changeQuizCategory",
+        "title": "🔀 クイズのカテゴリ変更",
         "category": "CSS to HTML"
       }
     ],
@@ -141,6 +146,16 @@
           "type": "string",
           "default": "",
           "description": "Gemini API キー（Fuzzy検索で結果0件時のフォールバック用）"
+        },
+        "cssToHtmlJumper.quizCategory": {
+          "type": "string",
+          "default": "全て",
+          "description": "クイズ出題時のカテゴリフィルタ。「全て」またはメモ内のカテゴリ名（例: CSS, JavaScript）"
+        },
+        "cssToHtmlJumper.quizCategories": {
+          "type": "array",
+          "default": ["CSS", "JavaScript", "Python", "HTML"],
+          "description": "カテゴリ判定に使用する単語リスト。見出し末尾がこのリストの単語ならカテゴリ扱い"
         }
       }
     }

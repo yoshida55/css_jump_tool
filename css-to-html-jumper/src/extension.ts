@@ -23,6 +23,70 @@ interface QuizHistory {
 let quizHistoryMap: Map<string, QuizHistory> = new Map();
 
 // ========================================
+// クイズ回答ドキュメント（セッション通して累積）
+// ========================================
+let quizAnswerDoc: vscode.TextDocument | null = null;
+
+// ========================================
+// クイズ履歴のファイル保存・読込
+// ========================================
+function getQuizHistoryPath(): string | null {
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const memoFilePath = config.get<string>('memoFilePath', '');
+  if (!memoFilePath) {
+    return null;
+  }
+  const fs = require('fs');
+  const memoDir = path.dirname(memoFilePath);
+  const otherDir = path.join(memoDir, 'その他');
+
+  // フォルダがなければ作成
+  if (!fs.existsSync(otherDir)) {
+    fs.mkdirSync(otherDir, { recursive: true });
+  }
+
+  return path.join(otherDir, '.quiz-history.json');
+}
+
+function saveQuizHistory() {
+  const historyPath = getQuizHistoryPath();
+  if (!historyPath) {
+    return;
+  }
+
+  const fs = require('fs');
+  const historyObj: { [key: string]: QuizHistory } = {};
+  quizHistoryMap.forEach((value, key) => {
+    historyObj[key] = value;
+  });
+
+  fs.writeFileSync(historyPath, JSON.stringify(historyObj, null, 2), 'utf8');
+  console.log('[Quiz] 履歴をファイルに保存:', historyPath);
+}
+
+function loadQuizHistory() {
+  const historyPath = getQuizHistoryPath();
+  if (!historyPath) {
+    return;
+  }
+
+  const fs = require('fs');
+  if (!fs.existsSync(historyPath)) {
+    console.log('[Quiz] 履歴ファイルなし（初回起動）');
+    return;
+  }
+
+  try {
+    const content = fs.readFileSync(historyPath, 'utf8');
+    const historyObj = JSON.parse(content);
+    quizHistoryMap = new Map(Object.entries(historyObj));
+    console.log('[Quiz] 履歴をファイルから読込:', quizHistoryMap.size, '件');
+  } catch (e: any) {
+    console.error('[Quiz] 履歴ファイル読込エラー:', e.message);
+  }
+}
+
+// ========================================
 // メモ検索関連関数
 // ========================================
 
@@ -250,14 +314,31 @@ async function handleQuiz() {
     const lines = memoContent.split('\n');
 
     // 見出し（## xxx）を抽出
-    const headings: { line: number; title: string; content: string[] }[] = [];
+    const headings: { line: number; title: string; content: string[]; category: string }[] = [];
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(/^##\s+(.+)/);
       if (match) {
-        const title = match[1];
+        const fullTitle = match[1].trim();
+        let title = fullTitle;
+        let category = '';
+
+        // 登録カテゴリリスト取得
+        const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+
+        // カテゴリ: 見出し末尾が登録カテゴリに一致（大小文字・全半角空白無視）
+        const titleParts = fullTitle.split(/[\s　]+/); // 半角\sと全角
+        if (titleParts.length >= 2) {
+          const lastWord = titleParts[titleParts.length - 1];
+          const matchedCategory = categoryList.find(cat => cat.toLowerCase() === lastWord.toLowerCase());
+          if (matchedCategory) {
+            category = lastWord; // 元の表記を保持
+            title = titleParts.slice(0, -1).join(' ');
+          }
+        }
+
         const content: string[] = [];
 
-        // 次の見出しまでの内容を取得
+        // 内容: 見出しの下（次の見出しまで）
         for (let j = i + 1; j < lines.length; j++) {
           if (lines[j].match(/^##\s+/)) {
             break;
@@ -268,7 +349,7 @@ async function handleQuiz() {
         }
 
         if (content.length > 0) {
-          headings.push({ line: i + 1, title, content });
+          headings.push({ line: i + 1, title, content, category });
         }
       }
     }
@@ -278,14 +359,34 @@ async function handleQuiz() {
       return;
     }
 
+    // カテゴリフィルタ（大小文字無視）
+    const quizCategory = config.get<string>('quizCategory', '全て');
+    let filteredHeadings = headings;
+
+    if (quizCategory !== '全て') {
+      filteredHeadings = headings.filter(h => h.category.toLowerCase() === quizCategory.toLowerCase());
+
+      if (filteredHeadings.length === 0) {
+        vscode.window.showInformationMessage(`カテゴリ「${quizCategory}」の問題が見つかりませんでした`);
+        return;
+      }
+    }
+
     // 復習優先ロジック
     const now = Date.now();
     const ONE_DAY = 24 * 60 * 60 * 1000;
 
-    // 復習候補: 1日以上経過した問題
-    const reviewCandidates = headings.filter(h => {
+    // 復習候補: 1日以上経過した問題（ただし10日間スキップは除外）
+    const reviewCandidates = filteredHeadings.filter(h => {
       const history = quizHistoryMap.get(h.title);
       if (!history) return false; // 未出題は除外
+
+      // reviewCount === -1 は「別の問題」でスキップされた
+      if (history.reviewCount === -1) {
+        const daysSince = (now - history.lastReviewed) / ONE_DAY;
+        return daysSince >= 10; // 10日経過後のみ復活
+      }
+
       const daysSince = (now - history.lastReviewed) / ONE_DAY;
       return daysSince >= 1;
     });
@@ -301,13 +402,13 @@ async function handleQuiz() {
       quiz = reviewCandidates[0];
     } else {
       // 復習なし → 未出題 or ランダム
-      const unreviewed = headings.filter(h => !quizHistoryMap.has(h.title));
+      const unreviewed = filteredHeadings.filter(h => !quizHistoryMap.has(h.title));
       if (unreviewed.length > 0) {
         const randomIndex = Math.floor(Math.random() * unreviewed.length);
         quiz = unreviewed[randomIndex];
       } else {
-        const randomIndex = Math.floor(Math.random() * headings.length);
-        quiz = headings[randomIndex];
+        const randomIndex = Math.floor(Math.random() * filteredHeadings.length);
+        quiz = filteredHeadings[randomIndex];
       }
     }
 
@@ -386,17 +487,138 @@ ${contentPreview}
         });
       }
 
-      // 答え表示 → 自動でメモを開く
-      const editor = await vscode.window.showTextDocument(memoDoc);
-      const position = new vscode.Position(quiz.line - 1, 0);
-      editor.selection = new vscode.Selection(position, position);
-      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+      // 履歴を即座にファイル保存
+      saveQuizHistory();
+
+      // === 1. メモファイルの該当行にジャンプ+ハイライト（左エリア） ===
+      const memoEditor = await vscode.window.showTextDocument(memoDoc, {
+        viewColumn: vscode.ViewColumn.One,
+        preserveFocus: true // フォーカスは右パネル（回答）へ
+      });
+      const memoPosition = new vscode.Position(quiz.line - 1, 0);
+      const memoRange = new vscode.Range(memoPosition, new vscode.Position(quiz.line, 0));
+      memoEditor.selection = new vscode.Selection(memoPosition, memoPosition);
+      memoEditor.revealRange(memoRange, vscode.TextEditorRevealType.InCenter);
+
+      // ハイライト（黄色フラッシュ 1.5秒）
+      const decorationType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(255, 255, 0, 0.3)'
+      });
+      memoEditor.setDecorations(decorationType, [memoRange]);
+      setTimeout(() => decorationType.dispose(), 1500);
+
+      // === 2. 3秒待機 ===
+      console.log('[Quiz] 3秒待機開始...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      console.log('[Quiz] 3秒待機完了 → 回答取得開始');
+
+      // === 3. 回答を取得（Claude or メモ内容） ===
+      const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+      const claudeApiKey = config.get<string>('claudeApiKey', '');
+      const answerContent = quiz.content.join('\n');
+
+      let claudeAnswer = '';
+
+      if (claudeApiKey) {
+        // Claude API で質問に対する回答生成
+        const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。
+
+【質問】
+${questionText}
+
+【メモ内容】
+${answerContent}
+
+質問に対する答えのみを日本語で簡潔に回答してください。`;
+
+        try {
+          claudeAnswer = await askClaudeAPI('', answerPrompt);
+          // デバッグ: 文字化けチェック
+          console.log('[Quiz] Claude回答:', claudeAnswer.substring(0, 100));
+        } catch (e: any) {
+          claudeAnswer = `[Claude API エラー: ${e.message}]\n\n元のメモ内容:\n${answerContent}`;
+        }
+      } else {
+        // Claude APIキーなし → メモ内容をそのまま表示
+        claudeAnswer = answerContent;
+      }
+
+      // === 4. 回答ファイルを開く/作成（メモと同じフォルダ） ===
+      const fs = require('fs');
+      const memoDir = path.dirname(memoFilePath);
+      const answerFilePath = path.join(memoDir, 'クイズ回答.md');
+
+      // ファイルが存在しない場合は作成
+      if (!fs.existsSync(answerFilePath)) {
+        fs.writeFileSync(answerFilePath, '', 'utf8');
+        console.log('[Quiz] クイズ回答.md を作成:', answerFilePath);
+      }
+
+      // 毎回最新のドキュメントを取得（既に開いていれば既存を返す）
+      quizAnswerDoc = await vscode.workspace.openTextDocument(answerFilePath);
+
+      const currentContent = quizAnswerDoc.getText();
+      const separator = currentContent.trim() ? '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' : '';
+      const newAnswerStartLine = quizAnswerDoc.lineCount + (separator ? 3 : 0); // 区切り線分を考慮
+      const newContent = currentContent + separator + `**Q: ${questionText}**\n\n${claudeAnswer}`;
+
+      const edit = new vscode.WorkspaceEdit();
+      const fullRange = new vscode.Range(
+        new vscode.Position(0, 0),
+        new vscode.Position(quizAnswerDoc.lineCount, 0)
+      );
+      edit.replace(quizAnswerDoc.uri, fullRange, newContent);
+      await vscode.workspace.applyEdit(edit);
+
+      // ファイル保存
+      await quizAnswerDoc.save();
+      console.log('[Quiz] クイズ回答.md に保存完了');
+
+      // 既存タブを探す
+      const existingTab = vscode.window.tabGroups.all
+        .flatMap(group => group.tabs)
+        .find(tab =>
+          tab.input instanceof vscode.TabInputText &&
+          tab.input.uri.fsPath === answerFilePath
+        );
+
+      console.log('[Quiz] 既存タブ検索:', existingTab ? `見つかった (viewColumn: ${existingTab.group.viewColumn})` : '見つからない');
+      console.log('[Quiz] answerFilePath:', answerFilePath);
+
+      // 右エリアに表示（既存タブがあればそれを使う）
+      console.log('[Quiz] 回答ドキュメントを右エリアに表示...');
+      const targetViewColumn = existingTab ? existingTab.group.viewColumn : vscode.ViewColumn.Two;
+      console.log('[Quiz] 使用するviewColumn:', targetViewColumn, existingTab ? '(既存タブ)' : '(新規:固定右エリア)');
+
+      const answerEditor = await vscode.window.showTextDocument(quizAnswerDoc, {
+        viewColumn: targetViewColumn,
+        preview: false,
+        preserveFocus: false
+      });
+      console.log('[Quiz] 回答表示完了');
+
+      // 最新Q&Aに自動スクロール
+      const lastLine = quizAnswerDoc.lineCount - 1;
+      const lastPosition = new vscode.Position(lastLine, 0);
+      answerEditor.selection = new vscode.Selection(lastPosition, lastPosition);
+      answerEditor.revealRange(new vscode.Range(lastLine, 0, lastLine, 0), vscode.TextEditorRevealType.InCenter);
+
+      // 新しく追加された回答範囲をハイライト（1.5秒）
+      const highlightRange = new vscode.Range(
+        new vscode.Position(newAnswerStartLine, 0),
+        new vscode.Position(quizAnswerDoc.lineCount - 1, 0)
+      );
+      const answerDecorationType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(255, 255, 0, 0.3)'
+      });
+      answerEditor.setDecorations(answerDecorationType, [highlightRange]);
+      setTimeout(() => answerDecorationType.dispose(), 1500);
 
       // 答え確認後の選択肢
       const afterAnswer = await vscode.window.showQuickPick(
         [
-          { label: '🔁 同じ問題をもう一度', description: '', action: 'retry' },
           { label: '🔄 別の問題', description: '', action: 'next' },
+          { label: '🗑️ この回答を削除', description: '', action: 'delete' },
           { label: '✅ 終了', description: '', action: 'exit' }
         ],
         {
@@ -404,33 +626,50 @@ ${contentPreview}
         }
       );
 
-      if (afterAnswer?.action === 'retry') {
-        // 同じ問題を再出題（QuickPickから再開）
-        const retryAnswer = await vscode.window.showQuickPick(
-          [
-            { label: '💡 答えを見る', description: '', action: 'answer' },
-            { label: '🔄 別の問題', description: '', action: 'next' }
-          ],
-          {
-            placeHolder: `🎯 ${questionText}`
-          }
-        );
-
-        if (retryAnswer?.action === 'answer') {
-          // 答えを見る → メモジャンプ
-          const editor2 = await vscode.window.showTextDocument(memoDoc);
-          const position2 = new vscode.Position(quiz.line - 1, 0);
-          editor2.selection = new vscode.Selection(position2, position2);
-          editor2.revealRange(new vscode.Range(position2, position2), vscode.TextEditorRevealType.InCenter);
-        } else if (retryAnswer?.action === 'next') {
-          await handleQuiz();
-        }
-      } else if (afterAnswer?.action === 'next') {
+      if (afterAnswer?.action === 'next') {
         await handleQuiz();
+      } else if (afterAnswer?.action === 'delete') {
+        // 最後に追加したQ&Aを削除
+        const currentContent = quizAnswerDoc.getText();
+        const lines = currentContent.split('\n');
+
+        // 最後の区切り線を探す（なければファイル先頭から）
+        let deleteStartLine = 0;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].includes('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')) {
+            deleteStartLine = i - 1; // 区切り線の前の空行から削除
+            break;
+          }
+        }
+
+        // 削除範囲を適用
+        const newContent = lines.slice(0, Math.max(0, deleteStartLine)).join('\n');
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(
+          new vscode.Position(0, 0),
+          new vscode.Position(quizAnswerDoc.lineCount, 0)
+        );
+        edit.replace(quizAnswerDoc.uri, fullRange, newContent);
+        await vscode.workspace.applyEdit(edit);
+        await quizAnswerDoc.save();
       }
       // exit or キャンセルは何もしない
     } else if (answer.action === 'next') {
-      // 別の問題
+      // 別の問題 → 10日間スキップ
+      const skipHistory = quizHistoryMap.get(quiz.title);
+      if (skipHistory) {
+        skipHistory.lastReviewed = now;
+        skipHistory.reviewCount = -1; // スキップマーク
+      } else {
+        quizHistoryMap.set(quiz.title, {
+          title: quiz.title,
+          line: quiz.line,
+          lastReviewed: now,
+          reviewCount: -1 // スキップマーク
+        });
+      }
+      saveQuizHistory();
+
       await handleQuiz();
     }
   } catch (e: any) {
@@ -833,9 +1072,17 @@ let currentBrowserSelector: { type: 'class' | 'id' | 'tag'; name: string; timest
 export function activate(context: vscode.ExtensionContext) {
   console.log('CSS to HTML Jumper: 拡張機能が有効化されました');
 
-  // クイズ履歴を復元
+  // クイズ履歴をファイルから復元
+  loadQuizHistory();
+
+  // 旧globalStateからの移行（初回のみ）
   const savedHistory = context.globalState.get<Array<[string, QuizHistory]>>('quizHistory', []);
-  quizHistoryMap = new Map(savedHistory);
+  if (savedHistory.length > 0 && quizHistoryMap.size === 0) {
+    quizHistoryMap = new Map(savedHistory);
+    saveQuizHistory(); // ファイルに保存
+    context.globalState.update('quizHistory', []); // globalStateクリア
+    console.log('[Quiz] 履歴をglobalStateからファイルに移行しました');
+  }
 
   // ========================================
   // ブラウザハイライト用HTTPサーバー（ポート3847）
@@ -1482,9 +1729,7 @@ export function activate(context: vscode.ExtensionContext) {
 2. CSS変更点（追加・変更・削除が必要なルール）
    - 不要になったルール（例: list-style:none）は「削除」と明記
    - 新タグに必要なリセットCSSがあれば追記
-3. 「# 主な変更点」としてまとめ`, showBeside: true },
-    { label: '📝 メモ検索', prompt: '', showBeside: false },
-    { label: '🎯 クイズ', prompt: '', showBeside: false }
+3. 「# 主な変更点」としてまとめ`, showBeside: true }
   ];
 
   const claudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
@@ -1762,20 +2007,12 @@ export function activate(context: vscode.ExtensionContext) {
           });
           await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
         } else if (isSvg) {
-          // SVGの場合：<svg>～</svg>を抽出してクリップボードにコピー
+          // SVGの場合：<svg>～</svg>を抽出してクリップボードにコピーのみ
           const svgMatch = cleanAnswer.match(/<svg[\s\S]*<\/svg>/i);
           const svgCode = svgMatch ? svgMatch[0] : cleanAnswer;
 
           await vscode.env.clipboard.writeText(svgCode);
           vscode.window.showInformationMessage('✅ SVGをクリップボードにコピーしました');
-
-          // エディタにも挿入
-          const endPosition = selection.end;
-          const insertPosition = new vscode.Position(endPosition.line, editor.document.lineAt(endPosition.line).text.length);
-          const insertText = `\n${svgCode}\n`;
-          await editor.edit(editBuilder => {
-            editBuilder.insert(insertPosition, insertText);
-          });
         } else {
           // 説明：コメントとして挿入
           const endPosition = selection.end;
@@ -1827,6 +2064,62 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(quizCommand);
+
+  // ========================================
+  // クイズカテゴリ変更コマンド
+  // ========================================
+  const changeQuizCategoryCommand = vscode.commands.registerCommand('cssToHtmlJumper.changeQuizCategory', async () => {
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const memoFilePath = config.get<string>('memoFilePath', '');
+
+    if (!memoFilePath) {
+      vscode.window.showErrorMessage('メモファイルパスが設定されていません');
+      return;
+    }
+
+    try {
+      // メモファイルからカテゴリ抽出
+      const memoUri = vscode.Uri.file(memoFilePath);
+      const memoDoc = await vscode.workspace.openTextDocument(memoUri);
+      const memoContent = memoDoc.getText();
+      const lines = memoContent.split('\n');
+
+      const categories = new Set<string>();
+      categories.add('全て');
+
+      // 登録カテゴリリスト取得
+      const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+
+      for (const line of lines) {
+        const match = line.match(/^##\s+(.+)/);
+        if (match) {
+          const fullTitle = match[1].trim();
+          const titleParts = fullTitle.split(/[\s　]+/); // 半角\sと全角
+          if (titleParts.length >= 2) {
+            const lastWord = titleParts[titleParts.length - 1];
+            const matchedCategory = categoryList.find(cat => cat.toLowerCase() === lastWord.toLowerCase());
+            if (matchedCategory) {
+              categories.add(matchedCategory); // 登録済みカテゴリ名で統一
+            }
+          }
+        }
+      }
+
+      // QuickPickで選択
+      const selected = await vscode.window.showQuickPick(Array.from(categories), {
+        placeHolder: '出題するカテゴリを選択'
+      });
+
+      if (selected) {
+        await config.update('quizCategory', selected, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`✅ クイズカテゴリ: ${selected}`);
+      }
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`カテゴリ変更エラー: ${e.message}`);
+    }
+  });
+
+  context.subscriptions.push(changeQuizCategoryCommand);
 
   // ========================================
   // 赤枠追加コマンド
@@ -2519,18 +2812,14 @@ export function activate(context: vscode.ExtensionContext) {
     statusBarItem.show();
   }
 
-  // クイズ履歴を保存（拡張機能終了時 or 定期保存）
-  const saveQuizHistory = () => {
-    const historyArray = Array.from(quizHistoryMap.entries());
-    context.globalState.update('quizHistory', historyArray);
-  };
-
   // 定期保存（10秒ごと）
   const saveInterval = setInterval(saveQuizHistory, 10000);
   context.subscriptions.push({ dispose: () => clearInterval(saveInterval) });
 }
 
-export function deactivate() {}
+export async function deactivate() {
+  // クイズ回答は自動保存されるため、特に処理なし
+}
 
 // 正規表現の特殊文字をエスケープ
 function escapeRegex(str: string): string {
