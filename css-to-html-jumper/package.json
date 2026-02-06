@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/yoshida55/css-to-html-jumper"
   },
-  "version": "1.4.0",
+  "version": "1.6.0",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -45,6 +45,16 @@
         "command": "cssToHtmlJumper.askClaude",
         "title": "✨ Claude AIに質問",
         "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.searchMemo",
+        "title": "📝 メモ検索",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.quiz",
+        "title": "🎯 クイズ",
+        "category": "CSS to HTML"
       }
     ],
     "menus": {
@@ -74,7 +84,7 @@
       },
       {
         "command": "cssToHtmlJumper.jumpToSection",
-        "key": "ctrl+shift+l",
+        "key": "ctrl+shift+j",
         "when": "editorLangId == css"
       },
       {
@@ -85,6 +95,16 @@
       {
         "command": "cssToHtmlJumper.askClaude",
         "key": "ctrl+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.searchMemo",
+        "key": "ctrl+shift+m",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.quiz",
+        "key": "ctrl+shift+7",
         "when": "editorTextFocus"
       }
     ],
@@ -111,6 +131,16 @@
           "enum": ["claude-opus-4-5-20251124", "claude-sonnet-4-5-20250929"],
           "default": "claude-sonnet-4-5-20250929",
           "description": "使用するClaudeモデル"
+        },
+        "cssToHtmlJumper.memoFilePath": {
+          "type": "string",
+          "default": "",
+          "description": "メモ検索機能で使用するメモファイルのフルパス。例: D:\\50_knowledge\\01_memo.md"
+        },
+        "cssToHtmlJumper.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Gemini API キー（Fuzzy検索で結果0件時のフォールバック用）"
         }
       }
     }

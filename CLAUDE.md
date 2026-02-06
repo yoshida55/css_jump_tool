@@ -92,3 +92,91 @@ vscode://file/D:/path/to/file.css:行番号
 - Chrome拡張機能（MV3）
 - Native Messaging（open_vscode.exe）
 - VS Codeプロトコルハンドラ（vscode://）
+
+---
+
+## VS Code拡張機能（css-to-html-jumper）
+
+### 構成
+```
+css-to-html-jumper/
+├── package.json           ... 拡張機能設定
+├── src/
+│   ├── extension.ts       ... メインロジック
+│   ├── cssProperties.ts   ... CSSプロパティ日本語辞書
+│   └── jsProperties.ts    ... JSメソッド日本語辞書
+└── out/                   ... コンパイル済みJS
+```
+
+### ビルド手順（変更時は必ず全ステップ実行）
+```bash
+cd css-to-html-jumper
+npm run compile
+npx vsce package --no-dependencies
+code --install-extension css-to-html-jumper-1.4.0.vsix --force
+# → VS Code: Ctrl+Shift+P → Developer: Reload Window
+```
+
+### 全機能一覧
+
+| 機能 | 操作 | 説明 |
+|------|------|------|
+| CSSからHTML検索 | `Ctrl+Shift+H` | CSSセレクタのHTML使用箇所にジャンプ |
+| セクションジャンプ | `Ctrl+Shift+L` | 罫線ボックスコメントのセクション一覧 |
+| Claude AI質問 | `Ctrl+I` | プリセット選択 or 直接入力 |
+| Copilot解説 | `Ctrl+Shift+/` | 選択コードをCopilot Chatに送信 |
+| 赤枠追加 | ホバー→🔴クリック | CSSセレクタに `border: 0.5rem solid red` 追加 |
+| 赤枠一括削除 | コマンドパレット | 全赤枠を一括削除 |
+| CSS日本語ホバー | CSSプロパティにホバー | 日本語でプロパティ解説 |
+| JS日本語ホバー | JSメソッドにホバー | 日本語でメソッド解説 |
+| セレクタホバー | CSSセレクタにホバー | HTMLの使用箇所をサイドに表示 |
+| ステータスバー | 自動 | 現在のセクション名を画面下に表示 |
+| Alt+Click | CSSセレクタ→HTML | Definition Provider |
+
+### Claude AI プリセット（Ctrl+I）
+
+| プリセット | 出力先 | 特徴 |
+|-----------|--------|------|
+| 🔧 改善して | 右側分割表示 | 制約付き（シンプル、_区切り、既存踏襲、変更行コメント） |
+| 🐛 バグチェック | 右側分割表示 | |
+| 📖 説明して | コメントとして挿入 | CSS→`/* */`、HTML→`<!-- -->` |
+| 🎨 SVGで図解 | エディタ挿入+クリップボード | `<svg>〜</svg>`を自動抽出してコピー |
+| 📝 CSSスケルトン生成 | リンク先CSSに追記 | HTML選択→class/ID抽出→空ルール生成 |
+| 直接入力 | コメントとして挿入 | 自由質問 |
+
+### 改善プリセットの制約（裏プロンプト）
+- シンプルに保つ（タグ増やさない）
+- タグ名をクラス名に使わない（.div, .span 禁止）
+- 今の実装をできるだけ活かす
+- クラス名は `_`（アンダースコア）区切り（`-`禁止）
+- 既存の命名規則を踏襲
+- 変更行の右側にコメント + 下にまとめ
+
+### CSSスケルトン生成の動作
+1. HTMLファイルでコードを選択 → Ctrl+I → 📝 CSSスケルトン生成
+2. Claude AIがHTMLを解析、class/IDを抽出
+3. HTMLコメント（`<!-- -->`）はCSSコメント（`/* */`）としてそのまま出力
+4. `<link rel="stylesheet">`からCSSファイルを自動検出
+5. 複数CSSある場合 → QuickPickで選択
+6. CSSファイル末尾に自動追記
+7. CSSファイルが見つからない場合 → 右側パネルに表示
+
+### セクション検出の仕様
+- 罫線ボックス形式: `┌─┐ │ セクション名 │ └─┘`
+- **半角パイプ `|` と罫線 `│` の両方に対応**
+- ボックス内の1行目のみ採用（2行目以降は無視）
+- `@media(max-width)` 内なら📱アイコン表示
+
+### ⚠ 注意事項
+- Claude API通信: `api.anthropic.com:443` へのHTTPS必須
+- APIキー設定: `cssToHtmlJumper.claudeApiKey`
+- モデル設定: `cssToHtmlJumper.claudeModel`（デフォルト: claude-sonnet-4-5）
+- max_tokens: 4096（SVGの途切れ防止のため増加済み）
+- SVG出力: `</svg>`で途切れる場合あり → プロンプトに「必ず</svg>で終わること」と指示済み
+- activationEvents: `onLanguage:css`, `onLanguage:html`, `onLanguage:javascript`
+- コードブロック除去: Claude回答から ` ```css ` 等を自動削除
+
+### 会社PCへの持ち込み
+- **Python不要、Node.js不要**（VS Code内蔵ランタイムで動作）
+- vsixファイルをUSB等で持ち込み → Install from VSIX
+- 詳細は `会社PC_ClaudeCode導入メモ.md` 参照

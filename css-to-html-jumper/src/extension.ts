@@ -6,9 +6,442 @@ import { cssProperties, analyzeValue } from './cssProperties';
 import { jsMethods } from './jsProperties';
 
 // ========================================
+// メモ検索履歴（最新10件）
+// ========================================
+let memoSearchHistory: string[] = [];
+
+// ========================================
+// クイズ履歴（間隔反復学習用）
+// ========================================
+interface QuizHistory {
+  title: string;          // 見出し
+  line: number;           // 行番号
+  lastReviewed: number;   // 最終復習日時（Unix timestamp）
+  reviewCount: number;    // 復習回数
+}
+
+let quizHistoryMap: Map<string, QuizHistory> = new Map();
+
+// ========================================
+// メモ検索関連関数
+// ========================================
+
+/**
+ * Fuzzy検索: 部分一致、大小文字無視、スペース無視、単語分割マッチ
+ * 例: 「ボックスサイズ」→「ボックス」「サイズ」両方含む行を検索
+ */
+function fuzzySearch(query: string, lines: string[]): { line: number; text: string; preview: string }[] {
+  const results: { line: number; text: string; preview: string }[] = [];
+
+  // クエリを単語分割（スペース・記号で区切る）
+  const queryWords = query
+    .toLowerCase()
+    .split(/[\s　、。・]+/)  // 半角・全角スペース、句読点で分割
+    .filter(w => w.length > 0);
+
+  if (queryWords.length === 0) {
+    return results;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const normalizedLine = lines[i].toLowerCase();
+
+    // 全単語が含まれているかチェック
+    const allWordsMatch = queryWords.every(word => normalizedLine.includes(word));
+
+    if (allWordsMatch) {
+      results.push({
+        line: i + 1,
+        text: lines[i],
+        preview: lines[i].trim().substring(0, 100)
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Gemini Flash API呼び出し
+ */
+async function searchWithGemini(query: string, memoContent: string): Promise<{ line: number; keyword: string; text: string; preview: string }[]> {
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const apiKey = config.get<string>('geminiApiKey', '');
+
+  if (!apiKey) {
+    throw new Error('Gemini API キーが設定されていません。設定 → cssToHtmlJumper.geminiApiKey を確認してください。');
+  }
+
+  const prompt = `以下のメモファイルから「${query}」に関連する行を検索してください。
+
+【メモファイル】（各行に行番号付き）
+${memoContent.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
+
+【検索クエリ】
+${query}
+
+【指示】
+- 検索クエリに関連する行を抽出する
+- 単語が1つの場合: その単語を含む行を探す（例: 「隣接」→「隣接」を含む行）
+- 単語が複数の場合: 全単語を含む行を最優先（例: 「ボックスサイズ」→「ボックス」「サイズ」両方含む行）
+- 単語の順序は問わない、離れていてもOK
+- typoや表記ゆれも考慮する
+- **最大3件のみ**抽出（関連度が最も高いものだけ、厳選すること）
+- **必ず異なるセクション（トピック）から選ぶ**（連続した行番号NG、離れた箇所から）
+- 見出し行（##で始まる）を優先する
+- 類似内容・同じセクションの重複は絶対に避ける
+
+【出力形式】
+JSON配列で返す。説明文は不要。必ず3件以内。
+各結果に**技術用語・キーワード**を必ず抽出して含める。
+
+[
+  {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容"},
+  ...
+]
+
+例:
+[
+  {"line": 1052, "keyword": "inline-block", "text": "## テキストなどの幅をサイズに丁度にボックスを調整する"},
+  {"line": 2536, "keyword": "fit-content", "text": "幅がひろいwidthを文字は文字幅にあわせる"}
+]`;
+
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({
+      contents: [{
+        parts: [{ text: prompt }]
+      }],
+      generationConfig: {
+        temperature: 0.3,  // 精度重視で低めに
+        maxOutputTokens: 4096
+      }
+    });
+
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+          // JSON配列を抽出
+          const jsonMatch = text.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const results = JSON.parse(jsonMatch[0]);
+            const formatted = results.map((r: any) => ({
+              line: r.line,
+              keyword: r.keyword || '',
+              text: r.text,
+              preview: r.text.substring(0, 100)
+            }));
+            resolve(formatted);
+          } else {
+            resolve([]);
+          }
+        } catch (e: any) {
+          reject(new Error(`Gemini APIレスポンス解析エラー: ${e.message}\n\n生レスポンス:\n${data.substring(0, 500)}`));
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(new Error(`Gemini API接続エラー: ${e.message}`));
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * メモ検索のメイン処理
+ */
+async function handleMemoSearch() {
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const memoFilePath = config.get<string>('memoFilePath', '');
+
+  if (!memoFilePath) {
+    vscode.window.showErrorMessage('メモファイルパスが設定されていません。設定 → cssToHtmlJumper.memoFilePath を確認してください。');
+    return;
+  }
+
+  // 検索クエリ入力
+  const query = await vscode.window.showInputBox({
+    prompt: 'メモ内を検索',
+    placeHolder: '検索キーワードを入力...'
+  });
+
+  if (!query) {
+    return; // キャンセル
+  }
+
+  try {
+    // メモファイル読み込み
+    const memoUri = vscode.Uri.file(memoFilePath);
+    const memoDoc = await vscode.workspace.openTextDocument(memoUri);
+    const memoContent = memoDoc.getText();
+
+    // Gemini Flash検索（Fuzzyスキップ）
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: '🤖 Gemini Flashで検索中...',
+      cancellable: false
+    }, async () => {
+      try {
+        const geminiResults = await searchWithGemini(query, memoContent);
+
+        if (geminiResults.length > 0) {
+          const items = geminiResults.map(r => ({
+            label: `行 ${r.line}: ${r.keyword}`,
+            description: r.preview,
+            line: r.line
+          }));
+
+          const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: `${geminiResults.length}件見つかりました`
+          });
+
+          if (selected) {
+            const editor = await vscode.window.showTextDocument(memoDoc);
+            const position = new vscode.Position(selected.line - 1, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+          }
+        } else {
+          // 0件時はメッセージなし（静かに終了）
+        }
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Gemini検索エラー: ${e.message}`);
+      }
+    });
+  } catch (e: any) {
+    vscode.window.showErrorMessage(`メモファイル読み込みエラー: ${e.message}`);
+  }
+}
+
+/**
+ * クイズのメイン処理
+ */
+async function handleQuiz() {
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const memoFilePath = config.get<string>('memoFilePath', '');
+
+  if (!memoFilePath) {
+    vscode.window.showErrorMessage('メモファイルパスが設定されていません。設定 → cssToHtmlJumper.memoFilePath を確認してください。');
+    return;
+  }
+
+  try {
+    // メモファイル読み込み
+    const memoUri = vscode.Uri.file(memoFilePath);
+    const memoDoc = await vscode.workspace.openTextDocument(memoUri);
+    const memoContent = memoDoc.getText();
+    const lines = memoContent.split('\n');
+
+    // 見出し（## xxx）を抽出
+    const headings: { line: number; title: string; content: string[] }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(/^##\s+(.+)/);
+      if (match) {
+        const title = match[1];
+        const content: string[] = [];
+
+        // 次の見出しまでの内容を取得
+        for (let j = i + 1; j < lines.length; j++) {
+          if (lines[j].match(/^##\s+/)) {
+            break;
+          }
+          if (lines[j].trim()) {
+            content.push(lines[j]);
+          }
+        }
+
+        if (content.length > 0) {
+          headings.push({ line: i + 1, title, content });
+        }
+      }
+    }
+
+    if (headings.length === 0) {
+      vscode.window.showInformationMessage('メモに見出し（##）が見つかりませんでした');
+      return;
+    }
+
+    // 復習優先ロジック
+    const now = Date.now();
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+
+    // 復習候補: 1日以上経過した問題
+    const reviewCandidates = headings.filter(h => {
+      const history = quizHistoryMap.get(h.title);
+      if (!history) return false; // 未出題は除外
+      const daysSince = (now - history.lastReviewed) / ONE_DAY;
+      return daysSince >= 1;
+    });
+
+    let quiz;
+    if (reviewCandidates.length > 0) {
+      // 復習問題を優先（古い順）
+      reviewCandidates.sort((a, b) => {
+        const historyA = quizHistoryMap.get(a.title)!;
+        const historyB = quizHistoryMap.get(b.title)!;
+        return historyA.lastReviewed - historyB.lastReviewed;
+      });
+      quiz = reviewCandidates[0];
+    } else {
+      // 復習なし → 未出題 or ランダム
+      const unreviewed = headings.filter(h => !quizHistoryMap.has(h.title));
+      if (unreviewed.length > 0) {
+        const randomIndex = Math.floor(Math.random() * unreviewed.length);
+        quiz = unreviewed[randomIndex];
+      } else {
+        const randomIndex = Math.floor(Math.random() * headings.length);
+        quiz = headings[randomIndex];
+      }
+    }
+
+    // Gemini 2.5 Flash-Liteで問題生成
+    const geminiApiKey = config.get<string>('geminiApiKey', '');
+    let questionText = quiz.title; // フォールバック
+
+    if (geminiApiKey) {
+      try {
+        const contentPreview = quiz.content.slice(0, 10).join('\n');
+        const prompt = `以下のメモの見出しと内容から、簡潔なクイズ問題を1つ生成してください。
+
+【見出し】
+${quiz.title}
+
+【内容】
+${contentPreview}
+
+【要件】
+- 30文字以内の短い質問
+- 必ず「？」で終わる
+- 前置き・説明文は一切禁止、質問のみ出力
+- キーワードを含める
+
+悪い例: "[!INFORMATION]という文字を視覚的に中央に配置するには、負担的に以下のようなCSSプロパティと値が必要"（長すぎ・説明的）
+良い例: "中央配置に必要なCSSプロパティは？"`;
+
+        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=' + geminiApiKey, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }]
+          })
+        });
+
+        if (response.ok) {
+          const data: any = await response.json();
+          const generatedQuestion = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          if (generatedQuestion) {
+            questionText = generatedQuestion;
+          }
+        }
+      } catch (e) {
+        // エラー時はフォールバック（見出しのみ）
+        console.error('Gemini問題生成エラー:', e);
+      }
+    }
+
+    // QuickPickで問題表示
+    const answer = await vscode.window.showQuickPick(
+      [
+        { label: '💡 答えを見る', description: '', action: 'answer' },
+        { label: '🔄 別の問題', description: '', action: 'next' }
+      ],
+      {
+        placeHolder: `🎯 ${questionText}`
+      }
+    );
+
+    if (!answer) {
+      return; // キャンセル
+    }
+
+    if (answer.action === 'answer') {
+      // 履歴記録（答えを見た時点で記録）
+      const existingHistory = quizHistoryMap.get(quiz.title);
+      if (existingHistory) {
+        existingHistory.lastReviewed = now;
+        existingHistory.reviewCount++;
+      } else {
+        quizHistoryMap.set(quiz.title, {
+          title: quiz.title,
+          line: quiz.line,
+          lastReviewed: now,
+          reviewCount: 1
+        });
+      }
+
+      // 答え表示 → 自動でメモを開く
+      const editor = await vscode.window.showTextDocument(memoDoc);
+      const position = new vscode.Position(quiz.line - 1, 0);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+      // 答え確認後の選択肢
+      const afterAnswer = await vscode.window.showQuickPick(
+        [
+          { label: '🔁 同じ問題をもう一度', description: '', action: 'retry' },
+          { label: '🔄 別の問題', description: '', action: 'next' },
+          { label: '✅ 終了', description: '', action: 'exit' }
+        ],
+        {
+          placeHolder: '次のアクション'
+        }
+      );
+
+      if (afterAnswer?.action === 'retry') {
+        // 同じ問題を再出題（QuickPickから再開）
+        const retryAnswer = await vscode.window.showQuickPick(
+          [
+            { label: '💡 答えを見る', description: '', action: 'answer' },
+            { label: '🔄 別の問題', description: '', action: 'next' }
+          ],
+          {
+            placeHolder: `🎯 ${questionText}`
+          }
+        );
+
+        if (retryAnswer?.action === 'answer') {
+          // 答えを見る → メモジャンプ
+          const editor2 = await vscode.window.showTextDocument(memoDoc);
+          const position2 = new vscode.Position(quiz.line - 1, 0);
+          editor2.selection = new vscode.Selection(position2, position2);
+          editor2.revealRange(new vscode.Range(position2, position2), vscode.TextEditorRevealType.InCenter);
+        } else if (retryAnswer?.action === 'next') {
+          await handleQuiz();
+        }
+      } else if (afterAnswer?.action === 'next') {
+        await handleQuiz();
+      }
+      // exit or キャンセルは何もしない
+    } else if (answer.action === 'next') {
+      // 別の問題
+      await handleQuiz();
+    }
+  } catch (e: any) {
+    vscode.window.showErrorMessage(`クイズエラー: ${e.message}`);
+  }
+}
+
+// ========================================
 // Claude API 呼び出し関数
 // ========================================
-async function askClaudeAPI(code: string, question: string, htmlContext?: string): Promise<string> {
+async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean): Promise<string> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('claudeApiKey', '');
   const model = config.get<string>('claudeModel', 'claude-sonnet-4-5-20250929');
@@ -18,7 +451,36 @@ async function askClaudeAPI(code: string, question: string, htmlContext?: string
   }
 
   let prompt = '';
-  if (code.trim() && htmlContext) {
+  if (isStructural && code.trim() && htmlContext) {
+    prompt = `以下のHTMLファイルの構造改善を依頼します。
+
+【HTMLファイル全体】
+\`\`\`html
+${code}
+\`\`\`
+
+【リンクされているCSS】
+\`\`\`css
+${htmlContext}
+\`\`\`
+
+【依頼】
+${question}
+
+日本語で回答してください。`;
+  } else if (isStructural && code.trim()) {
+    prompt = `以下のHTMLファイルの構造改善を依頼します。
+
+【HTMLファイル全体】
+\`\`\`html
+${code}
+\`\`\`
+
+【依頼】
+${question}
+
+日本語で回答してください。`;
+  } else if (code.trim() && htmlContext) {
     prompt = `以下のCSSコードと、それが使われているHTMLについて質問があります。
 
 【CSSコード】
@@ -54,11 +516,16 @@ ${question}
 日本語で簡潔に回答してください。`;
   }
 
+  // サロゲートペア（絵文字等）をエスケープ
+  const sanitizedPrompt = prompt.replace(/[\uD800-\uDFFF]/g, (char) => {
+    return '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0');
+  });
+
   const requestBody = JSON.stringify({
     model: model,
-    max_tokens: 4096,
+    max_tokens: isStructural ? 8192 : 4096,
     messages: [
-      { role: 'user', content: prompt }
+      { role: 'user', content: sanitizedPrompt }
     ]
   });
 
@@ -237,11 +704,138 @@ async function findLinkedCssFiles(htmlDocument: vscode.TextDocument): Promise<st
   return cssFiles;
 }
 
+// HTMLファイルからセクション候補を3段階で検出
+function detectHtmlSections(document: vscode.TextDocument): { label: string; line: number; type: string }[] {
+  const sections: { label: string; line: number; type: string }[] = [];
+  const text = document.getText();
+  const lines = text.split('\n');
+
+  // 優先度1: 罫線ボックスコメント ┌─┐ │ セクション名 │ └─┘
+  let inBox = false;
+  let capturedTitle = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.search(/[┌]/) >= 0) { inBox = true; capturedTitle = false; }
+    else if (inBox && !capturedTitle && line.search(/[│|]/) >= 0) {
+      const pipeIndex = line.search(/[│|]/);
+      const lastPipe = line.lastIndexOf('│') !== -1 ? line.lastIndexOf('│') : line.lastIndexOf('|');
+      const name = line.substring(pipeIndex + 1, lastPipe).trim();
+      if (name.length > 0 && !/^[─━┈┄]+$/.test(name)) {
+        sections.push({ label: `📦 ${name}`, line: i, type: 'box' });
+        capturedTitle = true;
+      }
+    }
+    else if (line.search(/[└]/) >= 0) { inBox = false; }
+  }
+
+  // 優先度2: HTMLコメント <!-- xxx --> （10文字以上のみ）
+  for (let i = 0; i < lines.length; i++) {
+    const commentRegex = /<!--\s*(.+?)\s*-->/g;
+    let match;
+    while ((match = commentRegex.exec(lines[i])) !== null) {
+      const content = match[1].trim();
+      if (content.length >= 10 && !/^[─━┈┄└┌┐┘│|]+$/.test(content) && !content.startsWith('★')) {
+        sections.push({ label: `💬 ${content}`, line: i, type: 'comment' });
+      }
+    }
+  }
+
+  // 優先度3: 主要な親要素（インデント0のみ = body直下のみ）
+  const tagRegex = /^<(header|nav|main|section|footer|aside|article|div)\b[^>]*?(?:class="([^"]*)")?[^>]*>/;
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(tagRegex);
+    if (match) {
+      const tag = match[1];
+      const className = match[2] || '';
+      const label = className ? `<${tag} class="${className}">` : `<${tag}>`;
+      sections.push({ label: `🏷 ${label}`, line: i, type: 'element' });
+    }
+  }
+
+  return sections;
+}
+
+// セクションの終了行を推定
+function findSectionEnd(lines: string[], startLine: number): number {
+  const startIndent = lines[startLine].search(/\S/);
+  if (startIndent < 0) { return startLine; }
+  for (let i = startLine + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') { continue; }
+    const indent = line.search(/\S/);
+    if (indent <= startIndent && i > startLine + 1) {
+      if (line.trim().startsWith('</')) { return i; }
+      return i - 1;
+    }
+  }
+  return lines.length - 1;
+}
+
+// CSSファイルから指定されたクラス/IDに関連するルールのみを抽出
+async function extractRelatedCssRules(htmlContent: string, cssFilePaths: string[]): Promise<string> {
+  // HTMLからクラス/ID抽出（既存関数流用）
+  const { classes, ids } = extractClassesAndIdsFromHtml(htmlContent);
+
+  if (classes.length === 0 && ids.length === 0) {
+    return ''; // クラス/IDがない場合は空
+  }
+
+  let relatedCss = '';
+
+  for (const cssPath of cssFilePaths) {
+    try {
+      const cssUri = vscode.Uri.file(cssPath);
+      const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+      const cssText = cssDoc.getText();
+      const cssLines = cssText.split('\n');
+
+      relatedCss += `/* === ${path.basename(cssPath)} === */\n`;
+
+      // CSSルールを抽出
+      let inRule = false;
+      let currentRule = '';
+      let braceCount = 0;
+
+      for (const line of cssLines) {
+        // ルール開始検出（セレクタ行）
+        if (!inRule && line.trim() && !line.trim().startsWith('/*') && !line.trim().startsWith('//')) {
+          // クラス/IDが含まれるかチェック
+          const hasClass = classes.some(c => line.includes(`.${c}`));
+          const hasId = ids.some(id => line.includes(`#${id}`));
+
+          if (hasClass || hasId) {
+            inRule = true;
+            currentRule = line + '\n';
+            braceCount = (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+          }
+        } else if (inRule) {
+          currentRule += line + '\n';
+          braceCount += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+
+          if (braceCount === 0) {
+            relatedCss += currentRule;
+            inRule = false;
+            currentRule = '';
+          }
+        }
+      }
+    } catch (e) {
+      // ファイル読み込み失敗は無視
+    }
+  }
+
+  return relatedCss;
+}
+
 // ブラウザハイライト用のセレクタ情報を保持
 let currentBrowserSelector: { type: 'class' | 'id' | 'tag'; name: string; timestamp: number } | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('CSS to HTML Jumper: 拡張機能が有効化されました');
+
+  // クイズ履歴を復元
+  const savedHistory = context.globalState.get<Array<[string, QuizHistory]>>('quizHistory', []);
+  quizHistoryMap = new Map(savedHistory);
 
   // ========================================
   // ブラウザハイライト用HTTPサーバー（ポート3847）
@@ -867,7 +1461,30 @@ export function activate(context: vscode.ExtensionContext) {
 - HTMLコメント（<!-- xxx -->）はそのままCSSコメント（/* xxx */）として同じ位置に出力する
 - コメントの文言は一切変更しない（HTMLに書いてあるものと完全に同じ）
 - クラス名はそのまま使う（変更しない）
-- 説明文は不要、CSSコードのみ出力`, showBeside: false }
+- 説明文は不要、CSSコードのみ出力`, showBeside: false },
+    { label: '🏗 HTML構造改善', prompt: `このHTMLの指定セクションの構造をセマンティックに改善してください。
+
+【重要な制約】
+- セマンティックHTMLを使う（<ul><li>は本当のリストのみ）
+- リストでない内容に<ul><li>を使っている場合は<div>等に変更する
+- 用途に合ったタグに変更（住所→<address>、ナビ→<nav>等）
+- CSSワークアラウンド（list-style:none等）ではなくタグ自体を変更する
+- クラス名はアンダースコア(_)区切り、既存命名規則を踏襲
+- 不要なwrapper divは削除
+- position: fixedは親1箇所のみ、子はabsolute
+- ★マーカーで囲まれた範囲を重点的に改善し、その範囲の改善コードのみ出力する
+
+【出力形式】
+1. ★マーカー範囲の改善後HTML（変更行の右側に短いコメント）
+   - 例: <address class="footer_address"> <!-- ul→address -->
+   - 例: <div class="access_by_detail"> <!-- li→div: リストではない -->
+   - 変更のない行にはコメント不要
+2. CSS変更点（追加・変更・削除が必要なルール）
+   - 不要になったルール（例: list-style:none）は「削除」と明記
+   - 新タグに必要なリセットCSSがあれば追記
+3. 「# 主な変更点」としてまとめ`, showBeside: true },
+    { label: '📝 メモ検索', prompt: '', showBeside: false },
+    { label: '🎯 クイズ', prompt: '', showBeside: false }
   ];
 
   const claudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
@@ -880,23 +1497,86 @@ export function activate(context: vscode.ExtensionContext) {
     const selection = editor.selection;
     const code = editor.document.getText(selection).trim();
 
-    // プリセット選択 or 直接入力
-    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; showBeside: boolean } | undefined>((resolve) => {
+    // Step 1: InputBoxで追加質問を入力
+    const userInput = await vscode.window.showInputBox({
+      prompt: '質問を入力（空欄でプリセット選択へ）',
+      placeHolder: '例: <div class="slide"></div>について'
+    });
+
+    if (userInput === undefined) {
+      return; // キャンセル
+    }
+
+    // Step 2: プリセット選択（入力ありの場合は「自由質問」も追加）
+    const presetItems = [...presetQuestions];
+    if (userInput.trim()) {
+      presetItems.push({ label: '💬 自由質問', prompt: '', showBeside: false });
+    }
+
+    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; showBeside: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
-      quickPick.items = presetQuestions;
-      quickPick.placeholder = '質問を入力してEnter、またはプリセット選択';
+      quickPick.items = presetItems;
+      quickPick.placeholder = userInput.trim() ? 'プリセットを選択（自由質問も可）' : 'プリセットを選択';
 
       quickPick.onDidAccept(() => {
-        const selected = quickPick.selectedItems[0] as typeof presetQuestions[0] | undefined;
-        if (selected && selected.prompt) {
+        const selected = quickPick.selectedItems[0] as typeof presetItems[0] | undefined;
+
+        if (selected && selected.label.includes('自由質問')) {
+          // 自由質問: userInputのみ送信
           resolve({
-            question: selected.prompt,
+            question: userInput.trim(),
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: true,
+            showBeside: false
+          });
+        } else if (selected && selected.label.includes('メモ検索')) {
+          resolve({
+            question: '',
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isMemoSearch: true,
+            isQuiz: false,
+            isFreeQuestion: false,
+            showBeside: false
+          });
+        } else if (selected && selected.label.includes('クイズ')) {
+          resolve({
+            question: '',
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isMemoSearch: false,
+            isQuiz: true,
+            isFreeQuestion: false,
+            showBeside: false
+          });
+        } else if (selected && selected.prompt) {
+          // プリセット選択 + userInput
+          let finalQuestion = selected.prompt;
+          const isSkeleton = selected.label.includes('スケルトン');
+          const isStructural = selected.label.includes('構造改善');
+
+          if (userInput.trim() && code && !isSkeleton && !isStructural) {
+            // 入力あり + 選択範囲あり + スケルトン・構造改善以外 → 踏み込んだ質問
+            finalQuestion = `以下のコード内の \`${userInput.trim()}\` について${selected.label.replace(/[📖🎨🔧🐛]/g, '').trim()}ください。\n\n【コード全体】\n${code}`;
+          }
+          // スケルトン・構造改善は入力無視、元のプリセットプロンプトのみ使用
+
+          resolve({
+            question: finalQuestion,
             isSvg: selected.label.includes('SVG'),
-            isSkeleton: selected.label.includes('スケルトン'),
+            isSkeleton: isSkeleton,
+            isStructural: isStructural,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: false,
             showBeside: selected.showBeside
           });
-        } else if (quickPick.value.trim()) {
-          resolve({ question: quickPick.value.trim(), isSvg: false, isSkeleton: false, showBeside: false });
         } else {
           resolve(undefined);
         }
@@ -915,7 +1595,7 @@ export function activate(context: vscode.ExtensionContext) {
       return; // キャンセル
     }
 
-    const { question, isSvg, isSkeleton, showBeside } = result;
+    const { question, isSvg, isSkeleton, isStructural, isMemoSearch, isQuiz, isFreeQuestion, showBeside } = result;
 
     // プログレス表示
     await vscode.window.withProgress({
@@ -924,11 +1604,83 @@ export function activate(context: vscode.ExtensionContext) {
       cancellable: false
     }, async () => {
       try {
-        // CSSファイルの場合、HTMLでの使用箇所も検索
+        // コンテキスト収集
         let htmlContext = '';
         let codeToSend = code;
 
-        if (editor.document.languageId === 'css') {
+        if (isQuiz) {
+          // クイズ処理
+          return; // 一旦プログレスを終了してクイズ処理へ
+        } else if (isStructural) {
+          // HTML構造改善: 選択範囲 or セクション選択 + 全体送信 + CSS
+          if (editor.document.languageId !== 'html') {
+            vscode.window.showWarningMessage('HTML構造改善はHTMLファイルで使用してください');
+            return;
+          }
+
+          const fullHtml = editor.document.getText();
+
+          // 選択範囲があればそのまま使用、なければセクション選択QuickPick
+          if (code) {
+            // 選択範囲あり → QuickPickスキップ、選択範囲に★マーカー
+            const beforeSelection = editor.document.getText(
+              new vscode.Range(new vscode.Position(0, 0), selection.start)
+            );
+            const afterSelection = editor.document.getText(
+              new vscode.Range(selection.end, new vscode.Position(editor.document.lineCount, 0))
+            );
+            codeToSend = beforeSelection
+              + '<!-- ★改善対象ここから -->\n'
+              + code
+              + '\n<!-- ★改善対象ここまで -->'
+              + afterSelection;
+          } else {
+            // 選択範囲なし → セクション選択QuickPick
+            const detectedSections = detectHtmlSections(editor.document);
+            const sectionItems = [
+              { label: '📄 ファイル全体', description: '', line: -1 },
+              ...detectedSections.map(s => ({
+                label: s.label,
+                description: `行 ${s.line + 1}`,
+                line: s.line
+              }))
+            ];
+
+            const selectedSection = await vscode.window.showQuickPick(sectionItems, {
+              placeHolder: '改善対象のセクションを選択'
+            });
+
+            if (!selectedSection) { return; }
+
+            if (selectedSection.line === -1) {
+              codeToSend = fullHtml;
+            } else {
+              const lines = fullHtml.split('\n');
+              const sectionLine = selectedSection.line;
+              const before = lines.slice(0, sectionLine).join('\n');
+              const endLine = findSectionEnd(lines, sectionLine);
+              const sectionContent = lines.slice(sectionLine, endLine + 1).join('\n');
+              const after = lines.slice(endLine + 1).join('\n');
+
+              codeToSend = before + '\n<!-- ★改善対象ここから -->\n'
+                + sectionContent
+                + '\n<!-- ★改善対象ここまで -->\n' + after;
+            }
+          }
+
+          // リンクされたCSSファイルから、選択範囲のクラス/IDに関連するルールのみ抽出
+          const cssFiles = await findLinkedCssFiles(editor.document);
+          const targetHtml = code || codeToSend; // 選択範囲 or ★マーカー付き全体
+          const cssContent = await extractRelatedCssRules(targetHtml, cssFiles);
+          htmlContext = cssContent;
+        } else if (isMemoSearch) {
+          // メモ検索処理
+          return; // 一旦プログレスを終了してメモ検索処理へ
+        } else if (isFreeQuestion) {
+          // 自由質問: コンテキスト収集不要
+          codeToSend = '';
+          htmlContext = '';
+        } else if (editor.document.languageId === 'css') {
           // まず選択範囲からセレクタを探す
           let selectors = code ? extractSelectorsFromCSS(code) : [];
 
@@ -950,7 +1702,7 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        const answer = await askClaudeAPI(codeToSend, question, htmlContext || undefined);
+        const answer = await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural);
 
         // コードブロック（```css など）を削除
         const cleanAnswer = answer
@@ -1045,9 +1797,36 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`Claude API エラー: ${e.message}`);
       }
     });
+
+    // メモ検索処理（withProgress外で実行）
+    if (isMemoSearch) {
+      await handleMemoSearch();
+    }
+
+    if (isQuiz) {
+      await handleQuiz();
+    }
   });
 
   context.subscriptions.push(claudeCommand);
+
+  // ========================================
+  // メモ検索専用コマンド
+  // ========================================
+  const searchMemoCommand = vscode.commands.registerCommand('cssToHtmlJumper.searchMemo', async () => {
+    await handleMemoSearch();
+  });
+
+  context.subscriptions.push(searchMemoCommand);
+
+  // ========================================
+  // クイズコマンド
+  // ========================================
+  const quizCommand = vscode.commands.registerCommand('cssToHtmlJumper.quiz', async () => {
+    await handleQuiz();
+  });
+
+  context.subscriptions.push(quizCommand);
 
   // ========================================
   // 赤枠追加コマンド
@@ -1739,6 +2518,16 @@ export function activate(context: vscode.ExtensionContext) {
     statusBarItem.text = statusText;
     statusBarItem.show();
   }
+
+  // クイズ履歴を保存（拡張機能終了時 or 定期保存）
+  const saveQuizHistory = () => {
+    const historyArray = Array.from(quizHistoryMap.entries());
+    context.globalState.update('quizHistory', historyArray);
+  };
+
+  // 定期保存（10秒ごと）
+  const saveInterval = setInterval(saveQuizHistory, 10000);
+  context.subscriptions.push({ dispose: () => clearInterval(saveInterval) });
 }
 
 export function deactivate() {}
