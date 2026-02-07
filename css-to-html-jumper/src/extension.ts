@@ -318,15 +318,17 @@ async function handleQuiz() {
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(/^##\s+(.+)/);
       if (match) {
-        const fullTitle = match[1].trim();
+        // 見えない文字や制御文字を除去
+        const fullTitle = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
         let title = fullTitle;
         let category = '';
 
         // 登録カテゴリリスト取得
         const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+        const defaultCategory = categoryList.length > 0 ? categoryList[0] : 'その他';
 
         // カテゴリ: 見出し末尾が登録カテゴリに一致（大小文字・全半角空白無視）
-        const titleParts = fullTitle.split(/[\s　]+/); // 半角\sと全角
+        const titleParts = fullTitle.split(/[\s　]+/).filter(p => p.trim()); // 半角\sと全角、空文字列除去
         if (titleParts.length >= 2) {
           const lastWord = titleParts[titleParts.length - 1];
           const matchedCategory = categoryList.find(cat => cat.toLowerCase() === lastWord.toLowerCase());
@@ -334,6 +336,11 @@ async function handleQuiz() {
             category = lastWord; // 元の表記を保持
             title = titleParts.slice(0, -1).join(' ');
           }
+        }
+
+        // カテゴリなし → デフォルトカテゴリ（リスト1番目）
+        if (!category) {
+          category = defaultCategory;
         }
 
         const content: string[] = [];
@@ -558,9 +565,64 @@ ${answerContent}
       quizAnswerDoc = await vscode.workspace.openTextDocument(answerFilePath);
 
       const currentContent = quizAnswerDoc.getText();
-      const separator = currentContent.trim() ? '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' : '';
-      const newAnswerStartLine = quizAnswerDoc.lineCount + (separator ? 3 : 0); // 区切り線分を考慮
-      const newContent = currentContent + separator + `**Q: ${questionText}**\n\n${claudeAnswer}`;
+      const lines = currentContent.split('\n');
+
+      // カテゴリ見出しを探す（最後から検索）
+      const categoryHeading = `# ${quiz.category || 'その他'}`;
+      let insertPosition = -1;
+      let categoryExists = false;
+
+      // 最後の該当カテゴリ見出しを探す
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].trim() === categoryHeading) {
+          categoryExists = true;
+          // 次のカテゴリ見出し（# xxx）または末尾まで探す
+          let sectionEnd = lines.length;
+          for (let j = i + 1; j < lines.length; j++) {
+            if (lines[j].match(/^# .+/)) {
+              sectionEnd = j;
+              break;
+            }
+          }
+          insertPosition = sectionEnd;
+          break;
+        }
+      }
+
+      let newContent: string;
+      let newAnswerStartLine: number;
+
+      if (categoryExists && insertPosition !== -1) {
+        // 既存カテゴリセクション末尾に追記
+        const before = lines.slice(0, insertPosition).join('\n');
+        const after = insertPosition < lines.length ? '\n' + lines.slice(insertPosition).join('\n') : '';
+
+        // セクション内に既にQ&Aがあるか確認（見出しの次の行以降）
+        let hasContent = false;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].trim() === categoryHeading) {
+            // この見出しから次の見出しまでに**Q:**があるか
+            for (let j = i + 1; j < insertPosition; j++) {
+              if (lines[j].includes('**Q:')) {
+                hasContent = true;
+                break;
+              }
+            }
+            break;
+          }
+        }
+
+        const separator = hasContent ? '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' : '';
+        const newEntry = `**Q: ${questionText}**\n\n${claudeAnswer}`;
+        newContent = before + separator + newEntry + after;
+        newAnswerStartLine = insertPosition + (hasContent ? 3 : 0);
+      } else {
+        // 新規カテゴリ見出し作成
+        const separator = currentContent.trim() ? '\n\n' : '';
+        const newSection = separator + categoryHeading + '\n\n' + `**Q: ${questionText}**\n\n${claudeAnswer}`;
+        newContent = currentContent + newSection;
+        newAnswerStartLine = quizAnswerDoc.lineCount + (currentContent.trim() ? 4 : 2);
+      }
 
       const edit = new vscode.WorkspaceEdit();
       const fullRange = new vscode.Range(
@@ -1074,6 +1136,41 @@ export function activate(context: vscode.ExtensionContext) {
 
   // クイズ履歴をファイルから復元
   loadQuizHistory();
+
+  // 起動時クイズリマインダー（5秒後、1日1回のみ）
+  setTimeout(async () => {
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const memoFilePath = config.get<string>('memoFilePath', '');
+    if (!memoFilePath || quizHistoryMap.size === 0) return;
+
+    // 1日1回チェック
+    const lastReminder = context.globalState.get<number>('lastQuizReminder', 0);
+    const now = Date.now();
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+
+    if (now - lastReminder < ONE_DAY) return; // 24時間以内は通知しない
+
+    let reviewCount = 0;
+    quizHistoryMap.forEach(history => {
+      if (history.reviewCount === -1) {
+        if ((now - history.lastReviewed) / ONE_DAY >= 10) reviewCount++;
+      } else if ((now - history.lastReviewed) / ONE_DAY >= 1) {
+        reviewCount++;
+      }
+    });
+
+    if (reviewCount > 0) {
+      context.globalState.update('lastQuizReminder', now);
+      const action = await vscode.window.showInformationMessage(
+        `📚 復習すべき問題が ${reviewCount} 件あります`,
+        '🎯 クイズ開始',
+        '❌ あとで'
+      );
+      if (action === '🎯 クイズ開始') {
+        vscode.commands.executeCommand('cssToHtmlJumper.quiz');
+      }
+    }
+  }, 5000);
 
   // 旧globalStateからの移行（初回のみ）
   const savedHistory = context.globalState.get<Array<[string, QuizHistory]>>('quizHistory', []);
@@ -1688,7 +1785,13 @@ export function activate(context: vscode.ExtensionContext) {
    - 変更のない行にはコメント不要
 2. コードの後に「# 主な変更点」としてまとめも記載する`, showBeside: true },
     { label: '🐛 バグチェック', prompt: 'このコードにバグや問題点がないかチェックしてください。', showBeside: true },
-    { label: '📖 説明して', prompt: 'このコードが何をしているか説明してください。', showBeside: false },
+    { label: '📖 説明して', prompt: `このコードが何をしているか説明してください。
+
+【重要な制約】
+- コメント記号（/* */ や <!-- -->）は絶対に使わない
+- コード例を示す場合はバッククォート（\`code\`）を使う
+- 説明文のみ出力する
+- 見出しは ## で始める`, showBeside: false },
     { label: '🎨 SVGで図解', prompt: `このコードの動作や構造をSVGで図解してください。
 
 【重要な制約】
@@ -1752,24 +1855,29 @@ export function activate(context: vscode.ExtensionContext) {
       return; // キャンセル
     }
 
-    // Step 2: プリセット選択（入力ありの場合は「自由質問」も追加）
+    // Step 2: プリセット選択
+    // 入力ありの場合は「直接質問」を先頭に追加
     const presetItems = [...presetQuestions];
     if (userInput.trim()) {
-      presetItems.push({ label: '💬 自由質問', prompt: '', showBeside: false });
+      presetItems.unshift({ label: '💬 直接質問', prompt: '', showBeside: false });
     }
 
     const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; showBeside: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
-      quickPick.placeholder = userInput.trim() ? 'プリセットを選択（自由質問も可）' : 'プリセットを選択';
+      quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
 
       quickPick.onDidAccept(() => {
         const selected = quickPick.selectedItems[0] as typeof presetItems[0] | undefined;
 
-        if (selected && selected.label.includes('自由質問')) {
-          // 自由質問: userInputのみ送信
+        if (selected && selected.label.includes('直接質問')) {
+          // 直接質問: 選択範囲 + userInput のみ送信
+          const directQuestion = code
+            ? `【選択テキスト】\n${code}\n\n【質問】\n${userInput.trim()}`
+            : userInput.trim();
+
           resolve({
-            question: userInput.trim(),
+            question: directQuestion,
             isSvg: false,
             isSkeleton: false,
             isStructural: false,

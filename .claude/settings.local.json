@@ -20,7 +20,8 @@
       "Bash(code --install-extension:*)",
       "Bash(claude update:*)",
       "Bash(code --list-extensions:*)",
-      "Bash(code --uninstall-extension:*)"
+      "Bash(code --uninstall-extension:*)",
+      "Bash(dir:*)"
     ]
   }
 }
