@@ -113,7 +113,7 @@ css-to-html-jumper/
 cd css-to-html-jumper
 npm run compile
 npx vsce package --no-dependencies
-code --install-extension css-to-html-jumper-1.4.0.vsix --force
+code --install-extension css-to-html-jumper-1.9.0.vsix --force
 # → VS Code: Ctrl+Shift+P → Developer: Reload Window
 ```
 
@@ -132,6 +132,50 @@ code --install-extension css-to-html-jumper-1.4.0.vsix --force
 | セレクタホバー | CSSセレクタにホバー | HTMLの使用箇所をサイドに表示 |
 | ステータスバー | 自動 | 現在のセクション名を画面下に表示 |
 | Alt+Click | CSSセレクタ→HTML | Definition Provider |
+| SVGリンク挿入 | `Ctrl+Alt+S` | AHK保存済みSVGへの相対パスリンクをmdに挿入 |
+
+### SVGリンク挿入機能（Ctrl+Alt+S）の仕組み
+
+⚠ **この機能は複数のシステムが連携しており複雑。変更時は全体の流れを理解すること。**
+
+#### 全体フロー
+```
+① AIでSVG生成 → ユーザーがコピー
+② AutoHotkey（常駐）がクリップボード監視で自動検知
+   → 「その他\SVG一覧\svg_YYYYMMDD_HHMMSS.svg」に自動保存
+   → 一時ファイル「%TEMP%\svg_clipboard.svg」にも保存
+   → クリップボードをクリア（誤爆防止）
+③ ユーザーがmdファイル上で Ctrl+Alt+S を押す
+④ VS Code拡張が一時ファイルの存在を確認
+   → 「その他\SVG一覧」フォルダの最新SVGファイルを特定
+   → カーソル位置に ![SVG](./その他/SVG一覧/xxx.svg) を挿入
+   → 一時ファイルを削除
+⑤ ユーザーが挿入されたリンクを Ctrl+クリック → SVG表示
+```
+
+#### なぜクリップボードから直接読まないのか
+- AHKがSVG検知後に**クリップボードをクリアする**（Typelessの復元による誤爆防止）
+- そのため VS Code拡張がクリップボードを読んでも空
+- 解決策: AHKが `%TEMP%\svg_clipboard.svg` に一時ファイルとして残す
+
+#### 関連ファイル
+| ファイル | 役割 |
+|---------|------|
+| `SVG表示保存CS_S.ahk` | AutoHotkeyスクリプト（Startup配下で常駐） |
+| `extension.ts` の `insertSvgFromTemp` | VS Code拡張のSVG挿入コマンド |
+| `package.json` の `svgTempFilePath` 設定 | 一時ファイルパスのカスタマイズ用 |
+
+#### 自宅・会社でのパス対応
+- SVG保存先の基底パスは**環境変数 `KNOWLEDGE_ROOT`** で切り替え（AHK側）
+  - 自宅: `D:\50_knowledge`、会社: `T:\50_knowledge`
+- `その他\SVG一覧\` 以下はGit管理で同一構成
+- mdに挿入するリンクは**相対パス**（`./その他/SVG一覧/xxx.svg`）なのでどのPCでも動く
+- VS Code拡張は現在のmdファイルから上位を辿って `その他\SVG一覧` を自動検出
+
+#### ショートカットキーの競合注意
+- `Ctrl+Alt+V` は **Paste Image拡張機能**（画像貼り付け）が使用中 → 使用禁止
+- `Ctrl+Alt+S` をSVG挿入に割り当て済み
+- AHK側の `Ctrl+Alt+S` はVS Code拡張に譲渡済み（コメントアウト）
 
 ### Claude AI プリセット（Ctrl+I）
 

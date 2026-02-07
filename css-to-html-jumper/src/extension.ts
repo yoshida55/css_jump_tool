@@ -2920,6 +2920,100 @@ export function activate(context: vscode.ExtensionContext) {
     statusBarItem.show();
   }
 
+  // ========================================
+  // 一時ファイルからSVGリンク挿入 (Ctrl+Alt+S)
+  // AHKが保存したSVGファイルへの相対パスリンクをmdに挿入
+  // ========================================
+  const insertSvgCommand = vscode.commands.registerCommand('cssToHtmlJumper.insertSvgFromTemp', async () => {
+    const fs = require('fs');
+    const os = require('os');
+
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const customPath = config.get<string>('svgTempFilePath', '');
+    const tempFilePath = customPath || path.join(os.tmpdir(), 'svg_clipboard.svg');
+
+    if (!fs.existsSync(tempFilePath)) {
+      vscode.window.showInformationMessage('SVGファイルが見つかりません: ' + tempFilePath);
+      return;
+    }
+
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+
+    try {
+      // 一時ファイルからSVGファイル名を特定（AHKが保存したファイルを探す）
+      const currentFilePath = editor.document.uri.fsPath;
+      const currentDir = path.dirname(currentFilePath);
+
+      // AHKの保存先: 同じknowledgeルート配下の「その他\SVG一覧」
+      // 現在のmdファイルから上位を辿って「その他\SVG一覧」を探す
+      let searchDir = currentDir;
+      let svgDir = '';
+      for (let i = 0; i < 5; i++) {
+        const candidate = path.join(searchDir, 'その他', 'SVG一覧');
+        if (fs.existsSync(candidate)) {
+          svgDir = candidate;
+          break;
+        }
+        const parent = path.dirname(searchDir);
+        if (parent === searchDir) { break; }
+        searchDir = parent;
+      }
+
+      if (!svgDir) {
+        vscode.window.showErrorMessage('「その他/SVG一覧」フォルダが見つかりません');
+        return;
+      }
+
+      // SVG一覧内の最新ファイルを取得（AHKが直前に保存したもの）
+      const svgFiles = fs.readdirSync(svgDir)
+        .filter((f: string) => f.toLowerCase().endsWith('.svg'))
+        .map((f: string) => ({
+          name: f,
+          mtime: fs.statSync(path.join(svgDir, f)).mtimeMs
+        }))
+        .sort((a: any, b: any) => b.mtime - a.mtime);
+
+      if (svgFiles.length === 0) {
+        vscode.window.showErrorMessage('SVG一覧にファイルがありません');
+        return;
+      }
+
+      const latestSvg = svgFiles[0].name;
+
+      // 現在のmdファイルからの相対パスを計算
+      const absoluteSvgPath = path.join(svgDir, latestSvg);
+      let relativePath = path.relative(currentDir, absoluteSvgPath).replace(/\\/g, '/');
+
+      // 先頭に ./ を付ける
+      if (!relativePath.startsWith('.')) {
+        relativePath = './' + relativePath;
+      }
+
+      // Markdownリンクをカーソル位置に挿入
+      const linkText = `![SVG](${relativePath})`;
+
+      await editor.edit((editBuilder: vscode.TextEditorEdit) => {
+        const position = editor.selection.active;
+        editBuilder.insert(position, linkText + '\n');
+      });
+
+      // 挿入後に一時ファイル削除
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (e) {
+        // 削除失敗は無視
+      }
+
+      vscode.window.showInformationMessage('✅ SVGリンクを挿入: ' + latestSvg);
+    } catch (e: any) {
+      vscode.window.showErrorMessage('SVG挿入エラー: ' + e.message);
+    }
+  });
+  context.subscriptions.push(insertSvgCommand);
+
   // 定期保存（10秒ごと）
   const saveInterval = setInterval(saveQuizHistory, 10000);
   context.subscriptions.push({ dispose: () => clearInterval(saveInterval) });

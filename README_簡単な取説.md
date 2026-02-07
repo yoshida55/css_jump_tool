@@ -102,6 +102,16 @@ Ctrl+Shift+P → "クイズのカテゴリ変更"
 ### 10. Alt+Click
 - **CSSからHTML**: Alt+クリックで使用箇所にジャンプ
 
+### 11. SVGリンク挿入
+- **操作**: `Ctrl+Alt+S`
+- **説明**: AHKが保存したSVGファイルへの相対パスリンクをmdに挿入
+- **流れ**:
+  1. AIでSVG生成 → コピー
+  2. AHK（常駐）が自動検知 → `その他\SVG一覧\` に保存 → クリップボードクリア
+  3. mdファイル上で `Ctrl+Alt+S` → `![SVG](./その他/SVG一覧/xxx.svg)` が挿入
+  4. `Ctrl+クリック` でSVG表示
+- **注意**: `Ctrl+Alt+V` はPaste Image拡張が使用中のため使わないこと
+
 ---
 
 ## ⚙ settings.json 設定一覧
@@ -114,16 +124,19 @@ Ctrl+Shift+P → "クイズのカテゴリ変更"
 | `memoFilePath` | メモファイルパス | - |
 | `quizCategory` | 出題カテゴリ | `全て` |
 | `quizCategories` | カテゴリ判定リスト | `["CSS", "JavaScript", "Python", "HTML"]` |
+| `svgTempFilePath` | SVG一時ファイルパス | `%TEMP%\svg_clipboard.svg` |
 
 ---
 
 ## 📁 ファイル構成
 
 ```
-D:\50_knowledge\
+D:\50_knowledge\（会社: T:\50_knowledge\）
 ├─ 01_memo.md              # メモファイル
+├─ images\                 # 画像（Paste Image用）
 ├─ クイズ回答.md           # クイズ回答履歴（自動作成）
 └─ その他\
+   ├─ SVG一覧\             # AHKが自動保存するSVGファイル
    └─ .quiz-history.json   # クイズ履歴（Git管理可能）
 ```
 
@@ -170,7 +183,8 @@ D:\50_knowledge\
 1. コード選択
 2. Ctrl+I → 🎨 SVGで図解
 3. SVGがクリップボードにコピーされる
-4. メモや資料に貼り付け
+4. AHKが自動保存 → Ctrl+Alt+S でmdにリンク挿入
+5. Ctrl+クリックでSVG表示
 ```
 
 ---
@@ -179,7 +193,7 @@ D:\50_knowledge\
 
 ```bash
 # 新しいvsixファイルを取得
-code --install-extension css-to-html-jumper-1.7.0.vsix --force
+code --install-extension css-to-html-jumper-1.9.0.vsix --force
 
 # VS Code再起動
 Ctrl+Shift+P → "Developer: Reload Window"
@@ -209,5 +223,5 @@ Ctrl+Shift+P → "Developer: Reload Window"
 
 ---
 
-**バージョン**: 1.7.0
+**バージョン**: 1.9.0
 **最終更新**: 2026-02-07

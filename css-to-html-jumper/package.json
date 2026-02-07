@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/yoshida55/css-to-html-jumper"
   },
-  "version": "1.8.0",
+  "version": "1.9.0",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -61,6 +61,11 @@
         "command": "cssToHtmlJumper.changeQuizCategory",
         "title": "🔀 クイズのカテゴリ変更",
         "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.insertSvgFromTemp",
+        "title": "📋 一時ファイルからSVG挿入",
+        "category": "CSS to HTML"
       }
     ],
     "menus": {
@@ -112,6 +117,11 @@
         "command": "cssToHtmlJumper.quiz",
         "key": "ctrl+shift+7",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.insertSvgFromTemp",
+        "key": "ctrl+alt+s",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
@@ -152,6 +162,11 @@
           "type": "string",
           "default": "全て",
           "description": "クイズ出題時のカテゴリフィルタ。「全て」またはメモ内のカテゴリ名（例: CSS, JavaScript）"
+        },
+        "cssToHtmlJumper.svgTempFilePath": {
+          "type": "string",
+          "default": "",
+          "description": "SVG一時ファイルのパス。空欄なら %TEMP%\\svg_clipboard.svg を使用"
         },
         "cssToHtmlJumper.quizCategories": {
           "type": "array",
