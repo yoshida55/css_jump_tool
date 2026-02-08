@@ -59,7 +59,8 @@
   - 結果0件時はGemini AIで要約
 
 ### 6. クイズ機能
-- **操作**: `Ctrl+Shift+7`
+- **出題**: `Ctrl+Shift+7`
+- **評価**: `Ctrl+Shift+8`（最後のクイズを自動採点）
 - **機能**:
   - メモから問題を自動生成（Gemini 2.5 Flash-Lite）
   - スペースド・リピティション（1日後に復習）
@@ -119,9 +120,11 @@ Ctrl+Shift+P → "クイズのカテゴリ変更"
 | 設定項目 | 説明 | デフォルト |
 |---------|------|-----------|
 | `claudeApiKey` | Claude API キー | - |
-| `claudeModel` | Claudeモデル | `claude-sonnet-4-5` |
-| `geminiApiKey` | Gemini API キー | - |
+| `claudeModel` | Claudeモデル | `claude-sonnet-4-5-20250929` |
+| `geminiApiKey` | Gemini API キー（Fuzzy検索0件時フォールバック） | - |
 | `memoFilePath` | メモファイルパス | - |
+| `targetFiles` | 検索対象HTMLファイル（glob形式） | `**/*.html` |
+| `copilotPrompt` | Copilot解説のプロンプト | `このコードの目的を簡潔に説明して` |
 | `quizCategory` | 出題カテゴリ | `全て` |
 | `quizCategories` | カテゴリ判定リスト | `["CSS", "JavaScript", "Python", "HTML"]` |
 | `svgTempFilePath` | SVG一時ファイルパス | `%TEMP%\svg_clipboard.svg` |
@@ -203,10 +206,30 @@ Ctrl+Shift+P → "Developer: Reload Window"
 
 ## 🏢 会社PCへの持ち込み
 
+### 方法1: Gitからクローン（推奨）
+```bash
+git clone <リポジトリURL>
+cd css-to-html-jumper
+code --install-extension css-to-html-jumper-1.9.0.vsix --force
+```
+※ node_modules/ と out/ がGit管理済み → npm install 不要
+
+### 方法2: USBで持ち込み
 1. **vsixファイルをUSBで持ち込み**
 2. **Install from VSIX**
-3. **settings.json設定**（APIキー等）
-4. **メモフォルダをGitで同期**
+
+### 共通: settings.json設定
+```json
+{
+  "cssToHtmlJumper.claudeApiKey": "YOUR_CLAUDE_API_KEY",
+  "cssToHtmlJumper.geminiApiKey": "YOUR_GEMINI_API_KEY",
+  "cssToHtmlJumper.memoFilePath": "T:\\50_knowledge\\01_memo.md"
+}
+```
+
+### オプション: AHKファイル配置（SVG機能用）
+- `SVG表示保存CS+S.ahk` をスタートアップに配置
+- 環境変数 `KNOWLEDGE_ROOT=T:\50_knowledge` を設定
 
 ✅ **Python不要・Node.js不要**で動作
 
@@ -224,4 +247,4 @@ Ctrl+Shift+P → "Developer: Reload Window"
 ---
 
 **バージョン**: 1.9.0
-**最終更新**: 2026-02-07
+**最終更新**: 2026-02-08

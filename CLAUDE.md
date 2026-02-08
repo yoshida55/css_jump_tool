@@ -16,7 +16,18 @@ css-jumper/
     ├── open_vscode.exe              ... VS Code起動用（Python不要）
     ├── open_vscode.py               ... exeのソース
     └── com.cssjumper.open_vscode.json  ... Native Messaging設定
+
+css-to-html-jumper/
+├── package.json           ... 拡張機能設定
+├── src/                   ... TypeScriptソースコード
+├── out/                   ... ビルド済みJS（Git管理済み）
+├── node_modules/          ... 依存パッケージ（Git管理済み・災害復旧用）
+└── *.vsix                 ... ビルド済み拡張ファイル（Git管理済み）
 ```
+
+**重要**: `.gitignore` で node_modules/ と out/ を Git管理対象にしています。
+→ 会社PCで `git clone` 後、**npm install 不要**で即開発可能
+→ PC故障時もGitから完全復元可能（npmレジストリへの依存なし）
 
 ## 主要機能
 
@@ -125,6 +136,9 @@ code --install-extension css-to-html-jumper-1.9.0.vsix --force
 | セクションジャンプ | `Ctrl+Shift+L` | 罫線ボックスコメントのセクション一覧 |
 | Claude AI質問 | `Ctrl+I` | プリセット選択 or 直接入力 |
 | Copilot解説 | `Ctrl+Shift+/` | 選択コードをCopilot Chatに送信 |
+| メモ検索 | `Ctrl+Shift+M` | Fuzzy検索でメモから情報検索、履歴10件表示、0件時Gemini要約 |
+| クイズ出題 | `Ctrl+Shift+7` | メモから問題生成、スペースド・リピティション対応 |
+| クイズ評価 | `Ctrl+Shift+8` | 最後のクイズを自動採点（Gemini 2.5 Flash-Lite） |
 | 赤枠追加 | ホバー→🔴クリック | CSSセレクタに `border: 0.5rem solid red` 追加 |
 | 赤枠一括削除 | コマンドパレット | 全赤枠を一括削除 |
 | CSS日本語ホバー | CSSプロパティにホバー | 日本語でプロパティ解説 |
@@ -221,6 +235,34 @@ code --install-extension css-to-html-jumper-1.9.0.vsix --force
 - コードブロック除去: Claude回答から ` ```css ` 等を自動削除
 
 ### 会社PCへの持ち込み
-- **Python不要、Node.js不要**（VS Code内蔵ランタイムで動作）
+
+#### 方法1: Git clone（推奨）
+```bash
+git clone <リポジトリURL>
+cd css-to-html-jumper
+code --install-extension css-to-html-jumper-1.9.0.vsix --force
+Ctrl+Shift+P → Developer: Reload Window
+```
+
+**重要**: node_modules/ と out/ がGit管理済み → **npm install 不要**
+
+#### 方法2: USBで持ち込み
 - vsixファイルをUSB等で持ち込み → Install from VSIX
+
+#### 共通設定
+```json
+// settings.json（会社PC用パス）
+{
+  "cssToHtmlJumper.claudeApiKey": "sk-ant-api03-...",
+  "cssToHtmlJumper.geminiApiKey": "AIza...",
+  "cssToHtmlJumper.memoFilePath": "T:\\50_knowledge\\01_memo.md"
+}
+```
+
+#### オプション: AHK配置（SVG機能用）
+- `SVG表示保存CS+S.ahk` をスタートアップに配置
+- 環境変数 `KNOWLEDGE_ROOT=T:\50_knowledge` を設定
+
+#### 詳細
+- **Python不要、Node.js不要**（VS Code内蔵ランタイムで動作）
 - 詳細は `会社PC_ClaudeCode導入メモ.md` 参照
