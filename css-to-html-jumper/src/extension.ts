@@ -18,6 +18,7 @@ interface QuizHistory {
   line: number;           // 行番号
   lastReviewed: number;   // 最終復習日時（Unix timestamp）
   reviewCount: number;    // 復習回数
+  evaluations?: number[];  // 評価履歴（3=簡単, 2=普通, 1=難しい）
 }
 
 let quizHistoryMap: Map<string, QuizHistory> = new Map();
@@ -26,6 +27,17 @@ let quizHistoryMap: Map<string, QuizHistory> = new Map();
 // クイズ回答ドキュメント（セッション通して累積）
 // ========================================
 let quizAnswerDoc: vscode.TextDocument | null = null;
+
+// ========================================
+// クイズ評価待ち状態（ステータスバー用）
+// ========================================
+let pendingQuizEvaluation: {
+  quiz: { title: string; line: number; content: string[]; category: string };
+  quizAnswerDoc: vscode.TextDocument;
+  newAnswerStartLine: number;
+} | null = null;
+
+let statusBarItem: vscode.StatusBarItem | null = null;
 
 // ========================================
 // クイズ履歴のファイル保存・読込
@@ -84,6 +96,143 @@ function loadQuizHistory() {
   } catch (e: any) {
     console.error('[Quiz] 履歴ファイル読込エラー:', e.message);
   }
+}
+
+// ========================================
+// クイズ復習間隔計算（間隔反復学習）
+// ========================================
+/**
+ * 復習回数に応じた最適な復習間隔を返す（単位：日）
+ * 科学的根拠に基づく段階的間隔拡大（1日→3日→7日→14日→30日）
+ */
+function getNextInterval(reviewCount: number): number {
+  const intervals = [1, 3, 7, 14, 30]; // 日数
+  return intervals[Math.min(reviewCount, intervals.length - 1)];
+}
+
+// ========================================
+// クイズ評価関連関数（ステータスバー）
+// ========================================
+
+/**
+ * ステータスバーに評価待ちボタンを表示 + エディタ上部にインフォバー
+ */
+function showEvaluationStatusBar() {
+  if (!statusBarItem) {
+    statusBarItem = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Left,
+      100
+    );
+    statusBarItem.command = 'cssToHtmlJumper.evaluateLastQuiz';
+  }
+  statusBarItem.text = '📝 クイズ評価待ち';
+  statusBarItem.tooltip = 'クリックして評価を完了（Ctrl+Shift+8）';
+  statusBarItem.show();
+
+  // エディタ上部にもインフォメッセージを表示
+  vscode.window.showInformationMessage(
+    '⚠ クイズの評価待ちです',
+    '評価する',
+    '後で'
+  ).then(selected => {
+    if (selected === '評価する') {
+      vscode.commands.executeCommand('cssToHtmlJumper.evaluateLastQuiz');
+    }
+  });
+}
+
+/**
+ * ステータスバーの評価待ちボタンを非表示
+ */
+function hideEvaluationStatusBar() {
+  if (statusBarItem) {
+    statusBarItem.hide();
+  }
+  pendingQuizEvaluation = null;
+}
+
+/**
+ * 評価QuickPickを表示
+ */
+async function showEvaluationQuickPick() {
+  const afterAnswer = await vscode.window.showQuickPick(
+    [
+      { label: '😊 簡単→削除して次へ', description: '理解済み（回答を保存しない）', eval: 3 },
+      { label: '😐 普通→保存して次へ', description: '復習したい（回答を保存）', eval: 2 },
+      { label: '😓 難しい→保存して次へ', description: '要復習（回答を保存）', eval: 1 },
+      { label: '✅ 終了', description: '', action: 'exit' }
+    ],
+    {
+      placeHolder: '理解度を評価してください'
+    }
+  );
+
+  return afterAnswer;
+}
+
+/**
+ * 評価を処理（履歴更新、回答削除、次の問題）
+ */
+async function processEvaluation(evaluation: any) {
+  if (!pendingQuizEvaluation) {
+    return;
+  }
+
+  const { quiz, quizAnswerDoc: answerDoc } = pendingQuizEvaluation;
+  const now = Date.now();
+
+  // 評価を記録
+  const history = quizHistoryMap.get(quiz.title)!;
+
+  // 評価履歴を追加
+  if (!history.evaluations) {
+    history.evaluations = [];
+  }
+  history.evaluations.push(evaluation.eval);
+
+  // 評価に応じて復習間隔を調整
+  if (evaluation.eval === 3) {
+    // 簡単 → 間隔を大幅延長（reviewCount + 2）
+    history.reviewCount += 2;
+  } else if (evaluation.eval === 1) {
+    // 難しい → 間隔リセット
+    history.reviewCount = 0;
+  }
+  // 普通（eval === 2）は既に履歴記録時にインクリメント済みなので何もしない
+
+  saveQuizHistory();
+
+  // 簡単評価の場合は回答を削除
+  if (evaluation.eval === 3) {
+    const currentContent = answerDoc.getText();
+    const lines = currentContent.split('\n');
+
+    // 最後の区切り線を探す（なければファイル先頭から）
+    let deleteStartLine = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].includes('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')) {
+        deleteStartLine = i - 1; // 区切り線の前の空行から削除
+        break;
+      }
+    }
+
+    // 削除範囲を適用
+    const newContent = lines.slice(0, Math.max(0, deleteStartLine)).join('\n');
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      new vscode.Position(0, 0),
+      new vscode.Position(answerDoc.lineCount, 0)
+    );
+    edit.replace(answerDoc.uri, fullRange, newContent);
+    await vscode.workspace.applyEdit(edit);
+    await answerDoc.save();
+  }
+
+  // ステータスバーを非表示
+  hideEvaluationStatusBar();
+
+  // 次の問題へ
+  await handleQuiz();
 }
 
 // ========================================
@@ -383,7 +532,7 @@ async function handleQuiz() {
     const now = Date.now();
     const ONE_DAY = 24 * 60 * 60 * 1000;
 
-    // 復習候補: 1日以上経過した問題（ただし10日間スキップは除外）
+    // 復習候補: reviewCountに応じた間隔経過した問題（ただし10日間スキップは除外）
     const reviewCandidates = filteredHeadings.filter(h => {
       const history = quizHistoryMap.get(h.title);
       if (!history) return false; // 未出題は除外
@@ -395,7 +544,8 @@ async function handleQuiz() {
       }
 
       const daysSince = (now - history.lastReviewed) / ONE_DAY;
-      return daysSince >= 1;
+      const requiredInterval = getNextInterval(history.reviewCount);
+      return daysSince >= requiredInterval;
     });
 
     let quiz;
@@ -435,13 +585,22 @@ ${quiz.title}
 ${contentPreview}
 
 【要件】
-- 30文字以内の短い質問
+- 50文字以内の質問（明確さを優先、短さは二の次）
 - 必ず「？」で終わる
 - 前置き・説明文は一切禁止、質問のみ出力
-- キーワードを含める
+- 主語・述語を明確にする
+- 専門用語を使う場合は文脈を含める
+- 質問文に答えやキーワードを含めない
 
-悪い例: "[!INFORMATION]という文字を視覚的に中央に配置するには、負担的に以下のようなCSSプロパティと値が必要"（長すぎ・説明的）
-良い例: "中央配置に必要なCSSプロパティは？"`;
+悪い例:
+× "inline-blockで中身の幅だけの箱を作るには？"（答えが含まれている）
+× "display:inline-flexで横並びになる要素の間隔調整は？"（主語不明確）
+× "[!INFORMATION]という文字を視覚的に中央に配置するには..."（長すぎ・説明的）
+
+良い例:
+○ "中身の幅だけの箱を作るdisplayの値は？"（答えを伏せている）
+○ "Flexコンテナ内の子要素同士の間隔を一括設定するプロパティは？"（主語明確）
+○ "要素を中央配置するFlexboxプロパティは？"（シンプルで明確）`;
 
         const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=' + geminiApiKey, {
           method: 'POST',
@@ -536,7 +695,49 @@ ${questionText}
 【メモ内容】
 ${answerContent}
 
-質問に対する答えのみを日本語で簡潔に回答してください。`;
+【回答フォーマット】
+答え（1行、核心のみ）
+
+説明（1-2行、理由や用途）
+
+例：（メモにコード例があれば）
+\`\`\`言語名
+コード
+\`\`\`
+
+【要件】
+- 超シンプルに、核心だけ書く
+- 見出し禁止（**答え**、**説明**、**メモの要約：** 等を使わない）
+- 箇条書きは最小限（❌⭕は特に必要な時のみ）
+- 200文字以内（コード除く）
+- 回答内に「# 」で始まる見出しを含めない
+
+【悪い例】
+**答え**
+
+vertical-align
+
+**説明**
+
+インライン要素の縦位置を調整するプロパティ。
+
+**メモの要約：**
+- ❌ ...
+- ⭕ ...
+
+（見出しが多すぎ、長すぎ）
+
+【良い例】
+vertical-align
+
+インライン要素の縦位置を調整。負の値（-0.2rem等）で下方向に微調整できる。
+
+例：
+\`\`\`css
+.icon {
+  vertical-align: -0.2rem;
+}
+\`\`\``;
 
         try {
           claudeAnswer = await askClaudeAPI('', answerPrompt);
@@ -572,14 +773,20 @@ ${answerContent}
       let insertPosition = -1;
       let categoryExists = false;
 
+      // 既知のカテゴリ名リスト取得
+      const knownCategories = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+      knownCategories.push('全て', 'その他', '不動産', 'html');  // その他のカテゴリも追加
+
       // 最後の該当カテゴリ見出しを探す
       for (let i = lines.length - 1; i >= 0; i--) {
         if (lines[i].trim() === categoryHeading) {
           categoryExists = true;
-          // 次のカテゴリ見出し（# xxx）または末尾まで探す
+          // 次のカテゴリ見出し（# xxx）または末尾まで探す（既知のカテゴリのみ）
           let sectionEnd = lines.length;
           for (let j = i + 1; j < lines.length; j++) {
-            if (lines[j].match(/^# .+/)) {
+            // 既知のカテゴリ見出しのみ検出（Claude回答内の「# 回答」等を誤検出しない）
+            if (lines[j].trim().startsWith('# ') &&
+                knownCategories.some(cat => lines[j].trim() === `# ${cat}`)) {
               sectionEnd = j;
               break;
             }
@@ -676,46 +883,33 @@ ${answerContent}
       answerEditor.setDecorations(answerDecorationType, [highlightRange]);
       setTimeout(() => answerDecorationType.dispose(), 1500);
 
-      // 答え確認後の選択肢
-      const afterAnswer = await vscode.window.showQuickPick(
-        [
-          { label: '🔄 別の問題', description: '', action: 'next' },
-          { label: '🗑️ この回答を削除', description: '', action: 'delete' },
-          { label: '✅ 終了', description: '', action: 'exit' }
-        ],
-        {
-          placeHolder: '次のアクション'
-        }
-      );
+      // 評価待ちデータを保存
+      pendingQuizEvaluation = {
+        quiz: quiz,
+        quizAnswerDoc: quizAnswerDoc,
+        newAnswerStartLine: newAnswerStartLine
+      };
 
-      if (afterAnswer?.action === 'next') {
-        await handleQuiz();
-      } else if (afterAnswer?.action === 'delete') {
-        // 最後に追加したQ&Aを削除
-        const currentContent = quizAnswerDoc.getText();
-        const lines = currentContent.split('\n');
+      // 答え確認後の評価選択
+      const afterAnswer = await showEvaluationQuickPick();
 
-        // 最後の区切り線を探す（なければファイル先頭から）
-        let deleteStartLine = 0;
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i].includes('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')) {
-            deleteStartLine = i - 1; // 区切り線の前の空行から削除
-            break;
-          }
-        }
-
-        // 削除範囲を適用
-        const newContent = lines.slice(0, Math.max(0, deleteStartLine)).join('\n');
-        const edit = new vscode.WorkspaceEdit();
-        const fullRange = new vscode.Range(
-          new vscode.Position(0, 0),
-          new vscode.Position(quizAnswerDoc.lineCount, 0)
-        );
-        edit.replace(quizAnswerDoc.uri, fullRange, newContent);
-        await vscode.workspace.applyEdit(edit);
-        await quizAnswerDoc.save();
+      if (!afterAnswer) {
+        // キャンセル → ステータスバーに評価待ち表示
+        showEvaluationStatusBar();
+        return;
       }
-      // exit or キャンセルは何もしない
+
+      if (afterAnswer.action === 'exit') {
+        // 終了を選択 → 評価待ちクリア
+        hideEvaluationStatusBar();
+        return;
+      }
+
+      // 評価あり → 処理実行
+      if (afterAnswer.eval) {
+        await processEvaluation(afterAnswer);
+        return; // 評価完了後は次の問題へ（processEvaluation内でhandleQuiz呼出済）
+      }
     } else if (answer.action === 'next') {
       // 別の問題 → 10日間スキップ
       const skipHistory = quizHistoryMap.get(quiz.title);
@@ -2172,6 +2366,58 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(quizCommand);
+
+  // ========================================
+  // クイズ評価コマンド（ステータスバーから呼び出し）
+  // ========================================
+  const evaluateLastQuizCommand = vscode.commands.registerCommand('cssToHtmlJumper.evaluateLastQuiz', async () => {
+    if (!pendingQuizEvaluation) {
+      vscode.window.showWarningMessage('評価待ちのクイズがありません');
+      return;
+    }
+
+    // 評価QuickPick表示
+    const afterAnswer = await showEvaluationQuickPick();
+
+    if (!afterAnswer) {
+      // キャンセル → ステータスバー再表示
+      showEvaluationStatusBar();
+      return;
+    }
+
+    if (afterAnswer.action === 'exit') {
+      // 終了 → 評価待ちクリア
+      hideEvaluationStatusBar();
+      return;
+    }
+
+    // 評価あり → 処理実行
+    if (afterAnswer.eval) {
+      await processEvaluation(afterAnswer);
+    }
+  });
+
+  context.subscriptions.push(evaluateLastQuizCommand);
+
+  // ========================================
+  // クイズ回答ファイル保存時の評価確認
+  // ========================================
+  const saveListener = vscode.workspace.onDidSaveTextDocument((document) => {
+    // クイズ回答.mdが保存され、評価待ち状態の場合
+    if (pendingQuizEvaluation && document.fileName.endsWith('クイズ回答.md')) {
+      vscode.window.showInformationMessage(
+        '💡 クイズの評価がまだです。評価してから次の問題に進みますか？',
+        '評価する',
+        '後で'
+      ).then(selected => {
+        if (selected === '評価する') {
+          vscode.commands.executeCommand('cssToHtmlJumper.evaluateLastQuiz');
+        }
+      });
+    }
+  });
+
+  context.subscriptions.push(saveListener);
 
   // ========================================
   // クイズカテゴリ変更コマンド
