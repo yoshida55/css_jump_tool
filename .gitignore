@@ -1,7 +1,7 @@
 nul
 tmpclaude-*/
 tmpclaude-*-cwd
-node_modules/
-out/
+# node_modules/ ← 災害復旧用に全環境をGit管理
+# out/ ← ビルド済みJSをGit管理（会社PCでnpm不要にするため）
 .vscode/
 css-jumper/.claude/
