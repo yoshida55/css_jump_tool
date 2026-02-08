@@ -2400,24 +2400,9 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(evaluateLastQuizCommand);
 
   // ========================================
-  // クイズ回答ファイル保存時の評価確認
+  // クイズ回答ファイル保存時の評価確認（無効化）
   // ========================================
-  const saveListener = vscode.workspace.onDidSaveTextDocument((document) => {
-    // クイズ回答.mdが保存され、評価待ち状態の場合
-    if (pendingQuizEvaluation && document.fileName.endsWith('クイズ回答.md')) {
-      vscode.window.showInformationMessage(
-        '💡 クイズの評価がまだです。評価してから次の問題に進みますか？',
-        '評価する',
-        '後で'
-      ).then(selected => {
-        if (selected === '評価する') {
-          vscode.commands.executeCommand('cssToHtmlJumper.evaluateLastQuiz');
-        }
-      });
-    }
-  });
-
-  context.subscriptions.push(saveListener);
+  // ユーザー要望により保存時の評価促進メッセージを無効化
 
   // ========================================
   // クイズカテゴリ変更コマンド

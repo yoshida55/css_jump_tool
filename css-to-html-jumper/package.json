@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/yoshida55/css-to-html-jumper"
   },
-  "version": "1.9.0",
+  "version": "1.9.2",
   "engines": {
     "vscode": "^1.74.0"
   },
