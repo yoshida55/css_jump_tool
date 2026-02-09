@@ -100,7 +100,7 @@
       },
       {
         "command": "cssToHtmlJumper.jumpToSection",
-        "key": "ctrl+shift+j",
+        "key": "ctrl+shift+l",
         "when": "editorLangId == css"
       },
       {
