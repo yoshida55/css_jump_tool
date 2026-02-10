@@ -1023,6 +1023,18 @@ function showFlexInfo() {
     label.className = "css-jumper-flex-info";
     label.textContent = labelText;
 
+    // クリックでCSS定義へジャンプ用のデータを保存
+    var elemId = elem.id || "";
+    var elemClassString = "";
+    var classAttr = elem.className;
+    if (typeof classAttr === "string") {
+      elemClassString = classAttr.replace(/css-jumper-\S*/g, "").trim();
+    } else if (classAttr && classAttr.baseVal) {
+      elemClassString = classAttr.baseVal.replace(/css-jumper-\S*/g, "").trim();
+    }
+    label.dataset.elemId = elemId;
+    label.dataset.elemClasses = elemClassString;
+
     label.style.cssText =
       "position: absolute !important;" +
       "left: " + labelLeft + "px !important;" +
@@ -1034,9 +1046,42 @@ function showFlexInfo() {
       "font-family: 'Segoe UI', sans-serif !important;" +
       "border-radius: 4px !important;" +
       "z-index: 999995 !important;" +
-      "pointer-events: none !important;" +
+      "pointer-events: auto !important;" +
+      "cursor: pointer !important;" +
       "white-space: nowrap !important;" +
       "box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;";
+
+    // クリックでCSS定義へジャンプ（Native Messaging経由）
+    label.addEventListener("click", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var id = this.dataset.elemId;
+      var classStr = this.dataset.elemClasses;
+      var classes = classStr ? classStr.trim().split(/\s+/) : [];
+      var firstClass = classes[0] || "";
+
+      if (!id && !firstClass) {
+        showNotification("IDまたはクラスが見つかりません", "error");
+        return;
+      }
+
+      if (!chrome.runtime || !chrome.runtime.id) {
+        showNotification("拡張機能が更新されました。ページをリロードしてください。", "error");
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage({
+          action: "classNameResult",
+          id: id,
+          className: firstClass,
+          allClasses: classes,
+          viewportWidth: window.innerWidth
+        });
+      } catch (err) {
+        showNotification("通信エラー: ページをリロードしてください", "error");
+      }
+    });
 
     document.body.appendChild(label);
     flexCount++;
