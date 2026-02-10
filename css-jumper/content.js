@@ -882,6 +882,42 @@ function removeSectionOutline() {
   sectionOutlineVisible = false;
 }
 
+// Flex階層の深さを計算（親のflexコンテナを何個持つか）
+function getFlexDepth(elem) {
+  var depth = 0;
+  var parent = elem.parentElement;
+  while (parent) {
+    if (parent.classList && (
+      parent.classList.contains("css-jumper-flex-info") ||
+      parent.classList.contains("css-jumper-size-overlay") ||
+      parent.classList.contains("css-jumper-spacing-overlay") ||
+      parent.classList.contains("css-jumper-outline")
+    )) {
+      parent = parent.parentElement;
+      continue;
+    }
+    var parentStyle = window.getComputedStyle(parent);
+    if (parentStyle.display === "flex" || parentStyle.display === "inline-flex") {
+      depth++;
+    }
+    parent = parent.parentElement;
+  }
+  return depth;
+}
+
+// 要素のクラス名またはIDを取得（表示用）
+function getElemSelector(elem) {
+  if (elem.id) return "#" + elem.id;
+  if (elem.classList && elem.classList.length > 0) {
+    for (var i = 0; i < elem.classList.length; i++) {
+      if (!elem.classList[i].startsWith("css-jumper-")) {
+        return "." + elem.classList[i];
+      }
+    }
+  }
+  return elem.tagName.toLowerCase();
+}
+
 // Flex情報を表示
 function showFlexInfo() {
   // 既存のFlex情報ラベルを削除
@@ -889,8 +925,21 @@ function showFlexInfo() {
 
   console.log("CSS Jumper: Flex情報表示開始");
 
+  // 深さごとの色
+  var depthColors = [
+    "rgba(156, 39, 176, 0.9)",   // 深さ0: 紫
+    "rgba(33, 150, 243, 0.9)",   // 深さ1: 青
+    "rgba(76, 175, 80, 0.9)",    // 深さ2: 緑
+    "rgba(255, 152, 0, 0.9)",    // 深さ3: オレンジ
+    "rgba(244, 67, 54, 0.9)",    // 深さ4: 赤
+    "rgba(0, 188, 212, 0.9)"     // 深さ5+: シアン
+  ];
+
   var elements = document.querySelectorAll("*");
   var flexCount = 0;
+  var labelHeight = 26; // ラベル1個の高さ(padding含む)
+  var labelGap = 2;     // ラベル間の隙間
+  var placedLabels = []; // 配置済みラベルの位置記録 [{left, top, width}]
 
   elements.forEach(function(elem) {
     // CSS Jumperのオーバーレイは除外
@@ -917,27 +966,68 @@ function showFlexInfo() {
       return;
     }
 
-    // Flex情報を収集（シンプルに縦/横のみ）
+    // Flex情報を収集
     var dir = style.flexDirection;
     var dirLabel = "横";
     if (dir === "column" || dir === "column-reverse") {
       dirLabel = "縦";
     }
 
-    // ラベルを作成
-    var label = document.createElement("div");
-    label.className = "css-jumper-flex-info";
-    label.textContent = "flex " + dirLabel;
+    // 階層の深さを計算
+    var depth = getFlexDepth(elem);
+
+    // └記号を深さ分繰り返す
+    var treePrefix = "";
+    for (var d = 0; d < depth; d++) {
+      treePrefix += "\u2514";
+    }
+    if (treePrefix) treePrefix += " ";
+
+    // クラス名/IDを取得
+    var selector = getElemSelector(elem);
+
+    // ラベルテキスト
+    var labelText = treePrefix + "flex " + dirLabel + "  " + selector;
+
+    // 深さに応じた色
+    var bgColor = depthColors[Math.min(depth, depthColors.length - 1)];
 
     // 画面からはみ出さないよう位置調整
     var labelLeft = rect.left + window.scrollX;
     if (labelLeft < 5) labelLeft = 5;
+    var labelTop = rect.top + window.scrollY - 28;
+
+    // 重なり回避: 既に配置済みラベルと被ったら下にズラす
+    var labelWidth = labelText.length * 8 + 20; // 大まかな幅推定
+    var shifted = true;
+    while (shifted) {
+      shifted = false;
+      for (var p = 0; p < placedLabels.length; p++) {
+        var placed = placedLabels[p];
+        // 横方向が重なっているか
+        var horizOverlap = labelLeft < placed.left + placed.width && labelLeft + labelWidth > placed.left;
+        // 縦方向が重なっているか
+        var vertOverlap = Math.abs(labelTop - placed.top) < labelHeight + labelGap;
+        if (horizOverlap && vertOverlap) {
+          labelTop = placed.top + labelHeight + labelGap;
+          shifted = true;
+        }
+      }
+    }
+
+    // 配置位置を記録
+    placedLabels.push({ left: labelLeft, top: labelTop, width: labelWidth });
+
+    // ラベルを作成
+    var label = document.createElement("div");
+    label.className = "css-jumper-flex-info";
+    label.textContent = labelText;
 
     label.style.cssText =
       "position: absolute !important;" +
       "left: " + labelLeft + "px !important;" +
-      "top: " + (rect.top + window.scrollY - 28) + "px !important;" +
-      "background: rgba(156, 39, 176, 0.9) !important;" +
+      "top: " + labelTop + "px !important;" +
+      "background: " + bgColor + " !important;" +
       "color: white !important;" +
       "padding: 4px 10px !important;" +
       "font-size: 13px !important;" +
