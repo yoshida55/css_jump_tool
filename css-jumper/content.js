@@ -5,6 +5,10 @@ var sizeOverlayVisible = false;
 // VS Codeからのブラウザハイライト用
 var vscodeHighlightPolling = null;
 var lastHighlightedElement = null;
+var lastHighlightedSelector = null; // 前回のセレクタ（点滅防止）
+var highlightOverlay = null; // オーバーレイDOM（再利用）
+var highlightLabel = null;   // ラベルDOM（再利用）
+var highlightFadeTimer = null; // 自動消去タイマー
 
 // Ctrl+クリック距離測定用
 var distanceMeasureFirstElement = null;
@@ -59,11 +63,22 @@ function startVSCodeHighlightPolling() {
   console.log("CSS Jumper: VS Codeハイライトポーリング開始");
 
   vscodeHighlightPolling = setInterval(function() {
-    fetch("http://127.0.0.1:3847/selector")
+    fetch("http://127.0.0.1:3848/selector")
       .then(function(res) { return res.json(); })
       .then(function(data) {
         if (data && data.type && data.name) {
-          highlightElementBySelector(data.type, data.name);
+          var selectorKey = data.type + ":" + data.name;
+          if (selectorKey !== lastHighlightedSelector) {
+            lastHighlightedSelector = selectorKey;
+            highlightElementBySelector(data.type, data.name);
+          } else {
+            // 同じセレクタ → 位置だけ更新（スクロール追従）
+            updateHighlightPosition();
+          }
+        } else if (lastHighlightedSelector) {
+          // セレクタがなくなったらハイライト解除
+          lastHighlightedSelector = null;
+          removeVSCodeHighlight();
         }
       })
       .catch(function(err) {
@@ -101,9 +116,9 @@ function highlightElementBySelector(type, name) {
 
   // ハイライト用のオーバーレイを作成
   var rect = target.getBoundingClientRect();
-  var overlay = document.createElement("div");
-  overlay.className = "css-jumper-vscode-highlight";
-  overlay.style.cssText =
+  highlightOverlay = document.createElement("div");
+  highlightOverlay.className = "css-jumper-vscode-highlight";
+  highlightOverlay.style.cssText =
     "position: fixed !important;" +
     "left: " + rect.left + "px !important;" +
     "top: " + rect.top + "px !important;" +
@@ -113,16 +128,15 @@ function highlightElementBySelector(type, name) {
     "border: 3px solid rgba(255, 150, 0, 0.9) !important;" +
     "pointer-events: none !important;" +
     "z-index: 999999 !important;" +
-    "box-sizing: border-box !important;" +
-    "transition: all 0.2s ease !important;";
-  document.body.appendChild(overlay);
+    "box-sizing: border-box !important;";
+  document.body.appendChild(highlightOverlay);
 
   // セレクタ名ラベルを追加
-  var label = document.createElement("div");
-  label.className = "css-jumper-vscode-highlight";
+  highlightLabel = document.createElement("div");
+  highlightLabel.className = "css-jumper-vscode-highlight";
   var selectorText = type === "class" ? "." + name : (type === "id" ? "#" + name : name);
-  label.textContent = selectorText;
-  label.style.cssText =
+  highlightLabel.textContent = selectorText;
+  highlightLabel.style.cssText =
     "position: fixed !important;" +
     "left: " + rect.left + "px !important;" +
     "top: " + (rect.top - 28) + "px !important;" +
@@ -136,59 +150,96 @@ function highlightElementBySelector(type, name) {
     "pointer-events: none !important;" +
     "z-index: 999999 !important;" +
     "box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;";
-  document.body.appendChild(label);
+  document.body.appendChild(highlightLabel);
 
   // 要素が見えるようにスクロール
   target.scrollIntoView({ behavior: "smooth", block: "center" });
 
-  // 2秒後にハイライトを削除
-  setTimeout(function() {
+  // スクロール追従イベント登録
+  window.removeEventListener("scroll", updateHighlightPosition);
+  window.addEventListener("scroll", updateHighlightPosition);
+
+  // 5秒後に自動消去（セレクタ名は残す→同じセレクタの再表示を防ぐ）
+  if (highlightFadeTimer) clearTimeout(highlightFadeTimer);
+  highlightFadeTimer = setTimeout(function() {
     removeVSCodeHighlight();
-  }, 2000);
+  }, 3000);
+}
+
+// ハイライト位置を更新（スクロール追従）
+function updateHighlightPosition() {
+  if (!lastHighlightedElement || !highlightOverlay) return;
+  var rect = lastHighlightedElement.getBoundingClientRect();
+  highlightOverlay.style.left = rect.left + "px";
+  highlightOverlay.style.top = rect.top + "px";
+  highlightOverlay.style.width = rect.width + "px";
+  highlightOverlay.style.height = rect.height + "px";
+  if (highlightLabel) {
+    highlightLabel.style.left = rect.left + "px";
+    highlightLabel.style.top = (rect.top - 28) + "px";
+  }
 }
 
 // VS Codeハイライトを削除
 function removeVSCodeHighlight() {
+  if (highlightOverlay) {
+    highlightOverlay.remove();
+    highlightOverlay = null;
+  }
+  if (highlightLabel) {
+    highlightLabel.remove();
+    highlightLabel = null;
+  }
+  // 万が一残っている古いハイライトも削除
   var highlights = document.querySelectorAll(".css-jumper-vscode-highlight");
   for (var i = 0; i < highlights.length; i++) {
     highlights[i].remove();
   }
   lastHighlightedElement = null;
+  window.removeEventListener("scroll", updateHighlightPosition);
 }
 
 // ページロード完了時にセクション一覧を事前に取得してメニューを準備
 // + Live Serverの場合は自動でプロジェクト切替とCSS取得
-window.addEventListener("load", function() {
-  setTimeout(function() {
-    // セクション一覧を取得してbackground.jsに送信
-    var sections = getSectionList();
-    if (sections && sections.length > 0) {
-      chrome.runtime.sendMessage({
-        action: "preloadSectionMenu",
-        sections: sections
-      });
-      console.log("CSS Jumper: セクションメニュー事前ロード", sections.length + "件");
-    }
+function initializeExtension() {
+  // セクション一覧を取得してbackground.jsに送信
+  var sections = getSectionList();
+  if (sections && sections.length > 0) {
+    chrome.runtime.sendMessage({
+      action: "preloadSectionMenu",
+      sections: sections
+    });
+    console.log("CSS Jumper: セクションメニュー事前ロード", sections.length + "件");
+  }
 
-    // Live Serverのページなら自動でプロジェクト切替とCSS検出
-    autoSwitchProjectFromUrl();
+  // Live Serverのページなら自動でプロジェクト切替とCSS検出
+  autoSwitchProjectFromUrl();
 
-    // Flex情報自動表示（設定ONかつLive Serverの場合のみ）
-    var url = window.location.href;
-    if (url.includes("127.0.0.1") || url.includes("localhost")) {
-      chrome.storage.local.get(["autoShowFlex"], function(result) {
-        if (result.autoShowFlex) {
-          setTimeout(function() {
-            showFlexInfo();
-          }, 100);
-        }
-      });
+  // Flex情報自動表示（設定ONかつLive Serverの場合のみ）
+  var url = window.location.href;
+  if (url.includes("127.0.0.1") || url.includes("localhost")) {
+    chrome.storage.local.get(["autoShowFlex"], function(result) {
+      if (result.autoShowFlex) {
+        setTimeout(function() {
+          showFlexInfo();
+        }, 100);
+      }
+    });
 
-      // VS Codeからのブラウザハイライトポーリング開始
-      startVSCodeHighlightPolling();
-    }
-  }, 100);
-});
+    // VS Codeからのブラウザハイライトポーリング開始
+    startVSCodeHighlightPolling();
+  }
+}
+
+// DOMが準備完了していれば即実行、そうでなければloadイベントで実行
+if (document.readyState === "loading") {
+  window.addEventListener("DOMContentLoaded", function() {
+    setTimeout(initializeExtension, 100);
+  });
+} else {
+  // 既にDOMロード済み（拡張機能の再読み込み時など）
+  setTimeout(initializeExtension, 100);
+}
 
 // URLからプロジェクトを自動切替
 function autoSwitchProjectFromUrl() {

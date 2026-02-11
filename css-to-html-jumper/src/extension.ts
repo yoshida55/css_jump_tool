@@ -1376,61 +1376,119 @@ export function activate(context: vscode.ExtensionContext) {
   }
 
   // ========================================
-  // ブラウザハイライト用HTTPサーバー（ポート3847）
+  // ブラウザハイライト用HTTPサーバー（ポート3848）
   // ========================================
-  const browserHighlightServer = http.createServer((req, res) => {
-    // CORSヘッダー
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    res.setHeader('Content-Type', 'application/json');
+  let browserHighlightServer: http.Server | null = null;
 
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
+  function createHighlightServer(): http.Server {
+    return http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
 
-    if (req.url === '/selector') {
-      const now = Date.now();
-      // 3秒以内のセレクタ情報のみ返す（古いものは無視）
-      if (currentBrowserSelector && (now - currentBrowserSelector.timestamp) < 3000) {
-        res.writeHead(200);
-        res.end(JSON.stringify({
-          type: currentBrowserSelector.type,
-          name: currentBrowserSelector.name
-        }));
-        // 一度返したらクリア（連続ハイライト防止）
-        currentBrowserSelector = null;
-      } else {
-        res.writeHead(200);
-        res.end(JSON.stringify({ type: null, name: null }));
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
       }
-    } else {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found' }));
-    }
-  });
 
-  browserHighlightServer.listen(3847, '127.0.0.1', () => {
-    console.log('CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port 3847)');
-  });
+      if (req.url === '/selector') {
+        const now = Date.now();
+        if (currentBrowserSelector && (now - currentBrowserSelector.timestamp) < 30000) {
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            type: currentBrowserSelector.type,
+            name: currentBrowserSelector.name
+          }));
+        } else {
+          res.writeHead(200);
+          res.end(JSON.stringify({ type: null, name: null }));
+        }
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Not found' }));
+      }
+    });
+  }
 
-  browserHighlightServer.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log('CSS to HTML Jumper: ポート3847は既に使用中');
-    } else {
-      console.error('CSS to HTML Jumper: サーバーエラー', err);
-    }
-  });
+  function startHighlightServer(retries: number = 5) {
+    browserHighlightServer = createHighlightServer();
+
+    browserHighlightServer.listen(3848, '127.0.0.1', () => {
+      console.log('CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port 3848)');
+    });
+
+    browserHighlightServer.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE' && retries > 0) {
+        console.log('CSS to HTML Jumper: ポート3848使用中、' + (6 - retries) + '回目リトライ...');
+        // 既存のポートを強制解放してリトライ
+        const net = require('net');
+        const tmpClient = net.createConnection({ port: 3848, host: '127.0.0.1' }, () => {
+          tmpClient.end();
+        });
+        tmpClient.on('error', () => {});
+        setTimeout(() => startHighlightServer(retries - 1), 1500);
+      } else if (err.code === 'EADDRINUSE') {
+        console.log('CSS to HTML Jumper: ポート3848の確保に失敗（リトライ上限）');
+      } else {
+        console.error('CSS to HTML Jumper: サーバーエラー', err);
+      }
+    });
+  }
+
+  startHighlightServer();
 
   // 拡張機能終了時にサーバーを閉じる
   context.subscriptions.push({
     dispose: () => {
-      browserHighlightServer.close();
-      console.log('CSS to HTML Jumper: ブラウザハイライトサーバー停止');
+      if (browserHighlightServer) {
+        browserHighlightServer.close();
+        console.log('CSS to HTML Jumper: ブラウザハイライトサーバー停止');
+      }
     }
   });
+
+  // ========================================
+  // カーソル移動時にブラウザハイライト用セレクタを更新
+  // ========================================
+  const onSelectionChange = vscode.window.onDidChangeTextEditorSelection((e) => {
+    const editor = e.textEditor;
+    if (!editor || editor.document.languageId !== 'css') {
+      return;
+    }
+    const line = editor.document.lineAt(editor.selection.active.line).text;
+
+    // プロパティ行やセレクタのない行 → ハイライト解除
+    if (line.includes(':') && !line.includes('{')) {
+      currentBrowserSelector = null;
+      return;
+    }
+
+    // セレクタを抽出
+    const selectorMatch = line.match(/\.[\w-]+|#[\w-]+/);
+    if (!selectorMatch) {
+      currentBrowserSelector = null;
+      return;
+    }
+
+    const raw = selectorMatch[0];
+    let type: 'class' | 'id' = 'class';
+    let name = raw;
+
+    if (raw.startsWith('.')) {
+      type = 'class';
+      name = raw.substring(1);
+    } else if (raw.startsWith('#')) {
+      type = 'id';
+      name = raw.substring(1);
+    }
+
+    if (name) {
+      currentBrowserSelector = { type, name, timestamp: Date.now() };
+    }
+  });
+  context.subscriptions.push(onSelectionChange);
 
   // ========================================
   // ハイライト用の装飾タイプ（グローバルで定義）
