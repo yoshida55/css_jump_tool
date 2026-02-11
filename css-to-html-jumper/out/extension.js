@@ -2686,29 +2686,36 @@ function activate(context) {
         let capturedTitle = false;
         for (let i = 0; i <= cursorLine && i < allLines.length; i++) {
             const line = allLines[i];
-            // ┌ でボックス開始を検出
-            if (line.includes('┌')) {
+            // セクションボックスの ┌/└ 検出（行頭が罫線の場合のみ）
+            // ネスト図解（│ ┌──┐ │ のように │ 内にある ┌└）は無視する
+            const firstBoxChar = line.search(/[┌└│]/);
+            const isTopBorder = firstBoxChar !== -1 && line[firstBoxChar] === '┌';
+            const isBottomBorder = firstBoxChar !== -1 && line[firstBoxChar] === '└';
+            if (isTopBorder) {
                 inBox = true;
                 capturedTitle = false;
             }
-            // ボックス内で、まだタイトルを取得していない場合
+            // ┌～└ 内の │ or | 行からタイトルだけ取得（半角パイプも対応）
             if (inBox && !capturedTitle) {
-                // │ セクション名 │ or | 形式を検出（半角パイプも対応）
-                const pipeMatch = line.match(/[│|]\s*(.+?)\s*[│|]/);
-                if (pipeMatch && pipeMatch[1]) {
-                    let content = pipeMatch[1].trim();
-                    // 罫線だけの行は除外
-                    if (content && !/^[─━┈┄┌┐└┘├┤┬┴┼\-=]+$/.test(content)) {
-                        content = content.replace(/\*\/$/, '').trim();
-                        if (content.length > 0) {
-                            currentSection = content;
+                const pipeIndex = line.search(/[│|]/);
+                if (pipeIndex !== -1) {
+                    const prefix = line.substring(0, pipeIndex).trim();
+                    if (prefix === '' || prefix === '/*' || prefix.endsWith('/*')) {
+                        let content = line.substring(pipeIndex + 1);
+                        const lastPipeIndex = Math.max(content.lastIndexOf('│'), content.lastIndexOf('|'));
+                        if (lastPipeIndex !== -1) {
+                            content = content.substring(0, lastPipeIndex);
+                        }
+                        content = content.replace(/\*\/$/, '');
+                        const sectionName = content.trim();
+                        if (sectionName && sectionName.length > 0 && !/^[─━┈┄┌┐└┘├┤┬┴┼\-=]+$/.test(sectionName)) {
+                            currentSection = sectionName;
                             capturedTitle = true; // 最初の1行だけ採用
                         }
                     }
                 }
             }
-            // └ でボックス終了
-            if (line.includes('└')) {
+            if (isBottomBorder) {
                 inBox = false;
             }
         }
@@ -2717,26 +2724,38 @@ function activate(context) {
         // ========================================
         let currentMediaQuery = '';
         let foundMedia = false;
-        const cursorOffset = editor.document.offsetAt(position);
-        const textBefore = fullText.substring(0, cursorOffset);
-        const lastMediaIndex = textBefore.lastIndexOf('@media');
-        if (lastMediaIndex !== -1) {
-            const textFromMedia = textBefore.substring(lastMediaIndex);
-            let open = 0;
-            let close = 0;
-            let mediaHeaderEnd = textFromMedia.indexOf('{');
-            if (mediaHeaderEnd !== -1) {
-                const mediaCondition = textFromMedia.substring(6, mediaHeaderEnd).trim();
-                for (let i = 0; i < textFromMedia.length; i++) {
-                    if (textFromMedia[i] === '{')
-                        open++;
-                    if (textFromMedia[i] === '}')
-                        close++;
+        // スタック方式でネストされた@mediaを正確に追跡
+        const mediaStack = [];
+        let braceDepth = 0;
+        for (let i = 0; i <= cursorLine && i < allLines.length; i++) {
+            const line = allLines[i];
+            // @media の開始を検出（条件部分を抽出）
+            const mediaMatch = line.match(/@media\s+(.+?)\s*\{/);
+            if (mediaMatch) {
+                mediaStack.push({ startDepth: braceDepth, condition: mediaMatch[1] });
+            }
+            // 波括弧をカウント
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            braceDepth += openBraces - closeBraces;
+            // 閉じたメディアクエリをスタックから除去
+            while (mediaStack.length > 0 && braceDepth <= mediaStack[mediaStack.length - 1].startDepth) {
+                mediaStack.pop();
+            }
+        }
+        // スタックに残っている = 現在カーソルが内側にいる@media
+        if (mediaStack.length > 0) {
+            foundMedia = true;
+            // max-widthを優先（📱表示用）
+            for (const ctx of mediaStack) {
+                if (ctx.condition.includes('max-width')) {
+                    currentMediaQuery = ctx.condition;
+                    break;
                 }
-                if (open > close) {
-                    foundMedia = true;
-                    currentMediaQuery = mediaCondition;
-                }
+            }
+            // max-widthがなければ最も外側を使用
+            if (!currentMediaQuery) {
+                currentMediaQuery = mediaStack[0].condition;
             }
         }
         // ========================================
@@ -2748,15 +2767,17 @@ function activate(context) {
         let icon = '📍';
         // セクション名
         const sectionName = currentSection || 'Global CSS';
+        // セクション名が長すぎる場合は切り詰め（ステータスバーの幅対策）
+        const shortName = sectionName.length > 20 ? sectionName.substring(0, 20) + '…' : sectionName;
         // max-width（スマホ/タブレット）の時だけメディアクエリ表示
         if (foundMedia && currentMediaQuery.includes('max-width')) {
             icon = '📱';
-            statusText = `${icon} ${sectionName} | ${currentMediaQuery}`;
+            statusText = `${icon} ${shortName}`;
             statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
         }
         else {
             // 通常時またはPC(min-width)時はセクション名だけ
-            statusText = `${icon} ${sectionName}`;
+            statusText = `${icon} ${shortName}`;
             statusBarItem.backgroundColor = undefined;
         }
         statusBarItem.text = statusText;

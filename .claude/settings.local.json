@@ -22,7 +22,12 @@
       "Bash(code --list-extensions:*)",
       "Bash(code --uninstall-extension:*)",
       "Bash(dir:*)",
-      "Read(//c/Users/sensh/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**)"
+      "Read(//c/Users/sensh/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Read(//d/02_作業/00_リンクワーク/HTML自動化/過去の課題/67_猫サイト/**)",
+      "Bash(fc /b \"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-to-html-jumper\\\\out\\\\extension.js\" \"C:\\\\Users\\\\sensh\\\\.vscode\\\\extensions\\\\yoshida55.css-to-html-jumper-1.9.2\\\\out\\\\extension.js\")"
     ]
   }
 }

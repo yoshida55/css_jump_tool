@@ -468,27 +468,27 @@ function searchSelectorInCss(selector, type, cssFiles, projectPath, preferMediaQ
     var prefix = type === "id" ? "#" : "\\.";
     var regex = new RegExp(prefix + "(" + escapeRegex(selector) + ")(?:\\s*[{,:\\[]|\\s*$)", "i");
     
-    // 波括弧の深さと@media開始位置を追跡
+    // スタック方式で波括弧の深さと@media位置を追跡（ネスト対応）
     var braceDepth = 0;
-    var mediaQueryStartDepth = -1;  // @mediaの開始時の深さ（-1 = @media外）
-    
+    var mediaStack = [];  // @mediaのネストをスタックで管理
+
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
-      
+
       // 波括弧をカウント
       var openBraces = (line.match(/{/g) || []).length;
       var closeBraces = (line.match(/}/g) || []).length;
-      
-      // @media の開始を検出
+
+      // @media の開始を検出 → スタックにpush
       if (/@media\s/.test(line)) {
-        mediaQueryStartDepth = braceDepth;
+        mediaStack.push(braceDepth);
       }
-      
+
       // 波括弧による深さ更新（この行の開き括弧を加算）
       braceDepth += openBraces;
-      
-      // 現在@media内かどうかを判定
-      var isInMediaQuery = mediaQueryStartDepth >= 0 && braceDepth > mediaQueryStartDepth;
+
+      // 現在@media内かどうかを判定（スタックに要素があれば@media内）
+      var isInMediaQuery = mediaStack.length > 0 && braceDepth > mediaStack[mediaStack.length - 1];
       
       if (regex.test(line)) {
         // パスを構築
@@ -529,9 +529,9 @@ function searchSelectorInCss(selector, type, cssFiles, projectPath, preferMediaQ
       // 波括弧による深さ更新（この行の閉じ括弧を減算）
       braceDepth -= closeBraces;
       
-      // @mediaブロックが終了したかチェック
-      if (mediaQueryStartDepth >= 0 && braceDepth <= mediaQueryStartDepth) {
-        mediaQueryStartDepth = -1;  // @media外に戻る
+      // 閉じた@mediaをスタックから除去
+      while (mediaStack.length > 0 && braceDepth <= mediaStack[mediaStack.length - 1]) {
+        mediaStack.pop();
       }
     }
   }
