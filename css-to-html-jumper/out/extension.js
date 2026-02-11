@@ -1209,15 +1209,34 @@ function activate(context) {
     // ブラウザハイライト用HTTPサーバー（ポート3848）
     // ========================================
     let browserHighlightServer = null;
+    const activeSockets = new Set();
+    function forceCloseServer() {
+        // 全接続ソケットを強制破棄（ポート即解放）
+        for (const socket of activeSockets) {
+            socket.destroy();
+        }
+        activeSockets.clear();
+        if (browserHighlightServer) {
+            browserHighlightServer.close();
+            browserHighlightServer = null;
+        }
+    }
     function createHighlightServer() {
-        return http.createServer((req, res) => {
+        const server = http.createServer((req, res) => {
             res.setHeader('Access-Control-Allow-Origin', '*');
-            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
             res.setHeader('Content-Type', 'application/json');
             if (req.method === 'OPTIONS') {
                 res.writeHead(204);
                 res.end();
+                return;
+            }
+            // shutdownエンドポイント（古いサーバーを停止させる）
+            if (req.url === '/shutdown') {
+                res.writeHead(200);
+                res.end(JSON.stringify({ status: 'shutting down' }));
+                setTimeout(() => forceCloseServer(), 100);
                 return;
             }
             if (req.url === '/selector') {
@@ -1239,43 +1258,77 @@ function activate(context) {
                 res.end(JSON.stringify({ error: 'Not found' }));
             }
         });
+        // 全接続ソケットを追跡
+        server.on('connection', (socket) => {
+            activeSockets.add(socket);
+            socket.on('close', () => activeSockets.delete(socket));
+        });
+        return server;
     }
     function startHighlightServer(retries = 5) {
-        browserHighlightServer = createHighlightServer();
-        browserHighlightServer.listen(3848, '127.0.0.1', () => {
-            console.log('CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port 3848)');
+        // 古いサーバーにshutdownリクエストを送る
+        const shutdownReq = http.request({
+            host: '127.0.0.1', port: 3848, path: '/shutdown', method: 'POST', timeout: 1000
+        }, (res) => {
+            // shutdownレスポンス受信 → 古いサーバーが停止処理を開始
+            res.resume();
         });
-        browserHighlightServer.on('error', (err) => {
-            if (err.code === 'EADDRINUSE' && retries > 0) {
-                console.log('CSS to HTML Jumper: ポート3848使用中、' + (6 - retries) + '回目リトライ...');
-                // 既存のポートを強制解放してリトライ
-                const net = require('net');
-                const tmpClient = net.createConnection({ port: 3848, host: '127.0.0.1' }, () => {
-                    tmpClient.end();
-                });
-                tmpClient.on('error', () => { });
-                setTimeout(() => startHighlightServer(retries - 1), 1500);
-            }
-            else if (err.code === 'EADDRINUSE') {
-                console.log('CSS to HTML Jumper: ポート3848の確保に失敗（リトライ上限）');
-            }
-            else {
-                console.error('CSS to HTML Jumper: サーバーエラー', err);
-            }
-        });
+        shutdownReq.on('error', () => { }); // 古いサーバーがなくてもOK
+        shutdownReq.end();
+        // 古いサーバーの停止を待ってから起動
+        setTimeout(() => {
+            browserHighlightServer = createHighlightServer();
+            browserHighlightServer.listen(3848, '127.0.0.1', () => {
+                console.log('CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port 3848)');
+            });
+            browserHighlightServer.on('error', (err) => {
+                if (err.code === 'EADDRINUSE' && retries > 0) {
+                    console.log('CSS to HTML Jumper: ポート3848使用中、' + (6 - retries) + '回目リトライ...');
+                    setTimeout(() => startHighlightServer(retries - 1), 2000);
+                }
+                else if (err.code === 'EADDRINUSE') {
+                    console.log('CSS to HTML Jumper: ポート3848の確保に失敗（リトライ上限）');
+                }
+                else {
+                    console.error('CSS to HTML Jumper: サーバーエラー', err);
+                }
+            });
+        }, 1500); // shutdownリクエスト後1.5秒待ってから起動
     }
     startHighlightServer();
-    // 拡張機能終了時にサーバーを閉じる
+    // 拡張機能終了時にサーバーを強制クローズ
     context.subscriptions.push({
         dispose: () => {
-            if (browserHighlightServer) {
-                browserHighlightServer.close();
-                console.log('CSS to HTML Jumper: ブラウザハイライトサーバー停止');
-            }
+            forceCloseServer();
+            console.log('CSS to HTML Jumper: ブラウザハイライトサーバー停止');
         }
     });
     // ========================================
-    // カーソル移動時にブラウザハイライト用セレクタを更新
+    // CSS専用：ホバー時にブラウザハイライト用セレクタを更新
+    // ========================================
+    const cssHoverForHighlight = vscode.languages.registerHoverProvider({ scheme: 'file', language: 'css' }, {
+        provideHover(document, position) {
+            const wordRange = document.getWordRangeAtPosition(position, /[.#][\w-]+/);
+            if (!wordRange) {
+                currentBrowserSelector = null;
+                return null;
+            }
+            const word = document.getText(wordRange);
+            if (word.startsWith('.')) {
+                currentBrowserSelector = { type: 'class', name: word.substring(1), timestamp: Date.now() };
+            }
+            else if (word.startsWith('#')) {
+                currentBrowserSelector = { type: 'id', name: word.substring(1), timestamp: Date.now() };
+            }
+            else {
+                currentBrowserSelector = null;
+            }
+            return null; // ホバー表示は既存のcssSelectorHoverProviderに任せる
+        }
+    });
+    context.subscriptions.push(cssHoverForHighlight);
+    // ========================================
+    // HTML専用：クリック時にブラウザハイライト用セレクタを更新
     // ========================================
     const onSelectionChange = vscode.window.onDidChangeTextEditorSelection((e) => {
         const editor = e.textEditor;
@@ -1283,75 +1336,47 @@ function activate(context) {
             return;
         }
         const lang = editor.document.languageId;
-        if (lang !== 'css' && lang !== 'html') {
+        if (lang !== 'html') {
             return;
-        }
+        } // HTML専用
         const line = editor.document.lineAt(editor.selection.active.line).text;
         const cursorCol = editor.selection.active.character;
-        if (lang === 'css') {
-            // CSSモード：プロパティ行は解除、セレクタ行から抽出
-            if (line.includes(':') && !line.includes('{')) {
-                currentBrowserSelector = null;
-                return;
-            }
-            const selectorMatch = line.match(/\.[\w-]+|#[\w-]+/);
-            if (!selectorMatch) {
-                currentBrowserSelector = null;
-                return;
-            }
-            const raw = selectorMatch[0];
-            let type = 'class';
-            let name = raw;
-            if (raw.startsWith('.')) {
-                type = 'class';
-                name = raw.substring(1);
-            }
-            else if (raw.startsWith('#')) {
-                type = 'id';
-                name = raw.substring(1);
-            }
-            if (name) {
-                currentBrowserSelector = { type, name, timestamp: Date.now() };
+        // HTMLモード：カーソル位置のclass/idを抽出
+        // class="xxx yyy" の中のカーソル位置の単語を取得
+        const classMatch = line.match(/class\s*=\s*"([^"]*)"/i);
+        const idMatch = line.match(/id\s*=\s*"([^"]*)"/i);
+        let found = false;
+        // id属性チェック
+        if (idMatch && idMatch.index !== undefined) {
+            const valStart = line.indexOf('"', idMatch.index) + 1;
+            const valEnd = valStart + idMatch[1].length;
+            if (cursorCol >= valStart && cursorCol <= valEnd) {
+                currentBrowserSelector = { type: 'id', name: idMatch[1].trim(), timestamp: Date.now() };
+                found = true;
             }
         }
-        else {
-            // HTMLモード：カーソル位置のclass/idを抽出
-            // class="xxx yyy" の中のカーソル位置の単語を取得
-            const classMatch = line.match(/class\s*=\s*"([^"]*)"/i);
-            const idMatch = line.match(/id\s*=\s*"([^"]*)"/i);
-            let found = false;
-            // id属性チェック
-            if (idMatch && idMatch.index !== undefined) {
-                const valStart = line.indexOf('"', idMatch.index) + 1;
-                const valEnd = valStart + idMatch[1].length;
-                if (cursorCol >= valStart && cursorCol <= valEnd) {
-                    currentBrowserSelector = { type: 'id', name: idMatch[1].trim(), timestamp: Date.now() };
-                    found = true;
-                }
-            }
-            // class属性チェック（カーソル位置の単語を特定）
-            if (!found && classMatch && classMatch.index !== undefined) {
-                const valStart = line.indexOf('"', classMatch.index) + 1;
-                const valEnd = valStart + classMatch[1].length;
-                if (cursorCol >= valStart && cursorCol <= valEnd) {
-                    // カーソル位置のクラス名を特定
-                    const classes = classMatch[1].split(/\s+/).filter((c) => c);
-                    let pos = valStart;
-                    for (const cls of classes) {
-                        const clsStart = line.indexOf(cls, pos);
-                        const clsEnd = clsStart + cls.length;
-                        if (cursorCol >= clsStart && cursorCol <= clsEnd) {
-                            currentBrowserSelector = { type: 'class', name: cls, timestamp: Date.now() };
-                            found = true;
-                            break;
-                        }
-                        pos = clsEnd;
+        // class属性チェック（カーソル位置の単語を特定）
+        if (!found && classMatch && classMatch.index !== undefined) {
+            const valStart = line.indexOf('"', classMatch.index) + 1;
+            const valEnd = valStart + classMatch[1].length;
+            if (cursorCol >= valStart && cursorCol <= valEnd) {
+                // カーソル位置のクラス名を特定
+                const classes = classMatch[1].split(/\s+/).filter((c) => c);
+                let pos = valStart;
+                for (const cls of classes) {
+                    const clsStart = line.indexOf(cls, pos);
+                    const clsEnd = clsStart + cls.length;
+                    if (cursorCol >= clsStart && cursorCol <= clsEnd) {
+                        currentBrowserSelector = { type: 'class', name: cls, timestamp: Date.now() };
+                        found = true;
+                        break;
                     }
+                    pos = clsEnd;
                 }
             }
-            if (!found) {
-                currentBrowserSelector = null;
-            }
+        }
+        if (!found) {
+            currentBrowserSelector = null;
         }
     });
     context.subscriptions.push(onSelectionChange);
