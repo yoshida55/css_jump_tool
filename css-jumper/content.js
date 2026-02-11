@@ -428,8 +428,16 @@ document.addEventListener("keydown", function(event) {
   }
 }, true);
 
-// Alt+クリックでVS Codeを開く（右クリックで選択した要素を使用）
+// Alt+クリックでVS Codeを開く / Alt+Shift+クリックでAIアドバイス
 document.addEventListener("click", function(event) {
+  if (event.altKey && event.shiftKey) {
+    // Alt+Shift+クリック → AIアドバイスモード
+    event.preventDefault();
+    event.stopPropagation();
+    handleAiAdviceClick(event.target);
+    return;
+  }
+
   if (event.altKey) {
     event.preventDefault();
     event.stopPropagation();
@@ -2059,6 +2067,274 @@ function getAllClassNames() {
 }
 
 // 画面に通知を表示
+// ========================================
+// AI CSSアドバイス機能
+// ========================================
+
+// Alt+Shift+クリック時の処理
+function handleAiAdviceClick(clickedElement) {
+  // CSS Jumperのオーバーレイ自体は無視
+  if (clickedElement.closest && clickedElement.closest("[id^='css-jumper']")) {
+    return;
+  }
+
+  // 要素情報を収集
+  var elementInfo = collectElementInfo(clickedElement);
+  console.log("CSS Jumper: AIアドバイス - 要素情報", elementInfo);
+
+  // 要素をハイライト
+  highlightForAdvice(clickedElement);
+
+  // テキスト入力UIを表示
+  showAdviceInputUI(clickedElement, elementInfo);
+}
+
+// 要素のcomputedStyleを含む情報を収集
+function collectElementInfo(el) {
+  var cs = window.getComputedStyle(el);
+  var parent = el.parentElement;
+  var parentCs = parent ? window.getComputedStyle(parent) : null;
+
+  var classList = "";
+  if (typeof el.className === "string") {
+    classList = el.className.trim();
+  } else if (el.className && el.className.baseVal) {
+    classList = el.className.baseVal.trim();
+  }
+
+  var parentClass = "";
+  if (parent) {
+    if (typeof parent.className === "string") {
+      parentClass = parent.className.trim();
+    } else if (parent.className && parent.className.baseVal) {
+      parentClass = parent.className.baseVal.trim();
+    }
+  }
+
+  return {
+    tagName: el.tagName.toLowerCase(),
+    id: el.id || "",
+    classList: classList,
+    display: cs.display,
+    position: cs.position,
+    width: cs.width,
+    height: cs.height,
+    padding: cs.padding,
+    margin: cs.margin,
+    flex: cs.flex,
+    flexDirection: cs.display === "flex" || cs.display === "inline-flex" ? cs.flexDirection : "",
+    justifyContent: cs.display === "flex" || cs.display === "inline-flex" ? cs.justifyContent : "",
+    alignItems: cs.display === "flex" || cs.display === "inline-flex" ? cs.alignItems : "",
+    gap: cs.gap || "",
+    overflow: cs.overflow,
+    boxSizing: cs.boxSizing,
+    parentTagName: parent ? parent.tagName.toLowerCase() : "",
+    parentClass: parentClass,
+    parentDisplay: parentCs ? parentCs.display : "",
+    parentFlexDirection: parentCs && (parentCs.display === "flex" || parentCs.display === "inline-flex") ? parentCs.flexDirection : "",
+    viewportWidth: window.innerWidth
+  };
+}
+
+// アドバイス対象要素をハイライト
+function highlightForAdvice(el) {
+  removeAdviceHighlight();
+  el.style.outline = "3px solid #ff6b00";
+  el.style.outlineOffset = "2px";
+  el.dataset.cssJumperAdviceHighlight = "true";
+}
+
+// アドバイスハイライトを削除
+function removeAdviceHighlight() {
+  var highlighted = document.querySelector("[data-css-jumper-advice-highlight]");
+  if (highlighted) {
+    highlighted.style.outline = "";
+    highlighted.style.outlineOffset = "";
+    delete highlighted.dataset.cssJumperAdviceHighlight;
+  }
+}
+
+// テキスト入力UI表示
+function showAdviceInputUI(el, elementInfo) {
+  // 既存のUIを削除
+  removeAdviceUI();
+
+  var rect = el.getBoundingClientRect();
+
+  // オーバーレイコンテナ
+  var container = document.createElement("div");
+  container.id = "css-jumper-advice-ui";
+  container.style.cssText =
+    "position: fixed;" +
+    "z-index: 999999;" +
+    "background: #1e1e2e;" +
+    "border: 2px solid #ff6b00;" +
+    "border-radius: 12px;" +
+    "padding: 16px;" +
+    "box-shadow: 0 8px 32px rgba(0,0,0,0.5);" +
+    "font-family: 'Segoe UI', sans-serif;" +
+    "color: #cdd6f4;" +
+    "width: 360px;" +
+    "max-height: 80vh;" +
+    "overflow-y: auto;";
+
+  // 位置計算（要素の下、画面外なら上に）
+  var top = rect.bottom + window.scrollY + 8;
+  var left = rect.left + window.scrollX;
+  if (rect.bottom + 250 > window.innerHeight) {
+    top = rect.top + window.scrollY - 250;
+  }
+  if (left + 380 > window.innerWidth) {
+    left = window.innerWidth - 390;
+  }
+  if (left < 10) left = 10;
+
+  container.style.top = top + "px";
+  container.style.left = left + "px";
+  container.style.position = "absolute";
+
+  // 要素情報ヘッダー
+  var selectorText = elementInfo.classList ? "." + elementInfo.classList.split(" ")[0] : elementInfo.tagName;
+  if (elementInfo.id) selectorText = "#" + elementInfo.id;
+
+  var header = document.createElement("div");
+  header.style.cssText = "font-size: 13px; color: #ff6b00; margin-bottom: 8px; font-weight: bold;";
+  header.textContent = "🤖 " + selectorText + " (" + elementInfo.display + ", " + elementInfo.width + " × " + elementInfo.height + ")";
+  container.appendChild(header);
+
+  // 親情報
+  var parentInfo = document.createElement("div");
+  parentInfo.style.cssText = "font-size: 11px; color: #6c7086; margin-bottom: 12px;";
+  var parentLabel = elementInfo.parentClass ? "." + elementInfo.parentClass.split(" ")[0] : elementInfo.parentTagName;
+  parentInfo.textContent = "親: " + parentLabel + " (" + elementInfo.parentDisplay + ")";
+  container.appendChild(parentInfo);
+
+  // テキスト入力
+  var input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "例: 幅を広げたい / 横並びにしたい / 中央寄せ";
+  input.style.cssText =
+    "width: 100%;" +
+    "padding: 10px 12px;" +
+    "border: 1px solid #45475a;" +
+    "border-radius: 8px;" +
+    "background: #313244;" +
+    "color: #cdd6f4;" +
+    "font-size: 14px;" +
+    "box-sizing: border-box;" +
+    "outline: none;";
+  input.addEventListener("focus", function() {
+    input.style.borderColor = "#ff6b00";
+  });
+  input.addEventListener("blur", function() {
+    input.style.borderColor = "#45475a";
+  });
+  container.appendChild(input);
+
+  // ボタン行
+  var btnRow = document.createElement("div");
+  btnRow.style.cssText = "display: flex; gap: 8px; margin-top: 10px;";
+
+  var askBtn = document.createElement("button");
+  askBtn.textContent = "🔍 聞く";
+  askBtn.style.cssText =
+    "flex: 1; padding: 8px; border: none; border-radius: 6px;" +
+    "background: #ff6b00; color: #fff; font-size: 14px; font-weight: bold;" +
+    "cursor: pointer;";
+
+  var closeBtn = document.createElement("button");
+  closeBtn.textContent = "✕";
+  closeBtn.style.cssText =
+    "padding: 8px 14px; border: 1px solid #45475a; border-radius: 6px;" +
+    "background: transparent; color: #cdd6f4; font-size: 14px;" +
+    "cursor: pointer;";
+
+  btnRow.appendChild(askBtn);
+  btnRow.appendChild(closeBtn);
+  container.appendChild(btnRow);
+
+  // 回答表示エリア（初期は非表示）
+  var answerArea = document.createElement("div");
+  answerArea.id = "css-jumper-advice-answer";
+  answerArea.style.cssText =
+    "margin-top: 12px; padding: 12px; background: #313244; border-radius: 8px;" +
+    "font-size: 13px; line-height: 1.6; white-space: pre-wrap; display: none;";
+  container.appendChild(answerArea);
+
+  document.body.appendChild(container);
+
+  // フォーカス
+  setTimeout(function() { input.focus(); }, 50);
+
+  // Enterキーで送信
+  input.addEventListener("keydown", function(e) {
+    if (e.key === "Enter" && input.value.trim()) {
+      sendAdviceRequest(input.value.trim(), elementInfo, answerArea, askBtn);
+    }
+    if (e.key === "Escape") {
+      removeAdviceUI();
+      removeAdviceHighlight();
+    }
+  });
+
+  // ボタンイベント
+  askBtn.addEventListener("click", function() {
+    if (input.value.trim()) {
+      sendAdviceRequest(input.value.trim(), elementInfo, answerArea, askBtn);
+    }
+  });
+
+  closeBtn.addEventListener("click", function() {
+    removeAdviceUI();
+    removeAdviceHighlight();
+  });
+}
+
+// AIにリクエスト送信
+function sendAdviceRequest(question, elementInfo, answerArea, askBtn) {
+  answerArea.style.display = "block";
+  answerArea.textContent = "🔄 AIに質問中...";
+  answerArea.style.color = "#6c7086";
+  askBtn.disabled = true;
+  askBtn.textContent = "⏳ 待機中...";
+
+  chrome.runtime.sendMessage({
+    action: "aiAdviceRequest",
+    userQuestion: question,
+    elementInfo: elementInfo
+  }, function(response) {
+    askBtn.disabled = false;
+    askBtn.textContent = "🔍 聞く";
+
+    if (chrome.runtime.lastError) {
+      answerArea.style.color = "#f38ba8";
+      answerArea.textContent = "❌ 通信エラー: " + chrome.runtime.lastError.message;
+      return;
+    }
+
+    if (response && response.error) {
+      answerArea.style.color = "#f38ba8";
+      answerArea.textContent = "❌ " + response.error;
+      return;
+    }
+
+    if (response && response.answer) {
+      answerArea.style.color = "#cdd6f4";
+      answerArea.textContent = response.answer;
+    }
+  });
+}
+
+// アドバイスUIを削除
+function removeAdviceUI() {
+  var existing = document.getElementById("css-jumper-advice-ui");
+  if (existing) existing.remove();
+}
+
+// ========================================
+// 通知表示
+// ========================================
+
 function showNotification(message, type) {
   if (!type) type = "info";
   

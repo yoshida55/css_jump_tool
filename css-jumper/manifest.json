@@ -12,7 +12,10 @@
     "tabs",
     "nativeMessaging"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>",
+    "https://api.anthropic.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },

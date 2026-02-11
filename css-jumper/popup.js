@@ -17,9 +17,39 @@ document.addEventListener("DOMContentLoaded", function () {
   var pathHistorySelect = document.getElementById("pathHistory");
   var browseFolderBtn = document.getElementById("browseFolderBtn");
   var autoShowFlexCheckbox = document.getElementById("autoShowFlex");
+  var claudeApiKeyInput = document.getElementById("claudeApiKey");
+  var saveApiKeyBtn = document.getElementById("saveApiKeyBtn");
+  var claudeModelSelect = document.getElementById("claudeModel");
+  var apiKeyStatus = document.getElementById("apiKeyStatus");
 
   // 保存された情報を読み込み
   loadSavedData();
+
+  // Claude API Key保存
+  saveApiKeyBtn.addEventListener("click", function () {
+    var apiKey = claudeApiKeyInput.value.trim();
+    if (!apiKey) {
+      apiKeyStatus.textContent = "⚠️ API Keyを入力してください";
+      apiKeyStatus.className = "status error";
+      return;
+    }
+    var model = claudeModelSelect.value;
+    chrome.storage.local.set({ claudeApiKey: apiKey, claudeModel: model }, function () {
+      apiKeyStatus.textContent = "✓ 保存しました";
+      apiKeyStatus.className = "status success";
+      setTimeout(function () { apiKeyStatus.className = "status"; }, 3000);
+    });
+  });
+
+  // モデル変更時も自動保存
+  claudeModelSelect.addEventListener("change", function () {
+    var model = claudeModelSelect.value;
+    chrome.storage.local.set({ claudeModel: model }, function () {
+      apiKeyStatus.textContent = "✓ モデル: " + model.split("-").slice(1, 3).join("-");
+      apiKeyStatus.className = "status success";
+      setTimeout(function () { apiKeyStatus.className = "status"; }, 3000);
+    });
+  });
 
   // Flex情報自動表示の設定変更時
   autoShowFlexCheckbox.addEventListener("change", function () {
@@ -801,6 +831,8 @@ document.addEventListener("DOMContentLoaded", function () {
         "quickResizeTrigger",
         "pathHistory",
         "autoShowFlex",
+        "claudeApiKey",
+        "claudeModel",
       ],
       function (result) {
         if (result.projectPath) {
@@ -856,6 +888,14 @@ document.addEventListener("DOMContentLoaded", function () {
         // Flex情報自動表示の設定を復元
         if (result.autoShowFlex) {
           autoShowFlexCheckbox.checked = true;
+        }
+
+        // Claude API設定を復元
+        if (result.claudeApiKey) {
+          claudeApiKeyInput.value = result.claudeApiKey;
+        }
+        if (result.claudeModel) {
+          claudeModelSelect.value = result.claudeModel;
         }
       },
     );

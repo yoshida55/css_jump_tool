@@ -205,6 +205,12 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth);
   }
   
+  // AIアドバイスリクエスト
+  if (message.action === "aiAdviceRequest") {
+    handleAiAdviceRequest(message, sender, sendResponse);
+    return true; // 非同期レスポンスのため
+  }
+
   // クイックリサイズ
   if (message.action === "quickResize") {
     handleQuickResize(message, sender, sendResponse);
@@ -554,6 +560,68 @@ function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// AIアドバイス用: セレクタのCSSルール全体を抽出（最大3件）
+function extractCssRulesForSelector(selector, type, cssFiles) {
+  var results = [];
+  var prefix = type === "id" ? "#" : "\\.";
+  var regex = new RegExp(prefix + "(" + escapeRegex(selector) + ")(?:\\s*[{,:\\[]|\\s*$)", "i");
+
+  for (var f = 0; f < cssFiles.length && results.length < 3; f++) {
+    var file = cssFiles[f];
+    if (!file.content) continue;
+
+    var lines = file.content.split("\n");
+    var braceDepth = 0;
+    var inRule = false;
+    var ruleSelectorLine = "";
+    var ruleBody = [];
+    var ruleStartDepth = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var trimmed = line.trim();
+
+      // ルール内でない場合、セレクタを検索
+      if (!inRule && regex.test(line)) {
+        ruleSelectorLine = trimmed;
+        inRule = true;
+        ruleBody = [];
+        ruleStartDepth = braceDepth;
+      }
+
+      // 波括弧をカウント
+      var openBraces = (line.match(/{/g) || []).length;
+      var closeBraces = (line.match(/}/g) || []).length;
+      braceDepth += openBraces - closeBraces;
+
+      // ルール内の場合、本体を収集
+      if (inRule) {
+        // セレクタ行の`{`以降を抽出
+        if (ruleSelectorLine === trimmed && openBraces > 0) {
+          var afterBrace = line.substring(line.indexOf("{") + 1).trim();
+          if (afterBrace && afterBrace !== "}") {
+            ruleBody.push(afterBrace);
+          }
+        } else if (trimmed && trimmed !== "{" && trimmed !== "}") {
+          ruleBody.push(trimmed);
+        }
+
+        // ルール終了判定
+        if (braceDepth <= ruleStartDepth) {
+          results.push({
+            selector: ruleSelectorLine,
+            rules: ruleBody.join("\n")
+          });
+          inRule = false;
+          if (results.length >= 3) break;
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
 // VS Codeを開く（Native Messaging経由、code --goto方式）
 function openInVscode(filePath, lineNumber) {
   console.log("CSS Jumper: VS Codeを開く", filePath, lineNumber);
@@ -581,6 +649,140 @@ function notifyUser(message, type) {
       notifyUserToTab(tabs[0].id, message, type);
     }
   });
+}
+
+// ========================================
+// AI CSSアドバイス機能
+// ========================================
+
+// content.jsからのAIアドバイスリクエストを処理
+function handleAiAdviceRequest(message, sender, sendResponse) {
+  chrome.storage.local.get(["claudeApiKey", "claudeModel", "cssFiles"], function(result) {
+    var apiKey = result.claudeApiKey;
+    var model = result.claudeModel || "claude-sonnet-4-5-20250929";
+    var cssFiles = result.cssFiles || [];
+
+    if (!apiKey) {
+      sendResponse({ error: "API Keyが未設定です。拡張機能アイコンから設定してください。" });
+      return;
+    }
+
+    var elementInfo = message.elementInfo;
+
+    // CSSルールを検索
+    var cssRules = [];
+    if (cssFiles.length > 0) {
+      // IDで検索
+      if (elementInfo.id) {
+        var idRules = extractCssRulesForSelector(elementInfo.id, "id", cssFiles);
+        cssRules = cssRules.concat(idRules);
+      }
+      // クラスで検索（最初のクラスのみ）
+      if (elementInfo.classList) {
+        var firstClass = elementInfo.classList.split(" ")[0];
+        if (firstClass) {
+          var classRules = extractCssRulesForSelector(firstClass, "class", cssFiles);
+          cssRules = cssRules.concat(classRules);
+        }
+      }
+    }
+
+    // プロンプト構築
+    var prompt = buildAdvicePrompt(elementInfo, message.userQuestion, cssRules);
+
+    // Claude API呼び出し
+    fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: prompt }
+        ]
+      })
+    })
+    .then(function(response) {
+      if (!response.ok) {
+        return response.text().then(function(text) {
+          throw new Error("API Error " + response.status + ": " + text);
+        });
+      }
+      return response.json();
+    })
+    .then(function(data) {
+      var answer = data.content[0].text;
+      sendResponse({ answer: answer });
+    })
+    .catch(function(err) {
+      console.error("CSS Jumper: Claude API エラー", err);
+      sendResponse({ error: err.message });
+    });
+  });
+}
+
+// AIアドバイス用プロンプト構築
+function buildAdvicePrompt(info, userQuestion, cssRules) {
+  var lines = [];
+  lines.push("あなたはCSS/HTMLのエキスパートです。ユーザーがブラウザ上でクリックした要素について質問しています。");
+  lines.push("簡潔に、具体的なCSSプロパティと値で回答してください。");
+  lines.push("");
+  lines.push("【クリックした要素】");
+  lines.push("タグ: " + info.tagName);
+  if (info.id) lines.push("ID: #" + info.id);
+  if (info.classList) lines.push("クラス: ." + info.classList);
+  lines.push("");
+
+  // CSSソースコード（見つかった場合）
+  if (cssRules && cssRules.length > 0) {
+    lines.push("【CSSファイル内の該当ルール】");
+    for (var i = 0; i < cssRules.length; i++) {
+      lines.push(cssRules[i].selector + " {");
+      lines.push(cssRules[i].rules);
+      lines.push("}");
+      if (i < cssRules.length - 1) lines.push("");
+    }
+    lines.push("");
+  }
+
+  lines.push("【要素のcomputedStyle（ブラウザ最終計算値）】");
+  lines.push("display: " + info.display);
+  lines.push("position: " + info.position);
+  lines.push("width: " + info.width + " / height: " + info.height);
+  lines.push("padding: " + info.padding);
+  lines.push("margin: " + info.margin);
+  lines.push("flex: " + info.flex);
+  if (info.flexDirection) lines.push("flex-direction: " + info.flexDirection);
+  if (info.justifyContent) lines.push("justify-content: " + info.justifyContent);
+  if (info.alignItems) lines.push("align-items: " + info.alignItems);
+  if (info.gap) lines.push("gap: " + info.gap);
+  lines.push("overflow: " + info.overflow);
+  lines.push("box-sizing: " + info.boxSizing);
+  lines.push("");
+  lines.push("【親要素】");
+  lines.push("タグ: " + info.parentTagName);
+  if (info.parentClass) lines.push("クラス: ." + info.parentClass);
+  lines.push("display: " + info.parentDisplay);
+  if (info.parentFlexDirection) lines.push("flex-direction: " + info.parentFlexDirection);
+  lines.push("");
+  lines.push("【ビューポート幅】 " + info.viewportWidth + "px");
+  lines.push("");
+  lines.push("【ユーザーの質問】");
+  lines.push(userQuestion);
+  lines.push("");
+  lines.push("【回答ルール】");
+  lines.push("- 具体的なCSSプロパティと値を提示");
+  lines.push("- どのセレクタに適用するか明示（.クラス名 { ... }）");
+  lines.push("- 理由を1行で添える");
+  lines.push("- 日本語で回答");
+  lines.push("- 200文字以内");
+
+  return lines.join("\n");
 }
 
 // 特定タブに通知
