@@ -113,21 +113,71 @@ Ctrl+Shift+P → "クイズのカテゴリ変更"
   4. `Ctrl+クリック` でSVG表示
 - **注意**: `Ctrl+Alt+V` はPaste Image拡張が使用中のため使わないこと
 
+### 12. ブラウザハイライト（CSS/HTML連携）
+- **対象**: CSS/HTMLファイル
+- **操作**: セレクタ行・class/id属性にカーソル配置
+- **動作**:
+  - **CSSファイル**: `.class_name`や`#id`のセレクタ行にカーソル → ブラウザで該当要素をオレンジハイライト
+  - **HTMLファイル**: `class="xxx"`や`id="yyy"`内にカーソル → ブラウザでそのクラス/IDをハイライト
+  - 3秒後に自動消去（同じセレクタでは再出現しない）
+  - スクロールしてもハイライトが追従
+  - プロパティ行や空行に移動すると即座に解除
+- **前提条件**:
+  - Live ServerでHTML表示中
+  - Chrome拡張（css-jumper）インストール済み
+  - ポート3848でHTTPサーバー起動（拡張が自動起動）
+- **Tips**: 複数クラス（`class="a b c"`）の場合、カーソル位置のクラスのみハイライト
+
 ---
 
 ## ⚙ settings.json 設定一覧
 
+### 必須設定（最低限これだけ設定）
+```json
+{
+  "cssToHtmlJumper.claudeApiKey": "sk-ant-api03-...",
+  "cssToHtmlJumper.geminiApiKey": "AIza...",
+  "cssToHtmlJumper.memoFilePath": "D:\\50_knowledge\\01_memo.md"
+}
+```
+
+### 全設定項目（すべてのオプション）
+```json
+{
+  "cssToHtmlJumper.claudeApiKey": "sk-ant-api03-...",
+  "cssToHtmlJumper.claudeModel": "claude-sonnet-4-5-20250929",
+  "cssToHtmlJumper.geminiApiKey": "AIza...",
+  "cssToHtmlJumper.memoFilePath": "D:\\50_knowledge\\01_memo.md",
+  "cssToHtmlJumper.targetFiles": "**/*.html",
+  "cssToHtmlJumper.copilotPrompt": "このコードの目的を簡潔に説明して",
+  "cssToHtmlJumper.quizCategory": "全て",
+  "cssToHtmlJumper.quizCategories": ["CSS", "JavaScript", "Python", "HTML"],
+  "cssToHtmlJumper.svgTempFilePath": "%TEMP%\\svg_clipboard.svg"
+}
+```
+
+### 設定項目の詳細
+
 | 設定項目 | 説明 | デフォルト |
 |---------|------|-----------|
-| `claudeApiKey` | Claude API キー | - |
+| `claudeApiKey` | Claude API キー（必須） | - |
 | `claudeModel` | Claudeモデル | `claude-sonnet-4-5-20250929` |
-| `geminiApiKey` | Gemini API キー（Fuzzy検索0件時フォールバック） | - |
-| `memoFilePath` | メモファイルパス | - |
+| `geminiApiKey` | Gemini API キー（メモ検索0件時の要約用） | - |
+| `memoFilePath` | メモファイルパス（絶対パス、`\\`でエスケープ） | - |
 | `targetFiles` | 検索対象HTMLファイル（glob形式） | `**/*.html` |
 | `copilotPrompt` | Copilot解説のプロンプト | `このコードの目的を簡潔に説明して` |
 | `quizCategory` | 出題カテゴリ | `全て` |
-| `quizCategories` | カテゴリ判定リスト | `["CSS", "JavaScript", "Python", "HTML"]` |
-| `svgTempFilePath` | SVG一時ファイルパス | `%TEMP%\svg_clipboard.svg` |
+| `quizCategories` | カテゴリ判定リスト（配列） | `["CSS", "JavaScript", "Python", "HTML"]` |
+| `svgTempFilePath` | SVG一時ファイルパス（環境変数OK） | `%TEMP%\svg_clipboard.svg` |
+
+### 設定のコツ
+
+| 項目 | ポイント |
+|------|---------|
+| パス指定 | Windowsは `\\` でエスケープ（例: `D:\\50_knowledge\\01_memo.md`） |
+| API Key | `sk-ant-api03-` で始まる（Claude）、`AIza` で始まる（Gemini） |
+| モデル変更 | Haiku使用で料金1/4（`claude-haiku-4-5`） |
+| カテゴリ追加 | `quizCategories`に追加 → メモの見出しでカテゴリ判定 |
 
 ---
 
@@ -196,7 +246,7 @@ D:\50_knowledge\（会社: T:\50_knowledge\）
 
 ```bash
 # 新しいvsixファイルを取得
-code --install-extension css-to-html-jumper-1.9.0.vsix --force
+code --install-extension css-to-html-jumper-1.10.0.vsix --force
 
 # VS Code再起動
 Ctrl+Shift+P → "Developer: Reload Window"
@@ -210,7 +260,7 @@ Ctrl+Shift+P → "Developer: Reload Window"
 ```bash
 git clone <リポジトリURL>
 cd css-to-html-jumper
-code --install-extension css-to-html-jumper-1.9.0.vsix --force
+code --install-extension css-to-html-jumper-1.10.0.vsix --force
 ```
 ※ node_modules/ と out/ がGit管理済み → npm install 不要
 
@@ -246,5 +296,5 @@ code --install-extension css-to-html-jumper-1.9.0.vsix --force
 
 ---
 
-**バージョン**: 1.9.0
-**最終更新**: 2026-02-08
+**バージョン**: 1.10.0
+**最終更新**: 2026-02-12

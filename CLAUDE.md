@@ -156,7 +156,7 @@ css-to-html-jumper/
 cd css-to-html-jumper
 npm run compile
 npx vsce package --no-dependencies
-code --install-extension css-to-html-jumper-1.9.0.vsix --force
+code --install-extension css-to-html-jumper-1.10.0.vsix --force
 # → VS Code: Ctrl+Shift+P → Developer: Reload Window
 ```
 
@@ -178,6 +178,7 @@ code --install-extension css-to-html-jumper-1.9.0.vsix --force
 | セレクタホバー | CSSセレクタにホバー | HTMLの使用箇所をサイドに表示 |
 | ステータスバー | 自動 | 現在のセクション名を画面下に表示 |
 | Alt+Click | CSSセレクタ→HTML | Definition Provider |
+| ブラウザハイライト | CSS/HTMLでセレクタ選択 | ブラウザで該当要素をハイライト（3秒後自動消去） |
 | SVGリンク挿入 | `Ctrl+Alt+S` | AHK保存済みSVGへの相対パスリンクをmdに挿入 |
 
 ### SVGリンク挿入機能（Ctrl+Alt+S）の仕組み
@@ -272,7 +273,7 @@ code --install-extension css-to-html-jumper-1.9.0.vsix --force
 ```bash
 git clone <リポジトリURL>
 cd css-to-html-jumper
-code --install-extension css-to-html-jumper-1.9.0.vsix --force
+code --install-extension css-to-html-jumper-1.10.0.vsix --force
 Ctrl+Shift+P → Developer: Reload Window
 ```
 
