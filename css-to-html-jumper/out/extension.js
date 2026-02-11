@@ -1279,34 +1279,79 @@ function activate(context) {
     // ========================================
     const onSelectionChange = vscode.window.onDidChangeTextEditorSelection((e) => {
         const editor = e.textEditor;
-        if (!editor || editor.document.languageId !== 'css') {
+        if (!editor) {
+            return;
+        }
+        const lang = editor.document.languageId;
+        if (lang !== 'css' && lang !== 'html') {
             return;
         }
         const line = editor.document.lineAt(editor.selection.active.line).text;
-        // プロパティ行やセレクタのない行 → ハイライト解除
-        if (line.includes(':') && !line.includes('{')) {
-            currentBrowserSelector = null;
-            return;
+        const cursorCol = editor.selection.active.character;
+        if (lang === 'css') {
+            // CSSモード：プロパティ行は解除、セレクタ行から抽出
+            if (line.includes(':') && !line.includes('{')) {
+                currentBrowserSelector = null;
+                return;
+            }
+            const selectorMatch = line.match(/\.[\w-]+|#[\w-]+/);
+            if (!selectorMatch) {
+                currentBrowserSelector = null;
+                return;
+            }
+            const raw = selectorMatch[0];
+            let type = 'class';
+            let name = raw;
+            if (raw.startsWith('.')) {
+                type = 'class';
+                name = raw.substring(1);
+            }
+            else if (raw.startsWith('#')) {
+                type = 'id';
+                name = raw.substring(1);
+            }
+            if (name) {
+                currentBrowserSelector = { type, name, timestamp: Date.now() };
+            }
         }
-        // セレクタを抽出
-        const selectorMatch = line.match(/\.[\w-]+|#[\w-]+/);
-        if (!selectorMatch) {
-            currentBrowserSelector = null;
-            return;
-        }
-        const raw = selectorMatch[0];
-        let type = 'class';
-        let name = raw;
-        if (raw.startsWith('.')) {
-            type = 'class';
-            name = raw.substring(1);
-        }
-        else if (raw.startsWith('#')) {
-            type = 'id';
-            name = raw.substring(1);
-        }
-        if (name) {
-            currentBrowserSelector = { type, name, timestamp: Date.now() };
+        else {
+            // HTMLモード：カーソル位置のclass/idを抽出
+            // class="xxx yyy" の中のカーソル位置の単語を取得
+            const classMatch = line.match(/class\s*=\s*"([^"]*)"/i);
+            const idMatch = line.match(/id\s*=\s*"([^"]*)"/i);
+            let found = false;
+            // id属性チェック
+            if (idMatch && idMatch.index !== undefined) {
+                const valStart = line.indexOf('"', idMatch.index) + 1;
+                const valEnd = valStart + idMatch[1].length;
+                if (cursorCol >= valStart && cursorCol <= valEnd) {
+                    currentBrowserSelector = { type: 'id', name: idMatch[1].trim(), timestamp: Date.now() };
+                    found = true;
+                }
+            }
+            // class属性チェック（カーソル位置の単語を特定）
+            if (!found && classMatch && classMatch.index !== undefined) {
+                const valStart = line.indexOf('"', classMatch.index) + 1;
+                const valEnd = valStart + classMatch[1].length;
+                if (cursorCol >= valStart && cursorCol <= valEnd) {
+                    // カーソル位置のクラス名を特定
+                    const classes = classMatch[1].split(/\s+/).filter((c) => c);
+                    let pos = valStart;
+                    for (const cls of classes) {
+                        const clsStart = line.indexOf(cls, pos);
+                        const clsEnd = clsStart + cls.length;
+                        if (cursorCol >= clsStart && cursorCol <= clsEnd) {
+                            currentBrowserSelector = { type: 'class', name: cls, timestamp: Date.now() };
+                            found = true;
+                            break;
+                        }
+                        pos = clsEnd;
+                    }
+                }
+            }
+            if (!found) {
+                currentBrowserSelector = null;
+            }
         }
     });
     context.subscriptions.push(onSelectionChange);
