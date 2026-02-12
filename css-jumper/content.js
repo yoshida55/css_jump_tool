@@ -479,6 +479,87 @@ document.addEventListener("keydown", function(event) {
   }
 }, true);
 
+// VS Codeジャンプの共通処理
+// preferMobile: trueの場合、メディアクエリ内を優先検索
+function jumpToVSCode(clickedElement, preferMobile) {
+  var targetElement = clickedElement;
+
+  // クリックした要素からIDまたはクラスを持つ要素を探す（親を遡る）
+  var foundId = "";
+  var foundClassString = "";
+
+  while (targetElement && targetElement !== document.body) {
+    // IDをチェック
+    if (targetElement.id) {
+      foundId = targetElement.id;
+      // IDが見つかったら、その要素のクラスも取得してループ終了（ID優先）
+      var classAttr = targetElement.className;
+      if (typeof classAttr === "string") {
+        foundClassString = classAttr;
+      } else if (classAttr && classAttr.baseVal) {
+        foundClassString = classAttr.baseVal;
+      }
+      break;
+    }
+
+    // クラスをチェック
+    var classAttr = targetElement.className;
+    if (typeof classAttr === "string" && classAttr.trim()) {
+      foundClassString = classAttr.trim();
+      break;
+    } else if (classAttr && classAttr.baseVal && classAttr.baseVal.trim()) {
+      foundClassString = classAttr.baseVal.trim();
+      break;
+    }
+
+    targetElement = targetElement.parentElement;
+  }
+
+  if (!foundId && !foundClassString) {
+    console.log("CSS Jumper: IDもクラスもなし");
+    showNotification("IDまたはクラスが見つかりません", "error");
+    return;
+  }
+
+  var classes = foundClassString ? foundClassString.trim().split(/\s+/) : [];
+  var className = classes[0] || "";
+  var allClasses = classes;
+
+  // ビューポート幅を自動検知してモバイルCSS優先を判定
+  // document.documentElement.clientWidth を使用（DevToolsのレスポンシブモード設定を反映）
+  var actualWidth = document.documentElement.clientWidth || window.innerWidth;
+  var autoDetectMobile = actualWidth <= 767;  // CSSの @media (max-width: 767px) と対応
+  var isMobile = preferMobile || autoDetectMobile;
+
+  console.log("CSS Jumper: VS Codeジャンプ", { id: foundId, className: className, tagName: targetElement.tagName, actualWidth: actualWidth, preferMobile: preferMobile, autoDetectMobile: autoDetectMobile, isMobile: isMobile });
+
+  // 拡張機能のコンテキストが有効かチェック
+  if (!chrome.runtime || !chrome.runtime.id) {
+    console.log("CSS Jumper: 拡張機能のコンテキストが無効です。ページをリロードしてください。");
+    showNotification("拡張機能が更新されました。ページをリロードしてください。", "error");
+    return;
+  }
+
+  // モバイル判定の場合、viewportWidthを768未満に設定してメディアクエリ優先検索を発動
+  if (isMobile) {
+    showNotification("📱 モバイル版CSSを検索中...", "info");
+  }
+  var viewportWidth = isMobile ? 767 : actualWidth;
+
+  try {
+    chrome.runtime.sendMessage({
+      action: "classNameResult",
+      id: foundId,
+      className: className,
+      allClasses: allClasses,
+      viewportWidth: viewportWidth
+    });
+  } catch (e) {
+    console.log("CSS Jumper: メッセージ送信エラー", e);
+    showNotification("通信エラー: ページをリロードしてください", "error");
+  }
+}
+
 // Alt+クリックでVS Codeを開く / Alt+Shift+クリックでAIアドバイス
 document.addEventListener("click", function(event) {
   if (event.altKey && event.shiftKey) {
@@ -498,73 +579,25 @@ document.addEventListener("click", function(event) {
     if (!lastRightClickedElement) {
       console.log("CSS Jumper: 右クリック要素なし、クリック要素を使用");
     }
-    var classString = "";
-    var targetElement = clickedElement;
-    
-    // クリックした要素からIDまたはクラスを持つ要素を探す（親を遡る）
-    var foundId = "";
-    var foundClassString = "";
-    
-    while (targetElement && targetElement !== document.body) {
-      // IDをチェック
-      if (targetElement.id) {
-        foundId = targetElement.id;
-        // IDが見つかったら、その要素のクラスも取得してループ終了（ID優先）
-        var classAttr = targetElement.className;
-        if (typeof classAttr === "string") {
-          foundClassString = classAttr;
-        } else if (classAttr && classAttr.baseVal) {
-          foundClassString = classAttr.baseVal;
-        }
-        break;
-      }
-      
-      // クラスをチェック
-      var classAttr = targetElement.className;
-      if (typeof classAttr === "string" && classAttr.trim()) {
-        foundClassString = classAttr.trim();
-        // クラスが見つかったらループ終了（ただし親にIDがあるかもしれないので本来は遡るべきだが、直感的にはクリックした要素に近い方が良い）
-        break;
-      } else if (classAttr && classAttr.baseVal && classAttr.baseVal.trim()) {
-        foundClassString = classAttr.baseVal.trim();
-        break;
-      }
-      
-      targetElement = targetElement.parentElement;
-    }
-    
-    if (!foundId && !foundClassString) {
-      console.log("CSS Jumper: Alt+クリック - IDもクラスもなし");
-      showNotification("IDまたはクラスが見つかりません", "error");
-      return;
-    }
-    
-    var classes = foundClassString ? foundClassString.trim().split(/\s+/) : [];
-    var className = classes[0] || "";
-    var allClasses = classes;
-    
-    console.log("CSS Jumper: Alt+クリック", { id: foundId, className: className, tagName: targetElement.tagName });
-    
-    // 拡張機能のコンテキストが有効かチェック
-    if (!chrome.runtime || !chrome.runtime.id) {
-      console.log("CSS Jumper: 拡張機能のコンテキストが無効です。ページをリロードしてください。");
-      showNotification("拡張機能が更新されました。ページをリロードしてください。", "error");
-      return;
-    }
 
-    try {
-      chrome.runtime.sendMessage({
-        action: "classNameResult",
-        id: foundId,
-        className: className,
-        allClasses: allClasses,
-        viewportWidth: window.innerWidth
-      });
-    } catch (e) {
-      console.log("CSS Jumper: メッセージ送信エラー", e);
-      showNotification("通信エラー: ページをリロードしてください", "error");
-    }
+    jumpToVSCode(clickedElement, false);
   }
+}, true);
+
+// ダブルクリックでもVS Codeを開く
+// Ctrl+ダブルクリック → モバイル版CSS優先
+document.addEventListener("dblclick", function(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  var preferMobile = event.ctrlKey;
+  console.log("CSS Jumper: ダブルクリック検知", { ctrlKey: preferMobile });
+
+  if (preferMobile) {
+    showNotification("📱 モバイル版CSSを検索中...", "info");
+  }
+
+  jumpToVSCode(event.target, preferMobile);
 }, true);
 
 
@@ -681,6 +714,19 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   if (message.action === "showSectionOutline") {
     showSectionOutline(message.sectionId);
     sendResponse({ shown: true });
+  }
+
+  // ブラウザで要素をハイライト（3秒間）
+  if (message.action === "highlightElement") {
+    console.log("CSS Jumper: ハイライトリクエスト", message.selector, message.type);
+    highlightElementBySelector(message.type, message.selector);
+
+    // 3秒後に自動消去
+    setTimeout(function() {
+      removeVSCodeHighlight();
+    }, 3000);
+
+    sendResponse({ highlighted: true });
   }
 
   
@@ -1129,13 +1175,62 @@ function showFlexInfo() {
         return;
       }
 
+      // ビューポート幅を自動検知（DevToolsのレスポンシブモード対応）
+      var actualWidth = document.documentElement.clientWidth || window.innerWidth;
+      var isMobile = actualWidth <= 767;
+      if (isMobile) {
+        showNotification("📱 モバイル版CSSを検索中...", "info");
+      }
+
       try {
         chrome.runtime.sendMessage({
           action: "classNameResult",
           id: id,
           className: firstClass,
           allClasses: classes,
-          viewportWidth: window.innerWidth
+          viewportWidth: isMobile ? 767 : actualWidth
+        });
+      } catch (err) {
+        showNotification("通信エラー: ページをリロードしてください", "error");
+      }
+    });
+
+    // ダブルクリックでもVS Codeを開く（Ctrl+ダブルクリックでモバイル版CSS優先）
+    label.addEventListener("dblclick", function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var id = this.dataset.elemId;
+      var classStr = this.dataset.elemClasses;
+      var classes = classStr ? classStr.trim().split(/\s+/) : [];
+      var firstClass = classes[0] || "";
+
+      if (!id && !firstClass) {
+        showNotification("IDまたはクラスが見つかりません", "error");
+        return;
+      }
+
+      if (!chrome.runtime || !chrome.runtime.id) {
+        showNotification("拡張機能が更新されました。ページをリロードしてください。", "error");
+        return;
+      }
+
+      // ビューポート幅を自動検知 + Ctrl押下判定
+      var actualWidth = document.documentElement.clientWidth || window.innerWidth;
+      var autoDetectMobile = actualWidth <= 767;
+      var ctrlPressed = e.ctrlKey;
+      var isMobile = ctrlPressed || autoDetectMobile;
+
+      if (isMobile) {
+        showNotification("📱 モバイル版CSSを検索中...", "info");
+      }
+
+      try {
+        chrome.runtime.sendMessage({
+          action: "classNameResult",
+          id: id,
+          className: firstClass,
+          allClasses: classes,
+          viewportWidth: isMobile ? 767 : actualWidth
         });
       } catch (err) {
         showNotification("通信エラー: ページをリロードしてください", "error");

@@ -375,8 +375,26 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
   if (id) {
     var idResult = searchSelectorInCss(id, "id", targetCssFiles, projectPath, preferMediaQuery);
     if (idResult) {
-      openInVscode(idResult.filePath, idResult.lineNumber);
-      notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
+      // CSS + HTMLの3点連携
+      var htmlResult = await searchInHtml(id, "id", projectPath);
+
+      // HTML を先に開く（見つかった場合）
+      if (htmlResult) {
+        openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+        // 少し遅延してからCSS を開く（CSSがアクティブになる）
+        setTimeout(function() {
+          openInVscode(idResult.filePath, idResult.lineNumber);
+        }, 100);
+        notifyUser("✓ #" + id + " → CSS:" + idResult.fileName + ":" + idResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
+      } else {
+        // HTMLが見つからない場合はCSSのみ
+        openInVscode(idResult.filePath, idResult.lineNumber);
+        notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
+      }
+
+      // ブラウザハイライト（3秒間）
+      triggerBrowserHighlight(id, "id");
+
       return;
     }
   }
@@ -386,8 +404,26 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
     var classResult = searchSelectorInCss(className, "class", targetCssFiles, projectPath, preferMediaQuery);
 
     if (classResult) {
-      openInVscode(classResult.filePath, classResult.lineNumber);
-      notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
+      // CSS + HTMLの3点連携
+      var htmlResult = await searchInHtml(className, "class", projectPath);
+
+      // HTML を先に開く（見つかった場合）
+      if (htmlResult) {
+        openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+        // 少し遅延してからCSS を開く（CSSがアクティブになる）
+        setTimeout(function() {
+          openInVscode(classResult.filePath, classResult.lineNumber);
+        }, 100);
+        notifyUser("✓ ." + className + " → CSS:" + classResult.fileName + ":" + classResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
+      } else {
+        // HTMLが見つからない場合はCSSのみ
+        openInVscode(classResult.filePath, classResult.lineNumber);
+        notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
+      }
+
+      // ブラウザハイライト（3秒間）
+      triggerBrowserHighlight(className, "class");
+
       return;
     }
   }
@@ -400,8 +436,26 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
 
       var altResult = searchSelectorInCss(cls, "class", targetCssFiles, projectPath, preferMediaQuery);
       if (altResult) {
-        openInVscode(altResult.filePath, altResult.lineNumber);
-        notifyUser("✓ ." + cls + " → " + altResult.fileName + ":" + altResult.lineNumber, "success");
+        // CSS + HTMLの3点連携
+        var htmlResult = await searchInHtml(cls, "class", projectPath);
+
+        // HTML を先に開く（見つかった場合）
+        if (htmlResult) {
+          openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+          // 少し遅延してからCSS を開く（CSSがアクティブになる）
+          setTimeout(function() {
+            openInVscode(altResult.filePath, altResult.lineNumber);
+          }, 100);
+          notifyUser("✓ ." + cls + " → CSS:" + altResult.fileName + ":" + altResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
+        } else {
+          // HTMLが見つからない場合はCSSのみ
+          openInVscode(altResult.filePath, altResult.lineNumber);
+          notifyUser("✓ ." + cls + " → " + altResult.fileName + ":" + altResult.lineNumber, "success");
+        }
+
+        // ブラウザハイライト（3秒間）
+        triggerBrowserHighlight(cls, "class");
+
         return;
       }
     }
@@ -620,6 +674,83 @@ function extractCssRulesForSelector(selector, type, cssFiles) {
   }
 
   return results;
+}
+
+// HTMLファイルでクラス名/IDを検索
+async function searchInHtml(selector, type, projectPath) {
+  try {
+    // アクティブタブのURLから HTMLファイルを特定
+    var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tabs || !tabs[0] || !tabs[0].url) {
+      console.log("CSS Jumper: アクティブタブが見つかりません");
+      return null;
+    }
+
+    var pageUrl = new URL(tabs[0].url);
+    var htmlFileName = pageUrl.pathname.split('/').pop() || 'index.html';
+
+    // プロジェクトパスからHTMLファイルの絶対パスを作成
+    var htmlFilePath = projectPath + "\\" + htmlFileName;
+
+    // HTMLファイルの内容を取得
+    var htmlUrl = pageUrl.origin + "/" + htmlFileName;
+    console.log("CSS Jumper: HTML検索中", htmlUrl, selector, type);
+
+    var response = await fetch(htmlUrl, { cache: "no-store" });
+    if (!response.ok) {
+      console.log("CSS Jumper: HTML取得失敗", response.status);
+      return null;
+    }
+
+    var content = await response.text();
+    var lines = content.split("\n");
+
+    // 検索パターン
+    var searchPattern;
+    if (type === "id") {
+      searchPattern = new RegExp('id\\s*=\\s*["\']' + selector + '["\']', 'i');
+    } else {
+      // class検索（class="btn" または class="nav btn"のようなパターン）
+      searchPattern = new RegExp('class\\s*=\\s*["\'][^"\']*\\b' + selector + '\\b[^"\']*["\']', 'i');
+    }
+
+    // 最初にマッチした行を返す
+    for (var i = 0; i < lines.length; i++) {
+      if (searchPattern.test(lines[i])) {
+        console.log("CSS Jumper: HTML検索成功", htmlFileName, i + 1);
+        return {
+          filePath: htmlFilePath,
+          fileName: htmlFileName,
+          lineNumber: i + 1
+        };
+      }
+    }
+
+    console.log("CSS Jumper: HTML検索失敗", selector);
+    return null;
+  } catch (e) {
+    console.error("CSS Jumper: HTML検索エラー", e);
+    return null;
+  }
+}
+
+// ブラウザで要素をハイライト（3秒間）
+function triggerBrowserHighlight(selector, type) {
+  console.log("CSS Jumper: ブラウザハイライト", selector, type);
+
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, {
+        action: "highlightElement",
+        selector: selector,
+        type: type
+      }, function(response) {
+        if (chrome.runtime.lastError) {
+          console.error("CSS Jumper: ハイライトメッセージ送信エラー", chrome.runtime.lastError);
+        }
+      });
+    }
+  });
 }
 
 // VS Codeを開く（Native Messaging経由、code --goto方式）

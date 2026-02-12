@@ -3123,6 +3123,9 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    // 現在のカーソル位置を保存（キャンセル時に戻すため）
+    const originalPosition = editor.selection.active;
+
     // クイックピックで表示
     const items = sections.map(s => ({
       label: s.label,
@@ -3130,21 +3133,61 @@ export function activate(context: vscode.ExtensionContext) {
       line: s.line
     }));
 
-    const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'ジャンプするセクションを選択'
+    const quickPick = vscode.window.createQuickPick();
+    quickPick.items = items;
+    quickPick.placeholder = 'ジャンプするセクションを選択（↑↓でプレビュー、Enterで確定、ESCでキャンセル）';
+
+    let lastPreviewLine = -1;
+
+    // 選択が変わったらプレビュー移動
+    quickPick.onDidChangeActive(activeItems => {
+      if (activeItems.length > 0) {
+        const item = activeItems[0] as any;
+        if (item.line !== lastPreviewLine) {
+          lastPreviewLine = item.line;
+          const position = new vscode.Position(item.line, 0);
+          editor.selection = new vscode.Selection(position, position);
+          editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        }
+      }
     });
 
-    if (selected) {
-      const position = new vscode.Position(selected.line, 0);
+    // Enterで確定
+    quickPick.onDidAccept(() => {
+      const selected = quickPick.selectedItems[0] as any;
+      if (selected) {
+        const position = new vscode.Position(selected.line, 0);
+        editor.selection = new vscode.Selection(position, position);
+        editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+        // ハイライト
+        const highlightRange = new vscode.Range(position, new vscode.Position(selected.line, 1000));
+        editor.setDecorations(highlightDecorationType, [highlightRange]);
+        setTimeout(() => {
+          editor.setDecorations(highlightDecorationType, []);
+        }, 800);
+      }
+      quickPick.hide();
+    });
+
+    // ESCでキャンセル → 元の位置に戻る
+    quickPick.onDidHide(() => {
+      if (!quickPick.selectedItems.length) {
+        editor.selection = new vscode.Selection(originalPosition, originalPosition);
+        editor.revealRange(new vscode.Range(originalPosition, originalPosition), vscode.TextEditorRevealType.InCenter);
+      }
+      quickPick.dispose();
+    });
+
+    quickPick.show();
+
+    // 最初の項目にプレビュー（show直後）
+    if (items.length > 0) {
+      const firstItem = items[0];
+      lastPreviewLine = firstItem.line;
+      const position = new vscode.Position(firstItem.line, 0);
       editor.selection = new vscode.Selection(position, position);
       editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-      
-      // ハイライト
-      const highlightRange = new vscode.Range(position, new vscode.Position(selected.line, 1000));
-      editor.setDecorations(highlightDecorationType, [highlightRange]);
-      setTimeout(() => {
-        editor.setDecorations(highlightDecorationType, []);
-      }, 800);
     }
   });
 
