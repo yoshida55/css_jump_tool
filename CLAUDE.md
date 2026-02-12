@@ -31,13 +31,16 @@ css-to-html-jumper/
 
 ## 主要機能
 
-| 機能 | 操作 |
-|------|------|
-| CSSジャンプ | Alt+クリック |
-| サイズ表示 | 右クリックメニュー |
-| 距離表示 | 右クリックメニュー |
-| クイックリサイズ | Ctrl+↓ / ホイール |
-| Flex情報表示 | 自動（設定ON時） / 右クリックメニュー |
+| 機能 | 操作 | 説明 |
+|------|------|------|
+| CSSジャンプ | Alt+クリック | CSSファイルのみ開く |
+| **3点連携ジャンプ** | **ダブルクリック** | **CSS + HTML🟡 + ブラウザ🔴** |
+| **モバイルCSS検索** | **Ctrl+ダブルクリック / 767px以下** | **@media内を優先検索** |
+| **HTMLハイライト** | **上記ジャンプ時** | **HTMLファイル該当行を黄色3秒表示** |
+| Flex情報表示 | Alt+F / 自動 / 右クリック | Flexbox階層をラベルで可視化 |
+| サイズ表示 | 右クリックメニュー | width/height表示 |
+| 距離表示 | 右クリックメニュー | margin/padding表示 |
+| クイックリサイズ | Ctrl+↓ / ホイール | 画面幅トグル |
 
 ### Flex情報表示の詳細
 
@@ -58,8 +61,14 @@ flex 横  .wrapper           ← 紫（深さ0）
 └ flex 横  .main_content    ← 青（深さ1）
 ```
 
+#### キーボードショートカット
+- **Alt+F** でFlex情報表示をトグル（2026-02-12追加）
+- manifest.json の commands セクションで定義
+- background.js でトグルロジック実装
+
 #### クリックでCSSジャンプ
 ラベルをクリックすると、その要素のCSS定義にVS Codeでジャンプ（Native Messaging経由）
+- モバイルCSS自動検知対応（767px以下で@media優先）
 
 #### 重なり回避
 ラベルが重なる場合は自動的に下にズラして配置
@@ -69,6 +78,54 @@ flex 横  .wrapper           ← 紫（深さ0）
 - `getElemSelector()` — 要素のクラス名/ID/タグ名を取得
 - `showFlexInfo()` — ラベル生成・配置・クリックイベント設定
 - `removeFlexInfo()` — ラベル削除
+
+### 3点連携ジャンプ（2026-02-12追加）
+
+#### 概要
+ダブルクリック時にCSS、HTML、ブラウザの3箇所を同時にハイライト表示する機能。
+
+#### 動作フロー
+```
+1. ブラウザで要素をダブルクリック
+2. content.js → background.js でCSS検索
+3. Native Messaging → VS CodeでCSSファイルを開く（フォーカス）
+4. background.js → http://127.0.0.1:3848/highlight-line → VS CodeでHTMLファイルを開く（🟡黄色ハイライト3秒）
+5. content.js → ブラウザで該当要素に赤枠追加（🔴3秒）
+```
+
+#### HTMLハイライト実装
+- **VS Code側**: extension.ts に `/highlight-line` POSTエンドポイント追加（port 3848）
+- **Chrome側**: background.js の `highlightLineInVSCode()` 関数
+- **デコレーション**: `backgroundColor: 'rgba(255, 255, 0, 0.3)'`、3秒後に自動消去
+
+#### ブラウザハイライト
+- content.js の `highlightElement()` 関数
+- 赤枠: `outline: 3px solid red`、3秒後に自動消去
+
+### モバイルCSS自動検知（2026-02-12追加）
+
+#### 概要
+ビューポート幅767px以下の場合、`@media (max-width: 767px)` 内のCSSを優先検索する機能。
+
+#### 検知ロジック
+```javascript
+var actualWidth = document.documentElement.clientWidth || window.innerWidth;
+var autoDetectMobile = actualWidth <= 767;
+var isMobile = preferMobile || autoDetectMobile;
+```
+
+#### 重要ポイント
+- `document.documentElement.clientWidth` を使用（DevToolsレスポンシブモード対応）
+- `window.innerWidth` はブラウザウィンドウ幅なので使えない
+- 境界値は `<= 767` （CSSの `@media (max-width: 767px)` と一致）
+
+#### 強制モバイルCSS検索
+- **Ctrl+ダブルクリック** でPC表示時も強制的にモバイルCSS優先
+- Flexラベルクリック時も自動検知適用
+
+#### DevToolsレスポンシブモードの制限
+- ダブルクリックは動作しない（Chrome仕様でズーム機能が優先）
+- 代替手段: **Flexラベルクリック** または **Alt+クリック**
 
 ## Native Messaging について
 
@@ -129,7 +186,7 @@ vscode://file/D:/path/to/file.css:行番号
 1. IDで検索（最優先）
 2. クラス名で検索
 3. 全クラスで再検索（フォールバック）
-4. メディアクエリ内を優先（768px未満時）
+4. **モバイル時（767px以下）**: `@media (max-width: 767px)` 内を優先検索
 
 ### 依存関係
 - Chrome拡張機能（MV3）
@@ -181,6 +238,7 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 | ステータスバー | 自動 | 現在のセクション名を画面下に表示 |
 | Alt+Click | CSSセレクタ→HTML | Definition Provider |
 | ブラウザハイライト | CSS/HTMLでセレクタ選択 | ブラウザで該当要素をハイライト（3秒後自動消去） |
+| **HTMLハイライト** | **Chrome拡張からのジャンプ時** | **VS CodeでHTML該当行を黄色ハイライト（3秒）** |
 | SVGリンク挿入 | `Ctrl+Alt+S` | AHK保存済みSVGへの相対パスリンクをmdに挿入 |
 
 ### SVGリンク挿入機能（Ctrl+Alt+S）の仕組み
@@ -301,3 +359,23 @@ Ctrl+Shift+P → Developer: Reload Window
 #### 詳細
 - **Python不要、Node.js不要**（VS Code内蔵ランタイムで動作）
 - 詳細は `会社PC_ClaudeCode導入メモ.md` 参照
+
+---
+
+## ショートカットキー一覧
+
+全ショートカットキーは `ショートカットキー一覧.md` を参照。
+
+### 頻繁に使うキー（覚えるべき）
+
+| キー | 機能 | 場所 |
+|------|------|------|
+| ダブルクリック | 3点連携（CSS + HTML + ブラウザ） | ブラウザ |
+| `Ctrl+Shift+H` | CSSからHTML検索 | VS Code |
+| `Alt+F` | Flex情報表示トグル | ブラウザ |
+| `Ctrl+↓` / `Ctrl+↑` | セクション移動 | VS Code |
+| `Ctrl+I` | Claude AI質問 | VS Code |
+
+---
+
+**最終更新**: 2026-02-12
