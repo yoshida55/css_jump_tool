@@ -165,7 +165,9 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 | 機能 | 操作 | 説明 |
 |------|------|------|
 | CSSからHTML検索 | `Ctrl+Shift+H` | CSSセレクタのHTML使用箇所にジャンプ |
-| セクションジャンプ | `Ctrl+Shift+L` | 罫線ボックスコメントのセクション一覧 |
+| セクション一覧 | `Ctrl+Shift+A` | 罫線ボックスコメントのセクション一覧（遠距離ジャンプ） |
+| 次のセクション | `Ctrl+↓` | 次の罫線ボックスセクションへ移動（近距離） |
+| 前のセクション | `Ctrl+↑` | 前の罫線ボックスセクションへ移動（近距離） |
 | Claude AI質問 | `Ctrl+I` | プリセット選択 or 直接入力 |
 | Copilot解説 | `Ctrl+Shift+/` | 選択コードをCopilot Chatに送信 |
 | メモ検索 | `Ctrl+Shift+M` | Fuzzy検索でメモから情報検索、履歴10件表示、0件時Gemini要約 |

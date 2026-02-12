@@ -33,6 +33,16 @@
         "category": "CSS to HTML"
       },
       {
+        "command": "cssToHtmlJumper.jumpToNextSection",
+        "title": "次のセクションへ移動",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.jumpToPrevSection",
+        "title": "前のセクションへ移動",
+        "category": "CSS to HTML"
+      },
+      {
         "command": "cssToHtmlJumper.askCopilot",
         "title": "✨ Copilotに解説を求める",
         "category": "CSS to HTML"
@@ -100,8 +110,18 @@
       },
       {
         "command": "cssToHtmlJumper.jumpToSection",
-        "key": "ctrl+shift+l",
-        "when": "editorLangId == css"
+        "key": "ctrl+shift+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.jumpToNextSection",
+        "key": "ctrl+down",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.jumpToPrevSection",
+        "key": "ctrl+up",
+        "when": "editorTextFocus"
       },
       {
         "command": "cssToHtmlJumper.askCopilot",

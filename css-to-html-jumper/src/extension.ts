@@ -3016,27 +3016,16 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(disposable);
   context.subscriptions.push(definitionProvider);
 
-  // セクションジャンプコマンド
-  const sectionJumper = vscode.commands.registerCommand('cssToHtmlJumper.jumpToSection', async () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showWarningMessage('CSSファイルを開いてください');
-      return;
-    }
-
+  // セクション検出の共通関数
+  function findAllSections(editor: vscode.TextEditor): { label: string; line: number }[] {
     const text = editor.document.getText();
     const lines = text.split('\n');
-
-    // セクションを探す（│ セクション名 │ の形式）
-    // シンプルロジック: 連続する「│で始まる行」の「最初の1行」だけを抽出する
     const sections: { label: string; line: number }[] = [];
 
     let inMediaQuery = false;
     let mediaQueryType: 'mobile' | 'pc' | null = null;
     let braceDepth = 0;
     let mediaStartDepth = -1;
-    
-    // ┌～└ のボックス内かどうか追跡
     let inBox = false;
     let capturedTitle = false;
 
@@ -3044,7 +3033,6 @@ export function activate(context: vscode.ExtensionContext) {
       const line = lines[i];
       const trimmedLine = line.trim();
 
-      // @media の開始を検出
       if (/@media\s/.test(line)) {
         mediaStartDepth = braceDepth;
         if (line.includes('max-width')) {
@@ -3056,16 +3044,11 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
 
-      // 波括弧をカウント
       const openBraces = (line.match(/{/g) || []).length;
       const closeBraces = (line.match(/}/g) || []).length;
       braceDepth += openBraces;
-
-      // 現在メディアクエリ内かどうか判定
       inMediaQuery = mediaStartDepth >= 0 && braceDepth > mediaStartDepth;
 
-      // セクションボックスの ┌/└ 検出（行頭が罫線の場合のみ）
-      // ネスト図解（│ ┌──┐ │ のように │ 内にある ┌└）は無視する
       const firstBoxChar = line.search(/[┌└│]/);
       const isTopBorder = firstBoxChar !== -1 && line[firstBoxChar] === '┌';
       const isBottomBorder = firstBoxChar !== -1 && line[firstBoxChar] === '└';
@@ -3075,7 +3058,6 @@ export function activate(context: vscode.ExtensionContext) {
         capturedTitle = false;
       }
 
-      // ┌～└ 内の │ or | 行からタイトルだけ取得（半角パイプも対応）
       if (inBox && !capturedTitle) {
         const pipeIndex = line.search(/[│|]/);
         if (pipeIndex !== -1) {
@@ -3115,15 +3097,26 @@ export function activate(context: vscode.ExtensionContext) {
         inBox = false;
       }
 
-      // 波括弧深さを減算
       braceDepth -= closeBraces;
 
-      // メディアクエリから抜けたかチェック
       if (mediaStartDepth >= 0 && braceDepth <= mediaStartDepth) {
         mediaStartDepth = -1;
         mediaQueryType = null;
       }
     }
+
+    return sections;
+  }
+
+  // セクションジャンプコマンド
+  const sectionJumper = vscode.commands.registerCommand('cssToHtmlJumper.jumpToSection', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage('ファイルを開いてください');
+      return;
+    }
+
+    const sections = findAllSections(editor);
 
     if (sections.length === 0) {
       vscode.window.showInformationMessage('セクションが見つかりませんでした（│ セクション名 │ 形式のコメントを探しています）');
@@ -3156,6 +3149,72 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(sectionJumper);
+
+  // 次のセクションへ移動
+  const jumpToNextSection = vscode.commands.registerCommand('cssToHtmlJumper.jumpToNextSection', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+
+    const sections = findAllSections(editor);
+    if (sections.length === 0) {
+      vscode.window.showInformationMessage('セクションが見つかりませんでした');
+      return;
+    }
+
+    const currentLine = editor.selection.active.line;
+    const nextSection = sections.find(s => s.line > currentLine);
+
+    if (nextSection) {
+      const position = new vscode.Position(nextSection.line, 0);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+      const highlightRange = new vscode.Range(position, new vscode.Position(nextSection.line, 1000));
+      editor.setDecorations(highlightDecorationType, [highlightRange]);
+      setTimeout(() => {
+        editor.setDecorations(highlightDecorationType, []);
+      }, 800);
+    } else {
+      vscode.window.showInformationMessage('次のセクションはありません');
+    }
+  });
+
+  // 前のセクションへ移動
+  const jumpToPrevSection = vscode.commands.registerCommand('cssToHtmlJumper.jumpToPrevSection', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+
+    const sections = findAllSections(editor);
+    if (sections.length === 0) {
+      vscode.window.showInformationMessage('セクションが見つかりませんでした');
+      return;
+    }
+
+    const currentLine = editor.selection.active.line;
+    const prevSections = sections.filter(s => s.line < currentLine);
+
+    if (prevSections.length > 0) {
+      const prevSection = prevSections[prevSections.length - 1];
+      const position = new vscode.Position(prevSection.line, 0);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+
+      const highlightRange = new vscode.Range(position, new vscode.Position(prevSection.line, 1000));
+      editor.setDecorations(highlightDecorationType, [highlightRange]);
+      setTimeout(() => {
+        editor.setDecorations(highlightDecorationType, []);
+      }, 800);
+    } else {
+      vscode.window.showInformationMessage('前のセクションはありません');
+    }
+  });
+
+  context.subscriptions.push(jumpToNextSection);
+  context.subscriptions.push(jumpToPrevSection);
 
   // ステータスバーアイテムの作成
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
