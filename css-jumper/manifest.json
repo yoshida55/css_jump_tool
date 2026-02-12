@@ -37,5 +37,13 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"]
     }
-  ]
+  ],
+  "commands": {
+    "toggleFlexInfo": {
+      "suggested_key": {
+        "default": "Alt+F"
+      },
+      "description": "Flex情報表示をトグル"
+    }
+  }
 }

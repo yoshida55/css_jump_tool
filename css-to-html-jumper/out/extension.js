@@ -1253,6 +1253,67 @@ function activate(context) {
                     res.end(JSON.stringify({ type: null, name: null }));
                 }
             }
+            else if (req.url === '/highlight-line' && req.method === 'POST') {
+                // HTMLファイルの該当行をハイライト表示
+                let body = '';
+                req.on('data', chunk => body += chunk.toString());
+                req.on('end', () => {
+                    try {
+                        const data = JSON.parse(body);
+                        const filePath = data.filePath;
+                        const lineNumber = data.lineNumber;
+                        if (!filePath || !lineNumber) {
+                            res.writeHead(400);
+                            res.end(JSON.stringify({ error: 'Missing filePath or lineNumber' }));
+                            return;
+                        }
+                        // 既に開いているエディタを探す
+                        const targetUri = vscode.Uri.file(filePath).toString();
+                        console.log('CSS to HTML Jumper: ハイライトリクエスト受信', { filePath, lineNumber, targetUri });
+                        console.log('CSS to HTML Jumper: 開いているエディタ一覧', vscode.window.visibleTextEditors.map(e => e.document.uri.toString()));
+                        let targetEditor = vscode.window.visibleTextEditors.find(editor => editor.document.uri.toString() === targetUri);
+                        console.log('CSS to HTML Jumper: エディタ検索結果', targetEditor ? 'found' : 'not found');
+                        const applyHighlight = (editor) => {
+                            const line = lineNumber - 1; // 0-indexed
+                            const range = new vscode.Range(line, 0, line, editor.document.lineAt(line).text.length);
+                            // 黄色背景でハイライト
+                            const decorationType = vscode.window.createTextEditorDecorationType({
+                                backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                                isWholeLine: true
+                            });
+                            editor.setDecorations(decorationType, [range]);
+                            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                            console.log('CSS to HTML Jumper: ハイライト適用', filePath, lineNumber);
+                            // 3秒後にハイライト削除
+                            setTimeout(() => {
+                                decorationType.dispose();
+                            }, 3000);
+                        };
+                        if (targetEditor) {
+                            // 既に開いている場合はそのエディタにハイライト適用
+                            applyHighlight(targetEditor);
+                        }
+                        else {
+                            // 開いていない場合は新しく開く
+                            vscode.workspace.openTextDocument(vscode.Uri.file(filePath)).then(doc => {
+                                vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true }).then(editor => {
+                                    applyHighlight(editor);
+                                }, (err) => {
+                                    console.error('CSS to HTML Jumper: ドキュメント表示エラー', err);
+                                });
+                            }, (err) => {
+                                console.error('CSS to HTML Jumper: ファイルオープンエラー', err);
+                            });
+                        }
+                        res.writeHead(200);
+                        res.end(JSON.stringify({ status: 'ok' }));
+                    }
+                    catch (e) {
+                        res.writeHead(400);
+                        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                    }
+                });
+            }
             else {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Not found' }));

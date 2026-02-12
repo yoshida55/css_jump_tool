@@ -381,6 +381,10 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
       // HTML を先に開く（見つかった場合）
       if (htmlResult) {
         openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+        // HTMLファイルの該当行をハイライト（少し遅延）
+        setTimeout(function() {
+          highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber);
+        }, 200);
         // 少し遅延してからCSS を開く（CSSがアクティブになる）
         setTimeout(function() {
           openInVscode(idResult.filePath, idResult.lineNumber);
@@ -410,6 +414,10 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
       // HTML を先に開く（見つかった場合）
       if (htmlResult) {
         openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+        // HTMLファイルの該当行をハイライト（少し遅延）
+        setTimeout(function() {
+          highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber);
+        }, 200);
         // 少し遅延してからCSS を開く（CSSがアクティブになる）
         setTimeout(function() {
           openInVscode(classResult.filePath, classResult.lineNumber);
@@ -442,6 +450,10 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
         // HTML を先に開く（見つかった場合）
         if (htmlResult) {
           openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+          // HTMLファイルの該当行をハイライト（少し遅延）
+          setTimeout(function() {
+            highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber);
+          }, 200);
           // 少し遅延してからCSS を開く（CSSがアクティブになる）
           setTimeout(function() {
             openInVscode(altResult.filePath, altResult.lineNumber);
@@ -771,6 +783,24 @@ function openInVscode(filePath, lineNumber) {
   );
 }
 
+// VS Code拡張にHTTPリクエストを送ってハイライト表示
+function highlightLineInVSCode(filePath, lineNumber) {
+  console.log("CSS Jumper: VS Code行ハイライト", filePath, lineNumber);
+
+  fetch("http://127.0.0.1:3848/highlight-line", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filePath: filePath, lineNumber: lineNumber })
+  })
+  .then(function(res) { return res.json(); })
+  .then(function(data) {
+    console.log("CSS Jumper: ハイライトリクエスト成功", data);
+  })
+  .catch(function(err) {
+    console.log("CSS Jumper: ハイライトリクエスト失敗", err);
+  });
+}
+
 // ユーザーに通知（アクティブタブへ）
 function notifyUser(message, type) {
   console.log("CSS Jumper: 通知", message, type);
@@ -928,3 +958,35 @@ function notifyUserToTab(tabId, message, type) {
     }
   });
 }
+
+// Ctrl+Alt+F でFlex情報表示をトグル
+chrome.commands.onCommand.addListener(function(command) {
+  if (command === "toggleFlexInfo") {
+    chrome.storage.local.get(["autoShowFlex"], function(result) {
+      var currentState = result.autoShowFlex || false;
+      var newState = !currentState;
+
+      chrome.storage.local.set({ autoShowFlex: newState }, function() {
+        console.log("CSS Jumper: Flex情報自動表示", newState ? "ON" : "OFF");
+
+        // アクティブタブにトグル指示を送信
+        chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+          if (tabs[0]) {
+            chrome.tabs.sendMessage(tabs[0].id, {
+              action: newState ? "showFlexInfo" : "removeFlexInfo"
+            }, function(response) {
+              if (chrome.runtime.lastError) {
+                console.log("CSS Jumper: メッセージ送信失敗（ページリロードが必要）");
+              } else {
+                // 通知表示
+                notifyUserToTab(tabs[0].id,
+                  "Flex情報表示: " + (newState ? "ON ✓" : "OFF"),
+                  "success");
+              }
+            });
+          }
+        });
+      });
+    });
+  }
+});

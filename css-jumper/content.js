@@ -591,7 +591,16 @@ document.addEventListener("dblclick", function(event) {
   event.stopPropagation();
 
   var preferMobile = event.ctrlKey;
-  console.log("CSS Jumper: ダブルクリック検知", { ctrlKey: preferMobile });
+
+  // デバッグ: クリックされた要素の詳細情報
+  console.log("CSS Jumper: ダブルクリック検知", {
+    ctrlKey: preferMobile,
+    tagName: event.target.tagName,
+    id: event.target.id,
+    className: event.target.className,
+    parentTagName: event.target.parentElement ? event.target.parentElement.tagName : null,
+    parentClassName: event.target.parentElement ? event.target.parentElement.className : null
+  });
 
   if (preferMobile) {
     showNotification("📱 モバイル版CSSを検索中...", "info");
@@ -729,7 +738,21 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     sendResponse({ highlighted: true });
   }
 
-  
+  // Flex情報表示（Ctrl+Alt+F）
+  if (message.action === "showFlexInfo") {
+    console.log("CSS Jumper: Flex情報表示ON");
+    showFlexInfo();
+    sendResponse({ shown: true });
+  }
+
+  // Flex情報削除（Ctrl+Alt+F）
+  if (message.action === "removeFlexInfo") {
+    console.log("CSS Jumper: Flex情報表示OFF");
+    removeFlexInfo();
+    sendResponse({ removed: true });
+  }
+
+
   return true;
 });
 
