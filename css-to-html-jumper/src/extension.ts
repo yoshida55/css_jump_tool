@@ -295,14 +295,19 @@ ${memoContent.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
 ${query}
 
 【指示】
-- 検索クエリに関連する行を抽出する
-- 単語が1つの場合: その単語を含む行を探す（例: 「隣接」→「隣接」を含む行）
-- 単語が複数の場合: 全単語を含む行を最優先（例: 「ボックスサイズ」→「ボックス」「サイズ」両方含む行）
+- **意味理解を最優先**: 検索クエリの意図を理解し、その目的を達成するコードや説明を探す
+- **コードブロックを理解する**: \`\`\`で囲まれたコード例があれば、その機能・目的を解析する
+  例: 「配列をソート」→ sort(), sorted() 等のメソッド使用例やソートアルゴリズムの説明を探す
+  例: 「ループ処理」→ for文, while文, forEach等の実装例を探す
+- **コードと説明のペア**: コード例とその説明文が近い場合、両方を含むセクションを優先
+- **技術的な同義語・関連語を考慮**: 
+  例: 「関数」→「メソッド」「function」「def」も含む
+  例: 「繰り返し」→「ループ」「for」「while」も含む
 - 単語の順序は問わない、離れていてもOK
 - typoや表記ゆれも考慮する
 - **最大3件のみ**抽出（関連度が最も高いものだけ、厳選すること）
 - **必ず異なるセクション（トピック）から選ぶ**（連続した行番号NG、離れた箇所から）
-- 見出し行（##で始まる）を優先する
+- 見出し行（##で始まる）やコードブロックの開始行を優先
 - 類似内容・同じセクションの重複は絶対に避ける
 
 【出力形式】
@@ -327,7 +332,10 @@ JSON配列で返す。説明文は不要。必ず3件以内。
       }],
       generationConfig: {
         temperature: 0.3,  // 精度重視で低めに
-        maxOutputTokens: 4096
+        maxOutputTokens: 4096,
+        thinkingConfig: {
+          thinkingLevel: 'MINIMAL'  // 内部推論を最小化→高速化（精度はほぼ維持）
+        }
       }
     });
 
@@ -937,7 +945,7 @@ vertical-align
 // ========================================
 // Claude API 呼び出し関数
 // ========================================
-async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean): Promise<string> {
+async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean, isSectionQuestion?: boolean): Promise<string> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('claudeApiKey', '');
   const model = config.get<string>('claudeModel', 'claude-sonnet-4-5-20250929');
@@ -947,7 +955,24 @@ async function askClaudeAPI(code: string, question: string, htmlContext?: string
   }
 
   let prompt = '';
-  if (isStructural && code.trim() && htmlContext) {
+  if (isSectionQuestion && code.trim() && htmlContext) {
+    // セクション質問: HTMLセクション + CSS全体
+    prompt = `以下のHTMLセクションとCSSについて質問があります。
+
+【HTMLセクション】
+\`\`\`html
+${code}
+\`\`\`
+
+【リンクされているCSS全体】
+\`\`\`css
+${htmlContext}
+\`\`\`
+
+${question}
+
+日本語で回答してください。`;
+  } else if (isStructural && code.trim() && htmlContext) {
     prompt = `以下のHTMLファイルの構造改善を依頼します。
 
 【HTMLファイル全体】
@@ -1062,6 +1087,136 @@ ${question}
     req.end();
   });
 }
+
+// ========================================
+// Gemini API 呼び出し関数 (thinking_level: MINIMAL)
+// ========================================
+async function askGeminiAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean): Promise<string> {
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const apiKey = config.get<string>('geminiApiKey', '');
+
+  if (!apiKey) {
+    throw new Error('Gemini API キーが設定されていません。設定 → cssToHtmlJumper.geminiApiKey を確認してください。');
+  }
+
+  let prompt = '';
+  if (isStructural && code.trim() && htmlContext) {
+    prompt = `以下のHTMLファイルの構造改善を依頼します。
+
+【HTMLファイル全体】
+\`\`\`html
+${code}
+\`\`\`
+
+【リンクされているCSS】
+\`\`\`css
+${htmlContext}
+\`\`\`
+
+【依頼】
+${question}
+
+日本語で回答してください。`;
+  } else if (isStructural && code.trim()) {
+    prompt = `以下のHTMLファイルの構造改善を依頼します。
+
+【HTMLファイル全体】
+\`\`\`html
+${code}
+\`\`\`
+
+【依頼】
+${question}
+
+日本語で回答してください。`;
+  } else if (code.trim() && htmlContext) {
+    prompt = `以下のCSSコードと、それが使われているHTMLについて質問があります。
+
+【CSSコード】
+\`\`\`css
+${code}
+\`\`\`
+
+【HTMLでの使用箇所】
+\`\`\`html
+${htmlContext}
+\`\`\`
+
+【質問】
+${question}
+
+日本語で簡潔に回答してください。`;
+  } else if (code.trim()) {
+    prompt = `以下のコードについて質問があります。
+
+【コード】
+\`\`\`
+${code}
+\`\`\`
+
+【質問】
+${question}
+
+日本語で簡潔に回答してください。`;
+  } else {
+    prompt = `【質問】
+${question}
+
+日本語で簡潔に回答してください。`;
+  }
+
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({
+      contents: [{
+        parts: [{ text: prompt }]
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: isStructural ? 8192 : 4096,
+        thinkingConfig: {
+          thinkingLevel: 'MINIMAL'  // 高速化：内部推論を最小化
+        }
+      }
+    });
+
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          
+          if (!text) {
+            reject(new Error('Gemini APIからレスポンスがありません'));
+          } else {
+            resolve(text);
+          }
+        } catch (e: any) {
+          reject(new Error(`Gemini APIレスポンス解析エラー: ${e.message}`));
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(new Error(`Gemini API接続エラー: ${e.message}`));
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
 
 // CSSコードからクラス名/ID名を抽出
 function extractSelectorsFromCSS(cssCode: string): string[] {
@@ -1496,6 +1651,234 @@ export function activate(context: vscode.ExtensionContext) {
           } catch (e) {
             res.writeHead(400);
             res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          }
+        });
+      } else if (req.url === '/explain-and-jump' && req.method === 'POST') {
+        // Ctrl+クリック → CSS説明表示 + ジャンプ
+        let body = '';
+        req.on('data', (chunk: any) => body += chunk.toString());
+        req.on('end', async () => {
+          try {
+            const data = JSON.parse(body);
+            console.log('CSS to HTML Jumper: CSS説明リクエスト受信', data);
+
+            // 1. CSSファイルから該当クラスの定義を検索
+            const targetSelector = data.className
+              ? data.className.toString().split(' ')[0]  // 最初のクラス名のみ
+              : data.id;
+            const selectorType = data.className ? 'class' : 'id';
+
+            // 2. ワークスペース内のCSSファイルを検索（全出現箇所を収集）
+            interface CssMatch {
+              filePath: string;
+              fileName: string;
+              lineNumber: number;
+              rule: string;
+              isInMedia: boolean;
+            }
+
+            const cssMatches: CssMatch[] = [];
+            let cssFilePath = '';
+            let cssLineNumber = 0;
+
+            if (vscode.workspace.workspaceFolders) {
+              const cssFiles = await vscode.workspace.findFiles('**/*.css', '**/node_modules/**', 50);
+              for (const cssFile of cssFiles) {
+                const doc = await vscode.workspace.openTextDocument(cssFile);
+                const text = doc.getText();
+                const searchPattern = selectorType === 'class' ? '.' + targetSelector : '#' + targetSelector;
+
+                const lines = text.split('\n');
+                for (let i = 0; i < lines.length; i++) {
+                  if (lines[i].includes(searchPattern)) {
+                    // CSS定義を抽出（ブレース内）
+                    let braceCount = 0;
+                    let ruleLines: string[] = [];
+                    for (let j = i; j < lines.length; j++) {
+                      ruleLines.push(lines[j]);
+                      braceCount += (lines[j].match(/{/g) || []).length;
+                      braceCount -= (lines[j].match(/}/g) || []).length;
+                      if (braceCount === 0 && ruleLines.length > 0) {
+                        break;
+                      }
+                    }
+
+                    // @media内かチェック（簡易版：上100行を遡って@mediaを探す）
+                    let isInMedia = false;
+                    let mediaOpenBraces = 0;
+                    for (let k = i - 1; k >= Math.max(0, i - 100); k--) {
+                      const line = lines[k];
+                      if (line.includes('@media')) {
+                        // @mediaから現在位置までのブレース数を計算
+                        for (let m = k; m < i; m++) {
+                          mediaOpenBraces += (lines[m].match(/{/g) || []).length;
+                          mediaOpenBraces -= (lines[m].match(/}/g) || []).length;
+                        }
+                        if (mediaOpenBraces > 0) {
+                          isInMedia = true;
+                        }
+                        break;
+                      }
+                    }
+
+                    // マッチ情報を記録
+                    cssMatches.push({
+                      filePath: cssFile.fsPath,
+                      fileName: cssFile.fsPath.split(/[\\/]/).pop() || 'unknown',
+                      lineNumber: i + 1,
+                      rule: ruleLines.join('\n'),
+                      isInMedia: isInMedia
+                    });
+
+                    // ジャンプ先は最初のマッチ
+                    if (!cssFilePath) {
+                      cssFilePath = cssFile.fsPath;
+                      cssLineNumber = i + 1;
+                    }
+                  }
+                }
+              }
+            }
+
+            // 2.5. CSS定義を構造化フォーマットで構築（ファイル名:行番号付き）
+            let cssDefinition = '';
+            if (cssMatches.length > 0) {
+              cssDefinition = cssMatches.map(match => {
+                const mediaLabel = match.isInMedia ? ' (@media内)' : '';
+                return `--- ${match.fileName}:${match.lineNumber}${mediaLabel} ---\n${match.rule}`;
+              }).join('\n\n');
+            } else {
+              cssDefinition = '/* 該当するCSS定義が見つかりませんでした */';
+            }
+
+            // 3. Claude Sonnet APIでCSS修正案・説明を生成
+            const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+            const claudeApiKey = config.get<string>('claudeApiKey', '');
+
+            let explanation = '';
+            let title = '';
+
+            if (claudeApiKey) {
+              let prompt = '';
+              
+              if (data.userRequest) {
+                // ユーザーからの修正要望がある場合
+                title = `🛠️ CSS修正案: ${data.userRequest}`;
+                prompt = `あなたは熟練したフロントエンドエンジニアです。
+ユーザーの要望に基づいて、提供されたHTMLとCSSを修正してください。
+
+【ユーザーの要望】: ${data.userRequest}
+
+【ターゲット要素のセレクタ】: ${selectorType === 'class' ? '.' : '#'}${targetSelector}
+【HTML構造（セクション全体）】:
+${data.htmlContext || 'なし'}
+
+【CSS定義（ファイル名・行番号付き）】:
+${cssDefinition}
+
+【指示】:
+- CSSの「解説」は不要です。
+- 「どのコードをどう書き換えるべきか」のみを具体的かつ簡潔に提示してください。
+- 既存のCSSを尊重しつつ、要望を実現するための最小限かつ最適な変更を行ってください。
+- 他の要素への悪影響（サイドエフェクト）がないか考慮してください。
+
+【出力形式】:
+1. **修正内容**
+   - ファイル名:行番号 → 変更すべきCSSコード（\`\`\`css ... \`\`\`）
+   - ※既存のコードを書き換える場合は、変更前後の違いが分かるように記述してください。
+   - ※新規追加の場合は、どのファイルの何行目付近に追加すべきか記述してください。
+
+2. **注意点**（もしあれば1行で）`;
+              } else {
+                // 要望がない場合（従来の説明モード）
+                title = `🔍 CSS説明: ${selectorType === 'class' ? '.' : '#'}${targetSelector}`;
+                prompt = `以下のCSSクラスについて、簡潔に日本語で説明してください。
+
+【セレクタ】: ${selectorType === 'class' ? '.' : '#'}${targetSelector}
+【HTML要素】: <${data.tagName}>
+【HTMLコンテキスト】:
+${data.htmlContext || 'なし'}
+
+【CSS定義（ファイル名・行番号付き）】:
+${cssDefinition}
+
+【出力形式】:
+- このクラスの役割（1行）
+- 主な視覚効果（箇条書き、5つまで）
+- 改善のヒント（あれば1行）`;
+              }
+
+              try {
+                explanation = await askClaudeAPI(prompt, '', undefined, false);
+              } catch (apiErr: any) {
+                explanation = `❌ API呼び出しエラー: ${apiErr.message}`;
+              }
+            } else {
+              explanation = '⚠️ Claude APIキーが設定されていません。\n設定: cssToHtmlJumper.claudeApiKey';
+            }
+
+            // 4. 新しいMarkdownタブに説明を表示
+            const matchesSummary = cssMatches.length > 0
+              ? cssMatches.map(m => `- ${m.fileName}:${m.lineNumber}${m.isInMedia ? ' (📱@media内)' : ''}`).join('\n')
+              : '- なし';
+
+            const mdContent = `# ${title}
+
+## 📋 現在のCSS定義（${cssMatches.length}件）
+${matchesSummary}
+
+\`\`\`css
+${cssDefinition}
+\`\`\`
+
+## 💡 AI提案
+${explanation}
+
+---
+*ジャンプ先: ${cssFilePath || '不明'} (行: ${cssLineNumber || '不明'})*
+*要素: <${data.tagName}> | 生成: ${new Date().toLocaleString('ja-JP')}*
+`;
+
+            const doc = await vscode.workspace.openTextDocument({
+              content: mdContent,
+              language: 'markdown'
+            });
+            await vscode.window.showTextDocument(doc, {
+              viewColumn: vscode.ViewColumn.Beside,
+              preview: true,
+              preserveFocus: true
+            });
+
+            // 5. CSS定義にジャンプ（メインエディタで）
+            if (cssFilePath && cssLineNumber > 0) {
+              const cssUri = vscode.Uri.file(cssFilePath);
+              const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+              const cssEditor = await vscode.window.showTextDocument(cssDoc, {
+                viewColumn: vscode.ViewColumn.One,
+                preview: false,
+                preserveFocus: false
+              });
+
+              const line = cssLineNumber - 1;
+              const range = new vscode.Range(line, 0, line, cssDoc.lineAt(line).text.length);
+              cssEditor.selection = new vscode.Selection(range.start, range.end);
+              cssEditor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+
+              // 黄色ハイライト（3秒）
+              const decorationType = vscode.window.createTextEditorDecorationType({
+                backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                isWholeLine: true
+              });
+              cssEditor.setDecorations(decorationType, [range]);
+              setTimeout(() => decorationType.dispose(), 3000);
+            }
+
+            res.writeHead(200);
+            res.end(JSON.stringify({ status: 'ok' }));
+          } catch (e: any) {
+            console.error('CSS to HTML Jumper: explain-and-jump エラー', e);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
           }
         });
       } else {
@@ -2200,6 +2583,15 @@ export function activate(context: vscode.ExtensionContext) {
 - 矢印やボックスで関係性を示す
 - SVGコードのみ出力（説明文は不要）
 - 必ず </svg> で終わること`, showBeside: false },
+    // { label: '🎨 SVGで図解 (Gemini)', prompt: `このコードの動作や構造をSVGで図解してください。
+
+// 【重要な制約】
+// - できるだけわかりやすく、シンプルな図にする
+// - 日本語でラベルを付ける
+// - 色を使って区別をつける
+// - 矢印やボックスで関係性を示す
+// - SVGコードのみ出力（説明文は不要）
+// - 必ず </svg> で終わること`, showBeside: false, model: 'gemini' },
     { label: '📝 CSSスケルトン生成', prompt: `以下のHTMLからclass名とid名を抽出し、CSSスケルトン（空のルールセット）を生成してください。
 
 【重要な制約】
@@ -2261,7 +2653,7 @@ export function activate(context: vscode.ExtensionContext) {
       presetItems.unshift({ label: '💬 直接質問', prompt: '', showBeside: false });
     }
 
-    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; showBeside: boolean } | undefined>((resolve) => {
+    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
       quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
@@ -2283,7 +2675,27 @@ export function activate(context: vscode.ExtensionContext) {
             isMemoSearch: false,
             isQuiz: false,
             isFreeQuestion: true,
-            showBeside: false
+            isSectionQuestion: false,
+            showBeside: false,
+            useGemini: false
+          });
+        } else if (selected && selected.label.includes('セクション質問')) {
+          // セクション質問: プリセットプロンプト + ユーザー質問
+          const finalQuestion = userInput.trim()
+            ? `${selected.prompt}\n\n【質問】\n${userInput.trim()}`
+            : selected.prompt;
+
+          resolve({
+            question: finalQuestion,
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: false,
+            isSectionQuestion: true,
+            showBeside: true,
+            useGemini: false
           });
         } else if (selected && selected.label.includes('メモ検索')) {
           resolve({
@@ -2294,7 +2706,9 @@ export function activate(context: vscode.ExtensionContext) {
             isMemoSearch: true,
             isQuiz: false,
             isFreeQuestion: false,
-            showBeside: false
+            isSectionQuestion: false,
+            showBeside: false,
+            useGemini: false
           });
         } else if (selected && selected.label.includes('クイズ')) {
           resolve({
@@ -2305,7 +2719,9 @@ export function activate(context: vscode.ExtensionContext) {
             isMemoSearch: false,
             isQuiz: true,
             isFreeQuestion: false,
-            showBeside: false
+            isSectionQuestion: false,
+            showBeside: false,
+            useGemini: false
           });
         } else if (selected && selected.prompt) {
           // プリセット選択 + userInput
@@ -2327,7 +2743,9 @@ export function activate(context: vscode.ExtensionContext) {
             isMemoSearch: false,
             isQuiz: false,
             isFreeQuestion: false,
-            showBeside: selected.showBeside
+            isSectionQuestion: false,
+            showBeside: selected.showBeside,
+            useGemini: (selected as any).model === 'gemini'  // Geminiモデルを使用するか
           });
         } else {
           resolve(undefined);
@@ -2347,7 +2765,7 @@ export function activate(context: vscode.ExtensionContext) {
       return; // キャンセル
     }
 
-    const { question, isSvg, isSkeleton, isStructural, isMemoSearch, isQuiz, isFreeQuestion, showBeside } = result;
+    const { question, isSvg, isSkeleton, isStructural, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
 
     // プログレス表示
     await vscode.window.withProgress({
@@ -2360,7 +2778,45 @@ export function activate(context: vscode.ExtensionContext) {
         let htmlContext = '';
         let codeToSend = code;
 
-        if (isQuiz) {
+        if (isSectionQuestion) {
+          // セクション質問: カーソル位置のセクション全体を送信
+          const sectionRange = getCurrentSectionRange(editor);
+          if (!sectionRange) {
+            vscode.window.showWarningMessage('セクションが見つかりません。カーソルを罫線ボックスコメント内に配置してください。');
+            return;
+          }
+
+          // セクション範囲のテキストを取得
+          const sectionText = editor.document.getText(
+            new vscode.Range(
+              new vscode.Position(sectionRange.start, 0),
+              new vscode.Position(sectionRange.end + 1, 0)
+            )
+          );
+
+          codeToSend = `【セクション名】: ${sectionRange.sectionName}\n\n${sectionText}`;
+
+          // HTMLファイルの場合、リンクされたCSSファイル全体を取得
+          if (editor.document.languageId === 'html') {
+            const cssFilePaths = await findLinkedCssFiles(editor.document);
+            const cssContents: string[] = [];
+
+            for (const cssPath of cssFilePaths) {
+              try {
+                const cssUri = vscode.Uri.file(cssPath);
+                const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+                const fileName = path.basename(cssPath);
+                cssContents.push(`/* ${fileName} */\n${cssDoc.getText()}`);
+              } catch (e) {
+                console.error(`CSS読み込みエラー: ${cssPath}`, e);
+              }
+            }
+
+            if (cssContents.length > 0) {
+              htmlContext = cssContents.join('\n\n');
+            }
+          }
+        } else if (isQuiz) {
           // クイズ処理
           return; // 一旦プログレスを終了してクイズ処理へ
         } else if (isStructural) {
@@ -2454,7 +2910,10 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        const answer = await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural);
+        // モデルに応じてAPI呼び出しを切り替え
+        const answer = useGemini
+          ? await askGeminiAPI(codeToSend, question, htmlContext || undefined, isStructural)
+          : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isSectionQuestion);
 
         // コードブロック（```css など）を削除
         const cleanAnswer = answer
@@ -3087,6 +3546,57 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(disposable);
   context.subscriptions.push(definitionProvider);
 
+  // カーソル位置のセクション範囲を取得（開始行〜終了行）
+  function getCurrentSectionRange(editor: vscode.TextEditor): { start: number; end: number; sectionName: string } | null {
+    const cursorLine = editor.selection.active.line;
+    const text = editor.document.getText();
+    const lines = text.split('\n');
+
+    // 上に遡って ┌ を探す
+    let startLine = -1;
+    let sectionName = '';
+    for (let i = cursorLine; i >= 0; i--) {
+      const line = lines[i];
+      if (line.search(/[┌]/) >= 0) {
+        startLine = i;
+        // セクション名を取得（│ で囲まれた部分）
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          const titleLine = lines[j];
+          const pipeIndex = titleLine.search(/[│|]/);
+          if (pipeIndex !== -1) {
+            let content = titleLine.substring(pipeIndex + 1);
+            const lastPipeIndex = Math.max(content.lastIndexOf('│'), content.lastIndexOf('|'));
+            if (lastPipeIndex !== -1) {
+              content = content.substring(0, lastPipeIndex);
+            }
+            content = content.replace(/\*\/$/, '').trim();
+            if (content && !/^[─━┈┄┌┐└┘│|]+$/.test(content)) {
+              sectionName = content;
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+
+    if (startLine === -1) {
+      return null; // セクションが見つからない
+    }
+
+    // 下に └ を探す
+    let endLine = lines.length - 1;
+    for (let i = startLine + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.search(/[└]/) >= 0) {
+        endLine = i;
+        break;
+      }
+    }
+
+    return { start: startLine, end: endLine, sectionName };
+  }
+
   // セクション検出の共通関数
   function findAllSections(editor: vscode.TextEditor): { label: string; line: number }[] {
     const text = editor.document.getText();
@@ -3482,6 +3992,72 @@ export function activate(context: vscode.ExtensionContext) {
     statusBarItem.text = statusText;
     statusBarItem.show();
   }
+
+  // ========================================
+  // Ctrl+I: AIに質問（モデル選択可能）
+  // ========================================
+  const askClaudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage('エディタが開かれていません');
+      return;
+    }
+
+    // 設定から使用モデルを取得
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const aiModel = config.get<string>('aiModel', 'claude-sonnet-4-5');
+
+    // 選択範囲のコードを取得
+    const selection = editor.selection;
+    const selectedText = editor.document.getText(selection);
+
+    // 質問を入力
+    const question = await vscode.window.showInputBox({
+      prompt: '質問を入力してください',
+      placeHolder: '例: このコードを図解して'
+    });
+
+    if (!question) {
+      return;
+    }
+
+    try {
+      let response: string = '';
+      
+      // モデルに応じてAPI呼び出しを分岐
+      if (aiModel === 'gemini-3-flash') {
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: '🤖 Gemini 3.0 Flash で処理中...',
+          cancellable: false
+        }, async () => {
+          response = await askGeminiAPI(selectedText, question);
+        });
+      } else {
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: '🤖 Claude Sonnet 4.5 で処理中...',
+          cancellable: false
+        }, async () => {
+          response = await askClaudeAPI(selectedText, question);
+        });
+      }
+
+      // インライン入力ボックスで回答を表示
+      vscode.window.showInformationMessage(response, { modal: false });
+      
+      // 回答を新しいドキュメントで開く
+      const doc = await vscode.workspace.openTextDocument({
+        content: `# 質問\n${question}\n\n# 回答\n${response}`,
+        language: 'markdown'
+      });
+      await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`AI質問エラー: ${e.message}`);
+    }
+  });
+  context.subscriptions.push(askClaudeCommand);
 
   // ========================================
   // 一時ファイルからSVGリンク挿入 (Ctrl+Alt+S)

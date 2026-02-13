@@ -173,9 +173,9 @@
         },
         "cssToHtmlJumper.claudeModel": {
           "type": "string",
-          "enum": ["claude-opus-4-5-20251124", "claude-sonnet-4-5-20250929"],
+          "enum": ["claude-opus-4-6-20260205", "claude-opus-4-5-20251124", "claude-sonnet-4-5-20250929"],
           "default": "claude-sonnet-4-5-20250929",
-          "description": "使用するClaudeモデル"
+          "description": "使用するClaudeモデル（Opus 4.6: 最高性能 ¥5.6/回 | Opus 4.5: 高性能 ¥4.4/回 | Sonnet 4.5: バランス ¥3.4/回）"
         },
         "cssToHtmlJumper.memoFilePath": {
           "type": "string",
@@ -186,6 +186,12 @@
           "type": "string",
           "default": "",
           "description": "Gemini API キー（Fuzzy検索で結果0件時のフォールバック用）"
+        },
+        "cssToHtmlJumper.aiModel": {
+          "type": "string",
+          "enum": ["claude-sonnet-4-5", "gemini-3-flash"],
+          "default": "claude-sonnet-4-5",
+          "description": "Ctrl+I で使用するAIモデル（claude-sonnet-4-5: 高精度だが遅い / gemini-3-flash: 高速かつ安い）"
         },
         "cssToHtmlJumper.quizCategory": {
           "type": "string",

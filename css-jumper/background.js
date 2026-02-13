@@ -388,11 +388,19 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
         // 少し遅延してからCSS を開く（CSSがアクティブになる）
         setTimeout(function() {
           openInVscode(idResult.filePath, idResult.lineNumber);
+          // CSS行を中央にスクロール＋ハイライト
+          setTimeout(function() {
+            highlightLineInVSCode(idResult.filePath, idResult.lineNumber);
+          }, 300);
         }, 100);
         notifyUser("✓ #" + id + " → CSS:" + idResult.fileName + ":" + idResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
       } else {
         // HTMLが見つからない場合はCSSのみ
         openInVscode(idResult.filePath, idResult.lineNumber);
+        // CSS行を中央にスクロール＋ハイライト
+        setTimeout(function() {
+          highlightLineInVSCode(idResult.filePath, idResult.lineNumber);
+        }, 300);
         notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
       }
 
@@ -421,11 +429,19 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
         // 少し遅延してからCSS を開く（CSSがアクティブになる）
         setTimeout(function() {
           openInVscode(classResult.filePath, classResult.lineNumber);
+          // CSS行を中央にスクロール＋ハイライト
+          setTimeout(function() {
+            highlightLineInVSCode(classResult.filePath, classResult.lineNumber);
+          }, 300);
         }, 100);
         notifyUser("✓ ." + className + " → CSS:" + classResult.fileName + ":" + classResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
       } else {
         // HTMLが見つからない場合はCSSのみ
         openInVscode(classResult.filePath, classResult.lineNumber);
+        // CSS行を中央にスクロール＋ハイライト
+        setTimeout(function() {
+          highlightLineInVSCode(classResult.filePath, classResult.lineNumber);
+        }, 300);
         notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
       }
 
@@ -457,11 +473,19 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
           // 少し遅延してからCSS を開く（CSSがアクティブになる）
           setTimeout(function() {
             openInVscode(altResult.filePath, altResult.lineNumber);
+            // CSS行を中央にスクロール＋ハイライト
+            setTimeout(function() {
+              highlightLineInVSCode(altResult.filePath, altResult.lineNumber);
+            }, 300);
           }, 100);
           notifyUser("✓ ." + cls + " → CSS:" + altResult.fileName + ":" + altResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
         } else {
           // HTMLが見つからない場合はCSSのみ
           openInVscode(altResult.filePath, altResult.lineNumber);
+          // CSS行を中央にスクロール＋ハイライト
+          setTimeout(function() {
+            highlightLineInVSCode(altResult.filePath, altResult.lineNumber);
+          }, 300);
           notifyUser("✓ ." + cls + " → " + altResult.fileName + ":" + altResult.lineNumber, "success");
         }
 
@@ -990,3 +1014,97 @@ chrome.commands.onCommand.addListener(function(command) {
     });
   }
 });
+
+// ========================================
+// コンテンツスクリプトからのメッセージ処理
+// ========================================
+chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+  console.log("CSS Jumper background: メッセージ受信", request.action);
+  
+  if (request.action === "explainAndJump") {
+    handleExplainAndJump(request, sender.tab.id, sendResponse);
+    return true; // 非同期レスポンスを有効化
+  }
+});
+
+// CSS説明 + ジャンプ処理
+async function handleExplainAndJump(request, tabId, sendResponse) {
+  console.log("CSS Jumper: CSS説明リクエスト処理開始", request);
+  
+  try {
+    // 1. CSSファイルと内容を取得
+    var cssFiles = await getCssFilesFromStorage();
+    var cssContent = findCssContent(cssFiles, request.className, request.id);
+    
+    // 2. VS Code拡張に説明リクエスト送信
+    var response = await fetch("http://127.0.0.1:3848/explain-and-jump", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        className: request.className,
+        id: request.id,
+        tagName: request.tagName,
+        htmlContext: request.htmlContext,
+        cssContent: cssContent,
+        userRequest: request.userRequest  // ユーザーの改善要望を追加
+      })
+    });
+    
+    if (response.ok) {
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false, error: "VS Code拡張との通信エラー" });
+    }
+  } catch (error) {
+    console.error("CSS Jumper: CSS説明リクエストエラー", error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// CSS ファイルをストレージから取得
+function getCssFilesFromStorage() {
+  return new Promise(function(resolve) {
+    chrome.storage.local.get(["cssFiles"], function(result) {
+      resolve(result.cssFiles || []);
+    });
+  });
+}
+
+// CSS内容から関連する定義を抽出（コンテキスト強化）
+function findCssContent(cssFiles, className, id) {
+  var targetSelector = className ? "." + className.split(" ")[0] : "#" + id;
+  var relatedContent = [];
+  
+  // 1. ターゲットそのものの定義を探す
+  for (var i = 0; i < cssFiles.length; i++) {
+    var file = cssFiles[i];
+    if (!file.content) continue;
+    
+    // シンプルな抽出：ファイル全体を含めるか、関連しそうな行を抽出
+    // 今回は精度向上のため、ファイルサイズが小さければファイル全体を送る
+    // 大きければ、ターゲットを含む周辺のルールを送る
+    
+    if (file.content.length < 20000) {
+      relatedContent.push("/* File: " + (file.url || "unknown") + " */\n" + file.content);
+    } else {
+      // 部分抽出ロジック（ターゲットを含む前後200行など）
+      var lines = file.content.split("\n");
+      var targetIndex = -1;
+      
+      for (var j = 0; j < lines.length; j++) {
+        if (lines[j].includes(targetSelector) && lines[j].includes("{")) {
+          targetIndex = j;
+          break;
+        }
+      }
+      
+      if (targetIndex !== -1) {
+        var start = Math.max(0, targetIndex - 50);
+        var end = Math.min(lines.length, targetIndex + 150);
+        relatedContent.push("/* File: " + (file.url || "unknown") + " (partial) */\n" + lines.slice(start, end).join("\n"));
+      }
+    }
+  }
+  
+  return relatedContent.join("\n\n") || "/* CSS定義が見つかりませんでした */";
+}

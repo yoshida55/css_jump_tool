@@ -570,6 +570,14 @@ document.addEventListener("click", function(event) {
     return;
   }
 
+  if (event.ctrlKey && !event.altKey && !event.shiftKey) {
+    // Ctrl+クリック → CSS説明表示 + ジャンプ
+    event.preventDefault();
+    event.stopPropagation();
+    requestCssExplanationAndJump(event.target);
+    return;
+  }
+
   if (event.altKey) {
     event.preventDefault();
     event.stopPropagation();
@@ -2556,4 +2564,84 @@ function showNotification(message, type) {
       }
     }, 300);
   }, 3500);
+}
+
+// ========================================
+// Ctrl+クリック → CSS説明表示 + ジャンプ
+// ========================================
+function requestCssExplanationAndJump(element) {
+  console.log("CSS Jumper: CSS説明リクエスト", element);
+  
+  // ユーザーに修正内容を聞く
+  var userRequest = window.prompt("どのような修正をしたいですか？\n(例: 背景を赤くしたい、スマホで非表示にしたい)");
+  
+  if (userRequest === null) {
+    return; // キャンセル
+  }
+  
+  // クラス名・ID・タグ名を取得
+  var className = element.className || "";
+  var id = element.id || "";
+  var tagName = element.tagName.toLowerCase();
+  
+  // HTMLコンテキスト収集（より広い範囲を取得）
+  var htmlContext = "";
+  
+  // セクションまたは主要なコンテナを探す
+  var container = element.closest('section, article, main, header, footer, div.container, body');
+  if (!container) container = document.body;
+  
+  // コンテナ内のHTMLを取得（長すぎる場合は制限）
+  if (container) {
+    // 自分自身を特定するためのマーカーを追加したHTMLを作成
+    var originalId = element.id;
+    if (!originalId) {
+      element.id = "css-jumper-target-" + Date.now();
+    }
+    
+    // クローンを作成してターゲットをマーク
+    var clone = container.cloneNode(true);
+    var targetInClone = clone.querySelector("#" + element.id);
+    if (!element.id.startsWith("css-jumper-target-")) {
+        // 元々IDがあった場合はセレクタで探す
+        if (originalId) targetInClone = clone.querySelector("#" + originalId);
+        else if (className) targetInClone = clone.querySelector("." + className.split(" ")[0]);
+    }
+    
+    if (targetInClone) {
+        targetInClone.setAttribute("data-target-element", "true");
+        targetInClone.innerHTML = "<!-- ターゲット要素 -->" + targetInClone.innerHTML;
+    }
+    
+    htmlContext = clone.outerHTML;
+    
+    // 一時的なIDを削除
+    if (!originalId) {
+      element.removeAttribute("id");
+    }
+    
+    // 文字数制限（約10000文字）
+    if (htmlContext.length > 10000) {
+      htmlContext = htmlContext.substring(0, 10000) + "...(truncated)";
+    }
+  }
+  
+  // 通知表示
+  showNotification("🤖 CSS修正案を生成中...", "info");
+  
+  // background scriptに説明リクエスト送信
+  chrome.runtime.sendMessage({
+    action: "explainAndJump",
+    className: className,
+    id: id,
+    tagName: tagName,
+    htmlContext: htmlContext,
+    userRequest: userRequest  // ユーザーの要望を追加
+  }, function(response) {
+    if (response && response.success) {
+      showNotification("✅ 修正案を表示しました", "success");
+    } else {
+      showNotification("❌ 生成に失敗しました", "error");
+    }
+  });
 }

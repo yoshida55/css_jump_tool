@@ -32,7 +32,8 @@
       "Bash(taskkill:*)",
       "Bash(wmic process where \"ProcessId=30072\" get Name,CommandLine)",
       "Bash(wmic process where processid=30072 get name,commandline:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "WebSearch"
     ]
   }
 }
