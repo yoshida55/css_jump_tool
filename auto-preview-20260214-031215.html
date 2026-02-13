@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  
+  /* 固定背景のセクション */
+  .fixed-bg {
+    height: 100vh;
+    background-image: url('https://picsum.photos/1200/800');
+    background-attachment: fixed; /* ←これがポイント */
+    background-size: cover;
+    background-position: center;
+  }
+  
+  /* 通常背景のセクション（比較用） */
+  .normal-bg {
+    height: 100vh;
+    background-image: url('https://picsum.photos/1200/801');
+    background-attachment: scroll; /* 通常 */
+    background-size: cover;
+  }
+  
+  .content {
+    background: rgba(255,255,255,0.9);
+    padding: 50px;
+    margin: 200px auto;
+    max-width: 600px;
+  }
+</style>
+</head>
+<body>
+
+<div class="normal-bg">
+  <div class="content">
+    <h2>🔴 通常の背景（scroll）</h2>
+    <p>スクロールすると背景も一緒に動きます</p>
+  </div>
+</div>
+
+<div class="fixed-bg">
+  <div class="content">
+    <h2>🟢 固定背景（fixed）</h2>
+    <p>スクロールしても背景は動かず、<br>このボックスだけが動きます</p>
+  </div>
+</div>
+
+<div style="height:100vh; background:#333; color:white; display:flex; align-items:center; justify-content:center;">
+  <h2>下にもコンテンツ</h2>
+</div>
+
+</body>
+</html>
