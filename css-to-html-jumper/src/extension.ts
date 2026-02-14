@@ -2634,7 +2634,12 @@ ${explanation}
 - フォント游ゴシック、max-width: 900px
 - 簡潔に（冗長な説明・重複図・詳細表は削除）
 
-【禁止】タブ・アコーディオン・アニメーション
+【アニメーション】
+- 二層構造・フロー図など理解を助ける場合のみシンプルなCSSアニメーション追加OK
+- 例: Parallax構造説明→背景固定・前景スクロールの動き
+- 過度な装飾は禁止
+
+【禁止】タブ・アコーディオン
 
 【出力】HTMLコードのみ`, showBeside: true }
   ];
@@ -2747,9 +2752,18 @@ ${explanation}
           const isStructural = selected.label.includes('構造改善');
           const isHtmlGeneration = selected.label.includes('HTML生成');
 
-          if (userInput.trim() && code && !isSkeleton && !isStructural && !isHtmlGeneration) {
-            // 入力あり + 選択範囲あり + スケルトン・構造改善以外 → 踏み込んだ質問
-            finalQuestion = `以下のコード内の \`${userInput.trim()}\` について${selected.label.replace(/[📖🎨🔧🐛]/g, '').trim()}ください。\n\n【コード全体】\n${code}`;
+          if (userInput.trim() && code && !isSkeleton && !isStructural) {
+            // 入力あり + 選択範囲あり
+            if (isHtmlGeneration) {
+              // HTML生成: 追加指示として反映
+              finalQuestion = `${selected.prompt}\n\n【追加指示】\n${userInput.trim()}\n\n【選択内容】\n${code}`;
+            } else {
+              // 他プリセット: 踏み込んだ質問形式
+              finalQuestion = `以下のコード内の \`${userInput.trim()}\` について${selected.label.replace(/[📖🎨🔧🐛]/g, '').trim()}ください。\n\n【コード全体】\n${code}`;
+            }
+          } else if (userInput.trim() && isHtmlGeneration && !code) {
+            // HTML生成 + 入力のみ（選択範囲なし）
+            finalQuestion = `${selected.prompt}\n\n【追加指示】\n${userInput.trim()}`;
           }
           // スケルトン・構造改善は入力無視、元のプリセットプロンプトのみ使用
 
@@ -2929,6 +2943,11 @@ ${explanation}
           }
         }
 
+        // デバッグ: 送信プロンプト確認
+        console.log('=== 📤 送信プロンプト ===');
+        console.log(question);
+        console.log('====================');
+
         // モデルに応じてAPI呼び出しを切り替え
         const answer = useGemini
           ? await askGeminiAPI(codeToSend, question, htmlContext || undefined, isStructural)
@@ -2984,6 +3003,17 @@ ${explanation}
 
             vscode.window.showInformationMessage(`✅ CSSスケルトンを ${path.basename(targetCssPath)} に追加しました`);
           }
+        } else if (isHtmlGeneration) {
+          // HTML生成：クリップボードにコピーのみ（タブ表示なし）
+          await vscode.env.clipboard.writeText(cleanAnswer);
+          vscode.window.showInformationMessage('✅ HTMLをクリップボードにコピーしました');
+        } else if (isSvg) {
+          // SVG図解：<svg>～</svg>を抽出してクリップボードにコピーのみ
+          const svgMatch = cleanAnswer.match(/<svg[\s\S]*<\/svg>/i);
+          const svgCode = svgMatch ? svgMatch[0] : cleanAnswer;
+
+          await vscode.env.clipboard.writeText(svgCode);
+          vscode.window.showInformationMessage('✅ SVGをクリップボードにコピーしました');
         } else if (showBeside) {
           // 改善・バグチェック：右側に新しいドキュメントを開く
           const doc = await vscode.workspace.openTextDocument({
@@ -2991,13 +3021,6 @@ ${explanation}
             language: editor.document.languageId
           });
           await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
-        } else if (isSvg) {
-          // SVGの場合：<svg>～</svg>を抽出してクリップボードにコピーのみ
-          const svgMatch = cleanAnswer.match(/<svg[\s\S]*<\/svg>/i);
-          const svgCode = svgMatch ? svgMatch[0] : cleanAnswer;
-
-          await vscode.env.clipboard.writeText(svgCode);
-          vscode.window.showInformationMessage('✅ SVGをクリップボードにコピーしました');
         } else {
           // 説明：コメントとして挿入
           const endPosition = selection.end;
