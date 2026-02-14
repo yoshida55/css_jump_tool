@@ -828,14 +828,32 @@ vertical-align
           }
         }
 
+        // 画像リンク・プレビューリンクを抽出（改行区切りで1行ずつ表示）
+        const imageLinks = quiz.content.filter(line =>
+          line.match(/!\[.*?\]\(.*?\)/) ||  // ![](...)
+          line.match(/\[プレビュー\]/)        // [プレビュー](...)
+        );
+        const imageLinkSection = imageLinks.length > 0
+          ? '\n\n' + imageLinks.join('\n')
+          : '';
+
         const separator = hasContent ? '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' : '';
-        const newEntry = `**Q: ${questionText}**\n\n${claudeAnswer}`;
+        const newEntry = `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
         newContent = before + separator + newEntry + after;
         newAnswerStartLine = insertPosition + (hasContent ? 3 : 0);
       } else {
+        // 画像リンク・プレビューリンクを抽出（改行区切りで1行ずつ表示）
+        const imageLinks = quiz.content.filter(line =>
+          line.match(/!\[.*?\]\(.*?\)/) ||  // ![](...)
+          line.match(/\[プレビュー\]/)        // [プレビュー](...)
+        );
+        const imageLinkSection = imageLinks.length > 0
+          ? '\n\n' + imageLinks.join('\n')
+          : '';
+
         // 新規カテゴリ見出し作成
         const separator = currentContent.trim() ? '\n\n' : '';
-        const newSection = separator + categoryHeading + '\n\n' + `**Q: ${questionText}**\n\n${claudeAnswer}`;
+        const newSection = separator + categoryHeading + '\n\n' + `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
         newContent = currentContent + newSection;
         newAnswerStartLine = quizAnswerDoc.lineCount + (currentContent.trim() ? 4 : 2);
       }
