@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSS 表示と非表示</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: '游ゴシック体', 'Yu Gothic', sans-serif;
+      background: linear-gradient(135deg, #E3F2FD 0%, #F3E5F5 100%);
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }
+    header {
+      background: linear-gradient(135deg, #64B5F6 0%, #81C784 100%);
+      color: white;
+      padding: 1.5rem;
+      border-radius: 8px 8px 0 0;
+    }
+    header h1 { font-size: 1.8rem; }
+    .content { padding: 2rem; }
+    h2 {
+      color: #42A5F5;
+      font-size: 1.5rem;
+      margin: 2rem 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid #42A5F5;
+    }
+    .method_grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    .method_card {
+      background: linear-gradient(135deg, #E3F2FD 0%, #F3E5F5 100%);
+      border: 2px solid #B3E5FC;
+      border-radius: 8px;
+      padding: 1.2rem;
+    }
+    .method_label {
+      display: inline-block;
+      padding: 0.4rem 0.8rem;
+      border-radius: 20px;
+      font-weight: bold;
+      margin-bottom: 0.8rem;
+      font-size: 0.85rem;
+      color: white;
+    }
+    .label_display { background: #64B5F6; }
+    .label_visibility { background: #81C784; }
+    .label_opacity { background: #FFB74D; }
+    .method_card h3 { color: #1976D2; margin-bottom: 0.5rem; }
+    .method_card p { color: #555; font-size: 0.9rem; line-height: 1.5; }
+    .visual_box {
+      background: #FAFAFA;
+      border: 2px solid #E0E0E0;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    .visual_title {
+      color: #42A5F5;
+      font-weight: bold;
+      margin-bottom: 1rem;
+    }
+    .code_block {
+      background: #263238;
+      border-radius: 6px;
+      overflow: hidden;
+      margin: 1rem 0;
+    }
+    .code_header {
+      background: #1a1a1a;
+      padding: 0.6rem 1rem;
+      display: flex;
+      justify-content: space-between;
+    }
+    .code_lang { color: #888; font-size: 0.9rem; }
+    .copy_btn {
+      background: #64B5F6;
+      color: white;
+      border: none;
+      padding: 0.3rem 0.8rem;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .copy_btn:hover { background: #42A5F5; }
+    pre { margin: 0; padding: 1.2rem; overflow-x: auto; }
+    code {
+      font-family: 'Consolas', 'Monaco', monospace;
+      color: #E0E0E0;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .comment { color: #80CBC4; }
+    .property { color: #81C784; }
+    .value { color: #FFB74D; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+    th {
+      background: linear-gradient(135deg, #64B5F6 0%, #81C784 100%);
+      color: white;
+      padding: 0.7rem;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    td {
+      padding: 0.7rem;
+      border: 1px solid #E0E0E0;
+      font-size: 0.9rem;
+    }
+    tr:nth-child(even) { background: #F5F5F5; }
+    .info {
+      background: linear-gradient(135deg, #E3F2FD 0%, #F3E5F5 100%);
+      padding: 1rem;
+      border-left: 4px solid #64B5F6;
+      margin: 1rem 0;
+      border-radius: 4px;
+    }
+    @media (max-width: 768px) {
+      .method_grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📋 CSS 表示と非表示の違い</h1>
+      <p>display / visibility / opacity</p>
+    </header>
+
+    <div class="content">
+      <h2>🎯 3つの方法</h2>
+
+      <div class="method_grid">
+        <div class="method_card">
+          <div class="method_label label_display">display</div>
+          <h3>レイアウトから削除</h3>
+          <p>要素が完全に消え、スペースも残らない</p>
+        </div>
+        <div class="method_card">
+          <div class="method_label label_visibility">visibility</div>
+          <h3>領域を保持</h3>
+          <p>見えないが、スペースは残る</p>
+        </div>
+        <div class="method_card">
+          <div class="method_label label_opacity">opacity</div>
+          <h3>透明化</h3>
+          <p>透明にする。クリック可能</p>
+        </div>
+      </div>
+
+      <h2>📊 視覚的な違い</h2>
+
+      <div class="visual_box">
+        <div class="visual_title">元の状態: [A][B][C]</div>
+        <svg width="100%" height="70" viewBox="0 0 700 70">
+          <rect x="200" y="15" width="80" height="40" fill="#64B5F6" rx="4"/>
+          <text x="240" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">A</text>
+          <rect x="300" y="15" width="80" height="40" fill="#81C784" rx="4"/>
+          <text x="340" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">B</text>
+          <rect x="400" y="15" width="80" height="40" fill="#FFB74D" rx="4"/>
+          <text x="440" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">C</text>
+        </svg>
+      </div>
+
+      <div class="visual_box">
+        <div class="visual_title">display: none で B を消す → [A][C]</div>
+        <svg width="100%" height="70" viewBox="0 0 700 70">
+          <rect x="200" y="15" width="80" height="40" fill="#64B5F6" rx="4"/>
+          <text x="240" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">A</text>
+          <rect x="300" y="15" width="80" height="40" fill="#FFB74D" rx="4"/>
+          <text x="340" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">C</text>
+          <text x="420" y="40" font-size="14" fill="#42A5F5">← C が詰まる</text>
+        </svg>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="property">display</span>: <span class="value">none</span>; <span class="comment">/* スペースも消える */</span></code></pre>
+      </div>
+
+      <div class="visual_box">
+        <div class="visual_title">visibility: hidden で B を消す → [A][ ][C]</div>
+        <svg width="100%" height="70" viewBox="0 0 700 70">
+          <rect x="200" y="15" width="80" height="40" fill="#64B5F6" rx="4"/>
+          <text x="240" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">A</text>
+          <rect x="300" y="15" width="80" height="40" fill="none" stroke="#BDBDBD" stroke-width="2" stroke-dasharray="3,3" rx="4"/>
+          <text x="340" y="40" text-anchor="middle" font-size="14" fill="#BDBDBD">空</text>
+          <rect x="400" y="15" width="80" height="40" fill="#FFB74D" rx="4"/>
+          <text x="440" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">C</text>
+          <text x="520" y="40" font-size="14" fill="#42A5F5">← スペース残る</text>
+        </svg>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="property">visibility</span>: <span class="value">hidden</span>; <span class="comment">/* 領域は残る */</span></code></pre>
+      </div>
+
+      <div class="visual_box">
+        <div class="visual_title">opacity: 0 で B を透明化</div>
+        <svg width="100%" height="70" viewBox="0 0 700 70">
+          <rect x="200" y="15" width="80" height="40" fill="#64B5F6" rx="4"/>
+          <text x="240" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">A</text>
+          <rect x="300" y="15" width="80" height="40" fill="#81C784" fill-opacity="0.2" stroke="#81C784" stroke-dasharray="2,2" rx="4"/>
+          <text x="340" y="40" text-anchor="middle" font-size="18" fill="#81C784" fill-opacity="0.3" font-weight="bold">B</text>
+          <rect x="400" y="15" width="80" height="40" fill="#FFB74D" rx="4"/>
+          <text x="440" y="40" text-anchor="middle" font-size="18" fill="white" font-weight="bold">C</text>
+          <text x="520" y="40" font-size="14" fill="#42A5F5">← 透明、クリック可</text>
+        </svg>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="property">opacity</span>: <span class="value">0</span>; <span class="comment">/* 透明化、クリック可 */</span></code></pre>
+      </div>
+
+      <h2>📖 使い分け</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>プロパティ</th>
+            <th>スペース</th>
+            <th>クリック</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>display: none</code></td>
+            <td>❌ 消える</td>
+            <td>❌ 不可</td>
+            <td>モーダル、メニュー開閉</td>
+          </tr>
+          <tr>
+            <td><code>visibility: hidden</code></td>
+            <td>✅ 残る</td>
+            <td>❌ 不可</td>
+            <td>エラーメッセージ（レイアウト崩れ防止）</td>
+          </tr>
+          <tr>
+            <td><code>opacity: 0</code></td>
+            <td>✅ 残る</td>
+            <td>✅ 可能</td>
+            <td>フェードアニメーション</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>💡 具体例</h2>
+
+      <div class="info">
+        <strong>🎯 display: none</strong> → ハンバーガーメニュー開閉
+      </div>
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code>.menu { <span class="property">display</span>: <span class="value">none</span>; }
+#toggle:checked ~ .menu { <span class="property">display</span>: <span class="value">block</span>; }</code></pre>
+      </div>
+
+      <div class="info">
+        <strong>🎯 visibility: hidden</strong> → エラーメッセージ（レイアウト崩れ防止）
+      </div>
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code>.error { <span class="property">visibility</span>: <span class="value">hidden</span>; }
+.error.show { <span class="property">visibility</span>: <span class="value">visible</span>; }</code></pre>
+      </div>
+
+      <div class="info">
+        <strong>🎯 opacity: 0</strong> → フェードイン効果
+      </div>
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code>.fade { <span class="property">opacity</span>: <span class="value">0</span>; <span class="property">transition</span>: <span class="value">0.5s</span>; }
+.fade:hover { <span class="property">opacity</span>: <span class="value">1</span>; }</code></pre>
+      </div>
+
+      <h2>📝 まとめ</h2>
+
+      <div class="info">
+        <strong>📚 本棚の例:</strong><br>
+        <strong>display: none</strong> = 本を抜き取る（隣が詰まる）<br>
+        <strong>visibility: hidden</strong> = 本を透明化（場所は空く）<br>
+        <strong>opacity: 0</strong> = 本を透明化（触れる）
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function copyCode(btn) {
+      const text = btn.closest('.code_block').querySelector('code').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '✅';
+        setTimeout(() => btn.textContent = '📋 コピー', 1500);
+      });
+    }
+  </script>
+</body>
+</html>

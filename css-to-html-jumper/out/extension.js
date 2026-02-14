@@ -809,7 +809,7 @@ vertical-align
 // ========================================
 // Claude API 呼び出し関数
 // ========================================
-async function askClaudeAPI(code, question, htmlContext, isStructural, isSectionQuestion) {
+async function askClaudeAPI(code, question, htmlContext, isStructural, isHtmlGeneration, isSectionQuestion) {
     const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
     const apiKey = config.get('claudeApiKey', '');
     const model = config.get('claudeModel', 'claude-sonnet-4-5-20250929');
@@ -909,7 +909,7 @@ ${question}
     });
     const requestBody = JSON.stringify({
         model: model,
-        max_tokens: isStructural ? 8192 : 4096,
+        max_tokens: (isStructural || isHtmlGeneration) ? 8192 : 4096,
         messages: [
             { role: 'user', content: sanitizedPrompt }
         ]
@@ -2309,7 +2309,20 @@ ${explanation}
 2. CSS変更点（追加・変更・削除が必要なルール）
    - 不要になったルール（例: list-style:none）は「削除」と明記
    - 新タグに必要なリセットCSSがあれば追記
-3. 「# 主な変更点」としてまとめ`, showBeside: true }
+3. 「# 主な変更点」としてまとめ`, showBeside: true },
+        { label: '🎨 見やすいHTML生成', prompt: `選択内容から簡潔で見やすいHTMLを生成。
+
+【必須】
+- 完全HTML（<!DOCTYPE>〜、<style>内蔵）
+- 配色: #5A8FC4系、背景#EBF1F6
+- SVG図解1-2個のみ（核心のみ）
+- コードブロック: #2d2d2d、コピーボタン
+- フォント游ゴシック、max-width: 900px
+- 簡潔に（冗長な説明・重複図・詳細表は削除）
+
+【禁止】タブ・アコーディオン・アニメーション
+
+【出力】HTMLコードのみ`, showBeside: true }
     ];
     const claudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
         const editor = vscode.window.activeTextEditor;
@@ -2349,6 +2362,7 @@ ${explanation}
                         isSvg: false,
                         isSkeleton: false,
                         isStructural: false,
+                        isHtmlGeneration: false,
                         isMemoSearch: false,
                         isQuiz: false,
                         isFreeQuestion: true,
@@ -2367,6 +2381,7 @@ ${explanation}
                         isSvg: false,
                         isSkeleton: false,
                         isStructural: false,
+                        isHtmlGeneration: false,
                         isMemoSearch: false,
                         isQuiz: false,
                         isFreeQuestion: false,
@@ -2381,6 +2396,7 @@ ${explanation}
                         isSvg: false,
                         isSkeleton: false,
                         isStructural: false,
+                        isHtmlGeneration: false,
                         isMemoSearch: true,
                         isQuiz: false,
                         isFreeQuestion: false,
@@ -2395,6 +2411,7 @@ ${explanation}
                         isSvg: false,
                         isSkeleton: false,
                         isStructural: false,
+                        isHtmlGeneration: false,
                         isMemoSearch: false,
                         isQuiz: true,
                         isFreeQuestion: false,
@@ -2408,7 +2425,8 @@ ${explanation}
                     let finalQuestion = selected.prompt;
                     const isSkeleton = selected.label.includes('スケルトン');
                     const isStructural = selected.label.includes('構造改善');
-                    if (userInput.trim() && code && !isSkeleton && !isStructural) {
+                    const isHtmlGeneration = selected.label.includes('HTML生成');
+                    if (userInput.trim() && code && !isSkeleton && !isStructural && !isHtmlGeneration) {
                         // 入力あり + 選択範囲あり + スケルトン・構造改善以外 → 踏み込んだ質問
                         finalQuestion = `以下のコード内の \`${userInput.trim()}\` について${selected.label.replace(/[📖🎨🔧🐛]/g, '').trim()}ください。\n\n【コード全体】\n${code}`;
                     }
@@ -2418,6 +2436,7 @@ ${explanation}
                         isSvg: selected.label.includes('SVG'),
                         isSkeleton: isSkeleton,
                         isStructural: isStructural,
+                        isHtmlGeneration: isHtmlGeneration,
                         isMemoSearch: false,
                         isQuiz: false,
                         isFreeQuestion: false,
@@ -2440,7 +2459,7 @@ ${explanation}
         if (!result) {
             return; // キャンセル
         }
-        const { question, isSvg, isSkeleton, isStructural, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
+        const { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
         // プログレス表示
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -2573,7 +2592,7 @@ ${explanation}
                 // モデルに応じてAPI呼び出しを切り替え
                 const answer = useGemini
                     ? await askGeminiAPI(codeToSend, question, htmlContext || undefined, isStructural)
-                    : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isSectionQuestion);
+                    : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isHtmlGeneration, isSectionQuestion);
                 // コードブロック（```css など）を削除
                 const cleanAnswer = answer
                     .replace(/```[\w]*\n?/g, '') // ```css, ```html 等を削除

@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSS ~ セレクタの制限</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: '游ゴシック体', 'Yu Gothic', sans-serif;
+      background: #f5f7fa;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    header {
+      background: #4A90E2;
+      color: white;
+      padding: 1.5rem;
+      border-radius: 8px 8px 0 0;
+    }
+    header h1 { font-size: 1.8rem; }
+    .content { padding: 2rem; }
+    h2 {
+      color: #4A90E2;
+      font-size: 1.5rem;
+      margin: 2rem 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid #4A90E2;
+    }
+    .visual_box {
+      background: white;
+      border: 2px solid #ddd;
+      border-radius: 6px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    .visual_box.bad { border-color: #E57373; background: #FFEBEE; }
+    .visual_box.good { border-color: #4CAF50; background: #E8F5E9; }
+    .label {
+      display: inline-block;
+      padding: 0.4rem 0.8rem;
+      border-radius: 4px;
+      font-weight: bold;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    .bad_label { background: #E57373; color: white; }
+    .good_label { background: #4CAF50; color: white; }
+    .code_block {
+      background: #2d2d2d;
+      border-radius: 6px;
+      overflow: hidden;
+      margin: 1rem 0;
+    }
+    .code_header {
+      background: #1a1a1a;
+      padding: 0.6rem 1rem;
+      display: flex;
+      justify-content: space-between;
+    }
+    .code_lang { color: #888; font-size: 0.9rem; }
+    .copy_btn {
+      background: #4A90E2;
+      color: white;
+      border: none;
+      padding: 0.3rem 0.8rem;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .copy_btn:hover { background: #357ABD; }
+    pre { margin: 0; padding: 1.2rem; overflow-x: auto; }
+    code {
+      font-family: 'Consolas', 'Monaco', monospace;
+      color: #f8f8f2;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .comment { color: #6272a4; }
+    .error { color: #E57373; }
+    .success { color: #4CAF50; font-weight: bold; }
+    .info {
+      background: #E3F2FD;
+      padding: 1rem;
+      border-left: 3px solid #4A90E2;
+      margin: 1rem 0;
+      border-radius: 4px;
+    }
+    .arrow {
+      text-align: center;
+      font-size: 1.5rem;
+      margin: 1rem 0;
+      color: #4A90E2;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+    th {
+      background: #4A90E2;
+      color: white;
+      padding: 0.7rem;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+    td {
+      padding: 0.7rem;
+      border: 1px solid #ddd;
+      font-size: 0.9rem;
+    }
+    tr:nth-child(even) { background: #f9f9f9; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎯 CSS ~ セレクタの制限</h1>
+      <p>兄弟要素じゃないと使えない理由</p>
+    </header>
+
+    <div class="content">
+      <!-- NG版 -->
+      <h2>❌ なぜ動かない？</h2>
+
+      <div class="visual_box bad">
+        <div class="bad_label">❌ NG: 親子関係が違う</div>
+
+        <svg width="100%" height="280" viewBox="0 0 700 280">
+          <rect x="50" y="20" width="600" height="240" fill="none" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+          <text x="60" y="45" font-size="15" fill="#666">&lt;body&gt;</text>
+
+          <rect x="80" y="60" width="240" height="110" fill="#FFCDD2" stroke="#E57373" stroke-width="2"/>
+          <text x="90" y="80" font-size="13" font-weight="bold">&lt;header id="side_area"&gt;</text>
+          <rect x="100" y="95" width="190" height="35" fill="#2d2d2d" rx="3"/>
+          <text x="110" y="117" font-size="12" fill="white" font-weight="bold">#hamburger_btn ☑</text>
+
+          <rect x="370" y="60" width="230" height="110" fill="#FFCDD2" stroke="#E57373" stroke-width="2"/>
+          <text x="380" y="80" font-size="13" font-weight="bold">&lt;section&gt;</text>
+          <rect x="390" y="95" width="190" height="35" fill="#e8e8e8" rx="3"/>
+          <text x="400" y="117" font-size="12" font-weight="bold">.mainVisual_area</text>
+
+          <line x1="290" y1="112" x2="360" y2="112" stroke="#E57373" stroke-width="3" stroke-dasharray="5,5"/>
+          <text x="300" y="105" font-size="14" fill="#E57373" font-weight="bold">✗</text>
+
+          <text x="100" y="200" font-size="13" fill="#E57373">親要素が違う</text>
+          <line x1="150" y1="170" x2="150" y2="185" stroke="#E57373" stroke-width="2"/>
+          <text x="400" y="200" font-size="13" fill="#E57373">兄弟ではない</text>
+          <line x1="480" y1="170" x2="480" y2="185" stroke="#E57373" stroke-width="2"/>
+
+          <text x="240" y="235" font-size="16" fill="#E57373" font-weight="bold">→ ~ セレクタは使えない</text>
+        </svg>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">HTML</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code>&lt;header id="side_area"&gt;
+  &lt;input type="checkbox" id="hamburger_btn"&gt;
+&lt;/header&gt;
+&lt;section class="mainVisual_area"&gt;&lt;/section&gt;</code></pre>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="comment">/* ❌ 動かない */</span>
+<span class="error">#hamburger_btn:checked ~ .mainVisual_area</span> {
+  background: green;
+}
+<span class="comment">/* 理由: 親子関係が異なる */</span></code></pre>
+      </div>
+
+      <div class="arrow">⬇️</div>
+
+      <!-- OK版 -->
+      <h2>✅ 解決策: HTML構造を変更</h2>
+
+      <div class="visual_box good">
+        <div class="good_label">✅ OK: チェックボックスを外に出す</div>
+
+        <svg width="100%" height="300" viewBox="0 0 700 300">
+          <rect x="50" y="20" width="600" height="260" fill="none" stroke="#666" stroke-width="2" stroke-dasharray="5,5"/>
+          <text x="60" y="45" font-size="15" fill="#666">&lt;body&gt;</text>
+
+          <rect x="80" y="70" width="190" height="35" fill="#2d2d2d" rx="3"/>
+          <text x="90" y="92" font-size="12" fill="white" font-weight="bold">#hamburger_btn ☑</text>
+
+          <rect x="80" y="130" width="240" height="90" fill="#C8E6C9" stroke="#4CAF50" stroke-width="2"/>
+          <text x="90" y="150" font-size="13" font-weight="bold">&lt;header id="side_area"&gt;</text>
+          <rect x="100" y="165" width="190" height="30" fill="#e8e8e8" rx="3"/>
+          <text x="110" y="185" font-size="11">&lt;label for="hamburger_btn"&gt;☰&lt;/label&gt;</text>
+
+          <rect x="370" y="130" width="230" height="90" fill="#C8E6C9" stroke="#4CAF50" stroke-width="2"/>
+          <text x="380" y="150" font-size="13" font-weight="bold">&lt;section&gt;</text>
+          <rect x="390" y="165" width="180" height="30" fill="#e8e8e8" rx="3"/>
+          <text x="400" y="185" font-size="11">.mainVisual_area</text>
+
+          <path d="M 180 87 Q 240 87, 240 140" stroke="#4CAF50" stroke-width="3" fill="none"/>
+          <circle cx="240" cy="140" r="4" fill="#4CAF50"/>
+          <text x="185" y="110" font-size="13" fill="#4CAF50" font-weight="bold">✓</text>
+
+          <path d="M 270 87 Q 400 87, 480 130" stroke="#4CAF50" stroke-width="3" fill="none"/>
+          <circle cx="480" cy="130" r="4" fill="#4CAF50"/>
+          <text x="350" y="100" font-size="13" fill="#4CAF50" font-weight="bold">✓</text>
+
+          <text x="80" y="250" font-size="13" fill="#4CAF50">全て body の直下</text>
+          <line x1="140" y1="220" x2="140" y2="235" stroke="#4CAF50" stroke-width="2"/>
+          <line x1="200" y1="220" x2="200" y2="235" stroke="#4CAF50" stroke-width="2"/>
+          <line x1="485" y1="220" x2="485" y2="235" stroke="#4CAF50" stroke-width="2"/>
+
+          <text x="230" y="275" font-size="16" fill="#4CAF50" font-weight="bold">→ ~ セレクタが使える</text>
+        </svg>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">HTML</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="comment">&lt;!-- チェックボックスを外に --&gt;</span>
+<span class="success">&lt;input type="checkbox" id="hamburger_btn"&gt;</span>
+&lt;header id="side_area"&gt;
+  &lt;label for="hamburger_btn"&gt;☰&lt;/label&gt;
+&lt;/header&gt;
+&lt;section class="mainVisual_area"&gt;&lt;/section&gt;</code></pre>
+      </div>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">CSS</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="comment">/* ✅ 動く */</span>
+<span class="success">#hamburger_btn:checked ~ .mainVisual_area</span> {
+  background: green;
+}
+<span class="success">#hamburger_btn:checked ~ #side_area</span> {
+  background: blue;
+}</code></pre>
+      </div>
+
+      <div class="info">
+        <strong>💡 ポイント:</strong>
+        チェックボックスを親の外に出し、<code>&lt;label for&gt;</code>で見た目を調整すれば、CSSだけで複数セクションを制御可能。
+      </div>
+
+      <h2>📊 方法の比較</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>方法</th>
+            <th>メリット</th>
+            <th>デメリット</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>HTML変更（CSS）</strong></td>
+            <td>CSSのみ、軽量</td>
+            <td>HTML構造変更必要</td>
+          </tr>
+          <tr>
+            <td><strong>JavaScript</strong></td>
+            <td>HTML変更不要</td>
+            <td>JSファイル必要</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">JavaScript（参考）</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="comment">// HTML変更せずにJSで制御</span>
+document.getElementById('hamburger_btn')
+  .addEventListener('change', function() {
+    document.querySelector('.mainVisual_area')
+      .classList.toggle('active');
+  });</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function copyCode(btn) {
+      const text = btn.closest('.code_block').querySelector('code').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '✅';
+        setTimeout(() => btn.textContent = '📋 コピー', 1500);
+      });
+    }
+  </script>
+</body>
+</html>

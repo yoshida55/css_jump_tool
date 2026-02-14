@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pythonの関数例 - フィボナッチ数列</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: '游ゴシック体', 'Yu Gothic', YuGothic, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 2rem 1rem;
+      line-height: 1.7;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      overflow: hidden;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    article {
+      padding: 2rem;
+    }
+
+    h2 {
+      color: #667eea;
+      font-size: 1.5rem;
+      margin: 2rem 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 3px solid #667eea;
+    }
+
+    h3 {
+      color: #764ba2;
+      font-size: 1.2rem;
+      margin: 1.5rem 0 0.8rem;
+    }
+
+    .code_block {
+      position: relative;
+      margin: 1.5rem 0;
+      background: #2d2d2d;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .code_block:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+    }
+
+    .code_header {
+      background: #1a1a1a;
+      padding: 0.8rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #444;
+    }
+
+    .code_lang {
+      color: #888;
+      font-size: 0.9rem;
+      font-weight: bold;
+    }
+
+    .copy_btn {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 0.4rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.3s;
+    }
+
+    .copy_btn:hover {
+      background: #5568d3;
+    }
+
+    .copy_btn:active {
+      transform: scale(0.95);
+    }
+
+    pre {
+      margin: 0;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+
+    code {
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: #f8f8f2;
+    }
+
+    .keyword { color: #ff79c6; }
+    .function { color: #50fa7b; }
+    .string { color: #f1fa8c; }
+    .comment { color: #6272a4; font-style: italic; }
+    .number { color: #bd93f9; }
+
+    ul {
+      margin: 1rem 0 1rem 2rem;
+    }
+
+    li {
+      margin: 0.5rem 0;
+      color: #333;
+    }
+
+    li::marker {
+      color: #667eea;
+    }
+
+    .feature_list {
+      background: #f5f5f5;
+      padding: 1.5rem;
+      border-radius: 8px;
+      margin: 1rem 0;
+      border-left: 4px solid #667eea;
+    }
+
+    .section_divider {
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #667eea, transparent);
+      margin: 2rem 0;
+    }
+
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem 0.5rem;
+      }
+
+      header h1 {
+        font-size: 1.5rem;
+      }
+
+      article {
+        padding: 1.5rem;
+      }
+
+      pre {
+        padding: 1rem;
+        font-size: 0.85rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🐍 Pythonの関数例</h1>
+      <p>フィボナッチ数列の実装</p>
+    </header>
+
+    <article>
+      <h2>📝 コード実装</h2>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">Python</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="keyword">def</span> <span class="function">fibonacci</span>(n):
+    <span class="comment">"""フィボナッチ数列のn番目を返す"""</span>
+    <span class="keyword">if</span> n &lt;= <span class="number">1</span>:
+        <span class="keyword">return</span> n
+    <span class="keyword">return</span> <span class="function">fibonacci</span>(n<span class="number">-1</span>) + <span class="function">fibonacci</span>(n<span class="number">-2</span>)</code></pre>
+      </div>
+
+      <div class="section_divider"></div>
+
+      <h2>🚀 使い方</h2>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">Python</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code><span class="function">fibonacci</span>(<span class="number">5</span>)  <span class="comment"># 結果: 5</span></code></pre>
+      </div>
+
+      <div class="section_divider"></div>
+
+      <h2>✨ 特徴</h2>
+
+      <div class="feature_list">
+        <ul>
+          <li>再帰関数を使用</li>
+          <li>シンプルだが効率は悪い</li>
+          <li>メモ化で改善可能</li>
+        </ul>
+      </div>
+    </article>
+  </div>
+
+  <script>
+    function copyCode(btn) {
+      const codeBlock = btn.closest('.code_block').querySelector('code');
+      const text = codeBlock.textContent;
+
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = btn.textContent;
+        btn.textContent = '✅ コピー完了';
+        btn.style.background = '#50fa7b';
+
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.background = '#667eea';
+        }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>

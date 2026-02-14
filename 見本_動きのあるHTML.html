@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>インタラクティブHTML見本</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: '游ゴシック体', 'Yu Gothic', YuGothic, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      overflow: hidden;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      animation: slideDown 0.6s ease-out;
+    }
+
+    @keyframes slideDown {
+      from { transform: translateY(-30px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    /* タブナビゲーション */
+    .tab_nav {
+      display: flex;
+      background: #f5f5f5;
+      border-bottom: 2px solid #ddd;
+    }
+
+    .tab_btn {
+      flex: 1;
+      padding: 1rem;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 1rem;
+      font-weight: bold;
+      color: #666;
+      transition: all 0.3s;
+      position: relative;
+    }
+
+    .tab_btn:hover {
+      background: #e8e8e8;
+      color: #667eea;
+    }
+
+    .tab_btn.active {
+      color: #667eea;
+      background: white;
+    }
+
+    .tab_btn.active::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: #667eea;
+      animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+      from { transform: scaleX(0); }
+      to { transform: scaleX(1); }
+    }
+
+    .tab_content {
+      display: none;
+      padding: 2rem;
+      animation: fadeIn 0.4s ease-out;
+    }
+
+    .tab_content.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* アコーディオン */
+    .accordion {
+      margin: 1.5rem 0;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .accordion_header {
+      background: #f8f8f8;
+      padding: 1rem 1.5rem;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: background 0.3s;
+      user-select: none;
+    }
+
+    .accordion_header:hover {
+      background: #efefef;
+    }
+
+    .accordion_header.active {
+      background: #667eea;
+      color: white;
+    }
+
+    .accordion_icon {
+      transition: transform 0.3s;
+      font-size: 1.2rem;
+    }
+
+    .accordion_header.active .accordion_icon {
+      transform: rotate(180deg);
+    }
+
+    .accordion_body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.4s ease-out, padding 0.4s ease-out;
+      padding: 0 1.5rem;
+      background: white;
+    }
+
+    .accordion_body.active {
+      max-height: 500px;
+      padding: 1.5rem;
+    }
+
+    /* コードブロック */
+    .code_block {
+      position: relative;
+      margin: 1.5rem 0;
+      background: #2d2d2d;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+
+    .code_header {
+      background: #1a1a1a;
+      padding: 0.8rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .code_lang {
+      color: #888;
+      font-weight: bold;
+    }
+
+    .copy_btn {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 0.4rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .copy_btn:hover {
+      background: #5568d3;
+      transform: scale(1.05);
+    }
+
+    pre {
+      margin: 0;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+
+    code {
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: #f8f8f2;
+    }
+
+    /* 実行デモエリア */
+    .demo_area {
+      background: #f5f5f5;
+      border: 2px dashed #667eea;
+      border-radius: 8px;
+      padding: 2rem;
+      margin: 1.5rem 0;
+      text-align: center;
+    }
+
+    .demo_btn {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 1rem 2rem;
+      border-radius: 8px;
+      font-size: 1.1rem;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      transition: all 0.3s;
+      font-weight: bold;
+    }
+
+    .demo_btn:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 20px rgba(102, 126, 234, 0.6);
+    }
+
+    .demo_btn:active {
+      transform: translateY(0);
+    }
+
+    .demo_result {
+      margin-top: 1.5rem;
+      padding: 1.5rem;
+      background: white;
+      border-radius: 8px;
+      font-size: 1.5rem;
+      font-weight: bold;
+      color: #667eea;
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: scale(0.8);
+      transition: all 0.4s;
+    }
+
+    .demo_result.show {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    /* ステップ表示 */
+    .steps {
+      margin: 2rem 0;
+    }
+
+    .step {
+      display: flex;
+      margin: 1.5rem 0;
+      opacity: 0;
+      transform: translateX(-30px);
+      transition: all 0.5s;
+    }
+
+    .step.show {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    .step_number {
+      flex-shrink: 0;
+      width: 50px;
+      height: 50px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 1.2rem;
+      margin-right: 1.5rem;
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .step_content {
+      flex: 1;
+      background: #f8f8f8;
+      padding: 1.5rem;
+      border-radius: 8px;
+      border-left: 4px solid #667eea;
+    }
+
+    .step_content h3 {
+      color: #667eea;
+      margin-bottom: 0.5rem;
+    }
+
+    /* 比較表示 */
+    .comparison {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin: 2rem 0;
+    }
+
+    .comparison_item {
+      background: #f8f8f8;
+      padding: 1.5rem;
+      border-radius: 8px;
+      text-align: center;
+      transition: all 0.3s;
+    }
+
+    .comparison_item:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+    }
+
+    .comparison_label {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      border-radius: 20px;
+      font-weight: bold;
+      margin-bottom: 1rem;
+    }
+
+    .before_label {
+      background: #ff6b6b;
+      color: white;
+    }
+
+    .after_label {
+      background: #51cf66;
+      color: white;
+    }
+
+    @media (max-width: 768px) {
+      .comparison {
+        grid-template-columns: 1fr;
+      }
+
+      .tab_btn {
+        font-size: 0.9rem;
+        padding: 0.8rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🚀 インタラクティブHTML見本</h1>
+      <p>動きのある分かりやすいドキュメント</p>
+    </header>
+
+    <!-- タブナビゲーション -->
+    <div class="tab_nav">
+      <button class="tab_btn active" onclick="switchTab(0)">📝 コード</button>
+      <button class="tab_btn" onclick="switchTab(1)">📖 説明</button>
+      <button class="tab_btn" onclick="switchTab(2)">▶️ デモ</button>
+      <button class="tab_btn" onclick="switchTab(3)">📊 ステップ</button>
+    </div>
+
+    <!-- タブ1: コード -->
+    <div class="tab_content active">
+      <h2>📝 Pythonフィボナッチ関数</h2>
+
+      <div class="code_block">
+        <div class="code_header">
+          <span class="code_lang">Python</span>
+          <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+        </div>
+        <pre><code>def fibonacci(n):
+    """フィボナッチ数列のn番目を返す"""
+    if n <= 1:
+        return n
+    return fibonacci(n-1) + fibonacci(n-2)
+
+# 使用例
+result = fibonacci(5)
+print(result)  # 5</code></pre>
+      </div>
+
+      <!-- アコーディオン: 改善版 -->
+      <div class="accordion">
+        <div class="accordion_header" onclick="toggleAccordion(this)">
+          <span>⚡ メモ化版（高速化）を見る</span>
+          <span class="accordion_icon">▼</span>
+        </div>
+        <div class="accordion_body">
+          <div class="code_block">
+            <div class="code_header">
+              <span class="code_lang">Python (メモ化版)</span>
+              <button class="copy_btn" onclick="copyCode(this)">📋 コピー</button>
+            </div>
+            <pre><code>def fibonacci_memo(n, memo={}):
+    """メモ化でO(n)に改善"""
+    if n in memo:
+        return memo[n]
+    if n <= 1:
+        return n
+    memo[n] = fibonacci_memo(n-1, memo) + fibonacci_memo(n-2, memo)
+    return memo[n]</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- タブ2: 説明 -->
+    <div class="tab_content">
+      <h2>📖 フィボナッチ数列とは</h2>
+      <p>フィボナッチ数列は、前の2つの数を足していく数列です。</p>
+
+      <div class="comparison">
+        <div class="comparison_item">
+          <div class="comparison_label before_label">❌ 通常版</div>
+          <p><strong>計算量:</strong> O(2ⁿ)</p>
+          <p>fibonacci(30)で約2.7億回の計算</p>
+        </div>
+        <div class="comparison_item">
+          <div class="comparison_label after_label">✅ メモ化版</div>
+          <p><strong>計算量:</strong> O(n)</p>
+          <p>fibonacci(30)で30回の計算</p>
+        </div>
+      </div>
+
+      <!-- アコーディオン: 詳細説明 -->
+      <div class="accordion">
+        <div class="accordion_header" onclick="toggleAccordion(this)">
+          <span>🔍 数列の例を見る</span>
+          <span class="accordion_icon">▼</span>
+        </div>
+        <div class="accordion_body">
+          <p><strong>最初の10項:</strong></p>
+          <p style="font-size: 1.2rem; color: #667eea; font-weight: bold; text-align: center; margin-top: 1rem;">
+            0, 1, 1, 2, 3, 5, 8, 13, 21, 34...
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- タブ3: デモ -->
+    <div class="tab_content">
+      <h2>▶️ 実行デモ</h2>
+
+      <div class="demo_area">
+        <p style="margin-bottom: 1rem; color: #666;">fibonacci(7) を実行してみよう！</p>
+        <button class="demo_btn" onclick="runDemo()">🚀 実行する</button>
+        <div class="demo_result" id="demoResult"></div>
+      </div>
+
+      <div class="accordion">
+        <div class="accordion_header" onclick="toggleAccordion(this)">
+          <span>⏱ 速度比較デモ</span>
+          <span class="accordion_icon">▼</span>
+        </div>
+        <div class="accordion_body">
+          <button class="demo_btn" onclick="speedTest()" style="font-size: 1rem; padding: 0.8rem 1.5rem;">⚡ 速度テスト実行</button>
+          <div class="demo_result" id="speedResult"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- タブ4: ステップ解説 -->
+    <div class="tab_content">
+      <h2>📊 ステップバイステップ解説</h2>
+      <button class="demo_btn" onclick="showSteps()" style="margin-bottom: 2rem;">📖 解説を開始</button>
+
+      <div class="steps">
+        <div class="step" data-step="1">
+          <div class="step_number">1</div>
+          <div class="step_content">
+            <h3>ベースケースの確認</h3>
+            <p>n が 0 または 1 なら、そのまま n を返す</p>
+            <code style="background: #2d2d2d; color: #f8f8f2; padding: 0.5rem; display: block; margin-top: 0.5rem; border-radius: 4px;">if n <= 1: return n</code>
+          </div>
+        </div>
+
+        <div class="step" data-step="2">
+          <div class="step_number">2</div>
+          <div class="step_content">
+            <h3>再帰呼び出し</h3>
+            <p>fibonacci(n-1) と fibonacci(n-2) を呼び出す</p>
+            <code style="background: #2d2d2d; color: #f8f8f2; padding: 0.5rem; display: block; margin-top: 0.5rem; border-radius: 4px;">return fibonacci(n-1) + fibonacci(n-2)</code>
+          </div>
+        </div>
+
+        <div class="step" data-step="3">
+          <div class="step_number">3</div>
+          <div class="step_content">
+            <h3>結果を合算</h3>
+            <p>2つの結果を足して返す</p>
+            <p style="margin-top: 0.5rem; color: #667eea; font-weight: bold;">例: fibonacci(5) = fibonacci(4) + fibonacci(3) = 3 + 2 = 5</p>
+          </div>
+        </div>
+
+        <div class="step" data-step="4">
+          <div class="step_number">4</div>
+          <div class="step_content">
+            <h3>⚠ 注意点</h3>
+            <p>同じ計算を何度も繰り返すため非効率</p>
+            <p style="margin-top: 0.5rem; color: #ff6b6b;">→ メモ化で改善可能！</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // タブ切り替え
+    function switchTab(index) {
+      const tabs = document.querySelectorAll('.tab_btn');
+      const contents = document.querySelectorAll('.tab_content');
+
+      tabs.forEach((tab, i) => {
+        tab.classList.toggle('active', i === index);
+      });
+
+      contents.forEach((content, i) => {
+        content.classList.toggle('active', i === index);
+      });
+    }
+
+    // アコーディオン
+    function toggleAccordion(header) {
+      const body = header.nextElementSibling;
+      const isActive = header.classList.contains('active');
+
+      // 他のアコーディオンを閉じる
+      document.querySelectorAll('.accordion_header').forEach(h => {
+        h.classList.remove('active');
+        h.nextElementSibling.classList.remove('active');
+      });
+
+      if (!isActive) {
+        header.classList.add('active');
+        body.classList.add('active');
+      }
+    }
+
+    // コピー機能
+    function copyCode(btn) {
+      const codeBlock = btn.closest('.code_block').querySelector('code');
+      const text = codeBlock.textContent;
+
+      navigator.clipboard.writeText(text).then(() => {
+        const original = btn.textContent;
+        btn.textContent = '✅ コピー完了';
+        btn.style.background = '#51cf66';
+
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.style.background = '#667eea';
+        }, 2000);
+      });
+    }
+
+    // デモ実行
+    function runDemo() {
+      const result = document.getElementById('demoResult');
+      result.textContent = '計算中...';
+      result.classList.add('show');
+
+      setTimeout(() => {
+        const fib = fibonacci(7);
+        result.textContent = `結果: ${fib} ✨`;
+      }, 800);
+    }
+
+    function fibonacci(n) {
+      if (n <= 1) return n;
+      return fibonacci(n - 1) + fibonacci(n - 2);
+    }
+
+    // 速度テスト
+    function speedTest() {
+      const result = document.getElementById('speedResult');
+      result.classList.add('show');
+      result.textContent = '測定中...';
+
+      setTimeout(() => {
+        const n = 30;
+
+        // 通常版
+        const start1 = performance.now();
+        fibonacci(n);
+        const time1 = (performance.now() - start1).toFixed(2);
+
+        // メモ化版
+        const start2 = performance.now();
+        fibonacciMemo(n);
+        const time2 = (performance.now() - start2).toFixed(2);
+
+        result.innerHTML = `
+          通常版: ${time1}ms<br>
+          メモ化版: ${time2}ms<br>
+          <span style="color: #51cf66;">⚡ ${(time1 / time2).toFixed(0)}倍高速！</span>
+        `;
+      }, 500);
+    }
+
+    function fibonacciMemo(n, memo = {}) {
+      if (n in memo) return memo[n];
+      if (n <= 1) return n;
+      memo[n] = fibonacciMemo(n - 1, memo) + fibonacciMemo(n - 2, memo);
+      return memo[n];
+    }
+
+    // ステップ表示
+    function showSteps() {
+      const steps = document.querySelectorAll('.step');
+      steps.forEach((step, i) => {
+        setTimeout(() => {
+          step.classList.add('show');
+        }, i * 300);
+      });
+    }
+  </script>
+</body>
+</html>
