@@ -1899,6 +1899,17 @@ ${explanation}
             res.end(JSON.stringify({ error: e.message }));
           }
         });
+      } else if (req.url === '/project-path') {
+        // Chrome拡張機能用: 現在のワークスペースパスを返す
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (workspaceFolders && workspaceFolders.length > 0) {
+          const projectPath = workspaceFolders[0].uri.fsPath;
+          res.writeHead(200);
+          res.end(JSON.stringify({ projectPath: projectPath }));
+        } else {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'No workspace folder opened' }));
+        }
       } else {
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'Not found' }));

@@ -715,6 +715,21 @@ function extractCssRulesForSelector(selector, type, cssFiles) {
 // HTMLファイルでクラス名/IDを検索
 async function searchInHtml(selector, type, projectPath) {
   try {
+    // VS Codeから現在のプロジェクトパスを自動取得
+    var actualProjectPath = projectPath; // フォールバック
+    try {
+      var vsCodeResponse = await fetch("http://127.0.0.1:3848/project-path");
+      if (vsCodeResponse.ok) {
+        var vsCodeData = await vsCodeResponse.json();
+        if (vsCodeData.projectPath) {
+          actualProjectPath = vsCodeData.projectPath;
+          console.log("CSS Jumper: VS Codeからプロジェクトパス自動取得", actualProjectPath);
+        }
+      }
+    } catch (e) {
+      console.log("CSS Jumper: VS Code連携失敗、設定値を使用", projectPath);
+    }
+
     // アクティブタブのURLから HTMLファイルを特定
     var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs || !tabs[0] || !tabs[0].url) {
@@ -726,7 +741,7 @@ async function searchInHtml(selector, type, projectPath) {
     var htmlFileName = pageUrl.pathname.split('/').pop() || 'index.html';
 
     // プロジェクトパスからHTMLファイルの絶対パスを作成
-    var htmlFilePath = projectPath + "\\" + htmlFileName;
+    var htmlFilePath = actualProjectPath + "\\" + htmlFileName;
 
     // HTMLファイルの内容を取得
     var htmlUrl = pageUrl.origin + "/" + htmlFileName;
