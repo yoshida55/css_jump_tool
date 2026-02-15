@@ -37,7 +37,7 @@
 | `Ctrl+↑` | 前のセクション（近距離） |
 | `Ctrl+I` | Claude AI質問 |
 | `Ctrl+Shift+/` | Copilot解説 |
-| `Ctrl+Shift+M` | メモ検索 |
+| `Ctrl+Enter` | メモ検索 |
 | `Ctrl+Shift+7` | クイズ出題 |
 | `Ctrl+Shift+8` | クイズ評価 |
 | `Ctrl+Alt+S` | SVGリンク挿入 |
@@ -73,7 +73,7 @@
   - 📖 **説明して**: コメントとして挿入
   - 🎨 **SVGで図解**: SVGをクリップボードにコピー
   - 📝 **CSSスケルトン生成**: HTMLからCSS空ルール生成
-  - 🏗 **HTML構造改善**: セマンティックHTML提案
+  - 🏗 **HTML構造改善**: セマンティックHTML提案（header/section/footer単位で選択）
 
 ### 4. 踏み込んだ質問
 - **操作**: `Ctrl+I` → InputBox入力 → プリセット選択
@@ -81,7 +81,7 @@
 - **結果**: 指定部分について詳しく解説
 
 ### 5. メモ検索
-- **操作**: `Ctrl+Shift+M`
+- **操作**: `Ctrl+Enter`
 - **機能**:
   - Fuzzy検索でメモから情報検索
   - 最近の検索履歴10件表示
@@ -348,4 +348,4 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 ---
 
 **バージョン**: 1.10.0
-**最終更新**: 2026-02-12
+**最終更新**: 2026-02-15

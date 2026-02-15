@@ -227,7 +227,7 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 | 前のセクション | `Ctrl+↑` | 前の罫線ボックスセクションへ移動（近距離） |
 | Claude AI質問 | `Ctrl+I` | プリセット選択 or 直接入力 |
 | Copilot解説 | `Ctrl+Shift+/` | 選択コードをCopilot Chatに送信 |
-| メモ検索 | `Ctrl+Shift+M` | Fuzzy検索でメモから情報検索、履歴10件表示、0件時Gemini要約 |
+| メモ検索 | `Ctrl+Enter` | Fuzzy検索でメモから情報検索、履歴10件表示、0件時Gemini要約 |
 | クイズ出題 | `Ctrl+Shift+7` | メモから問題生成、スペースド・リピティション対応 |
 | クイズ評価 | `Ctrl+Shift+8` | 最後のクイズを自動採点（Gemini 2.5 Flash-Lite） |
 | 赤枠追加 | ホバー→🔴クリック | CSSセレクタに `border: 0.5rem solid red` 追加 |
@@ -312,7 +312,13 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 6. CSSファイル末尾に自動追記
 7. CSSファイルが見つからない場合 → 右側パネルに表示
 
-### セクション検出の仕様
+### セクション検出の仕様（HTML構造改善用）
+- **body直下の `<header>`, `<section>`, `<footer>` タグのみ検出**
+- class/id属性があればQuickPickに表示
+- 閉じタグマッチングで正確な範囲特定
+- アイコン: 🔝(header) 📦(section) 🔚(footer)
+
+### セクション検出の仕様（セクション移動用）
 - 罫線ボックス形式: `┌─┐ │ セクション名 │ └─┘`
 - **半角パイプ `|` と罫線 `│` の両方に対応**
 - ボックス内の1行目のみ採用（2行目以降は無視）
@@ -375,7 +381,8 @@ Ctrl+Shift+P → Developer: Reload Window
 | `Alt+F` | Flex情報表示トグル | ブラウザ |
 | `Ctrl+↓` / `Ctrl+↑` | セクション移動 | VS Code |
 | `Ctrl+I` | Claude AI質問 | VS Code |
+| `Ctrl+Enter` | メモ検索 | VS Code |
 
 ---
 
-**最終更新**: 2026-02-12
+**最終更新**: 2026-02-15
