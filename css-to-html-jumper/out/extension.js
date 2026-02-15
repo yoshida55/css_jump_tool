@@ -1212,69 +1212,79 @@ function detectHtmlSections(document) {
     const sections = [];
     const text = document.getText();
     const lines = text.split('\n');
-    // 優先度1: 罫線ボックスコメント ┌─┐ │ セクション名 │ └─┘
-    let inBox = false;
-    let capturedTitle = false;
+    // body直下の <header>, <section>, <footer> のみ検出
+    // インデントが最小レベル（body直下）のタグだけ対象
+    let bodyIndent = -1;
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.search(/[┌]/) >= 0) {
-            inBox = true;
-            capturedTitle = false;
-        }
-        else if (inBox && !capturedTitle && line.search(/[│|]/) >= 0) {
-            const pipeIndex = line.search(/[│|]/);
-            const lastPipe = line.lastIndexOf('│') !== -1 ? line.lastIndexOf('│') : line.lastIndexOf('|');
-            const name = line.substring(pipeIndex + 1, lastPipe).trim();
-            if (name.length > 0 && !/^[─━┈┄]+$/.test(name)) {
-                sections.push({ label: `📦 ${name}`, line: i, type: 'box' });
-                capturedTitle = true;
-            }
-        }
-        else if (line.search(/[└]/) >= 0) {
-            inBox = false;
+        const bodyMatch = lines[i].match(/^(\s*)<body\b/);
+        if (bodyMatch) {
+            bodyIndent = bodyMatch[1].length;
+            break;
         }
     }
-    // 優先度2: HTMLコメント <!-- xxx --> （10文字以上のみ）
-    for (let i = 0; i < lines.length; i++) {
-        const commentRegex = /<!--\s*(.+?)\s*-->/g;
-        let match;
-        while ((match = commentRegex.exec(lines[i])) !== null) {
-            const content = match[1].trim();
-            if (content.length >= 10 && !/^[─━┈┄└┌┐┘│|]+$/.test(content) && !content.startsWith('★')) {
-                sections.push({ label: `💬 ${content}`, line: i, type: 'comment' });
-            }
-        }
-    }
-    // 優先度3: 主要な親要素（インデント0のみ = body直下のみ）
-    const tagRegex = /^<(header|nav|main|section|footer|aside|article|div)\b[^>]*?(?:class="([^"]*)")?[^>]*>/;
+    // body未検出の場合はインデント0をbody直下とみなす
+    const childIndent = bodyIndent >= 0 ? bodyIndent + 2 : 0;
+    const tagRegex = /^(\s*)<(header|section|footer)\b[^>]*?(?:class="([^"]*)")?[^>]*?(?:id="([^"]*)")?[^>]*>/;
     for (let i = 0; i < lines.length; i++) {
         const match = lines[i].match(tagRegex);
         if (match) {
-            const tag = match[1];
-            const className = match[2] || '';
-            const label = className ? `<${tag} class="${className}">` : `<${tag}>`;
-            sections.push({ label: `🏷 ${label}`, line: i, type: 'element' });
+            const indent = match[1].length;
+            // body直下レベルのみ（インデント差±2まで許容）
+            if (Math.abs(indent - childIndent) > 2) {
+                continue;
+            }
+            const tag = match[2];
+            const className = match[3] || '';
+            const id = match[4] || '';
+            let label = `<${tag}>`;
+            if (id) {
+                label = `<${tag} id="${id}">`;
+            }
+            else if (className) {
+                label = `<${tag} class="${className}">`;
+            }
+            const icon = tag === 'header' ? '🔝' : tag === 'footer' ? '🔚' : '📦';
+            sections.push({ label: `${icon} ${label}`, line: i, type: 'element' });
         }
     }
     return sections;
 }
-// セクションの終了行を推定
+// セクションの終了行を検出（対応する閉じタグを探す）
 function findSectionEnd(lines, startLine) {
-    const startIndent = lines[startLine].search(/\S/);
-    if (startIndent < 0) {
-        return startLine;
-    }
-    for (let i = startLine + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.trim() === '') {
-            continue;
+    // 開始タグ名を取得
+    const openMatch = lines[startLine].match(/<(header|section|footer)\b/);
+    if (!openMatch) {
+        // フォールバック: インデントベース
+        const startIndent = lines[startLine].search(/\S/);
+        if (startIndent < 0) {
+            return startLine;
         }
-        const indent = line.search(/\S/);
-        if (indent <= startIndent && i > startLine + 1) {
-            if (line.trim().startsWith('</')) {
-                return i;
+        for (let i = startLine + 1; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.trim() === '') {
+                continue;
             }
-            return i - 1;
+            const indent = line.search(/\S/);
+            if (indent <= startIndent && i > startLine + 1) {
+                if (line.trim().startsWith('</')) {
+                    return i;
+                }
+                return i - 1;
+            }
+        }
+        return lines.length - 1;
+    }
+    const tagName = openMatch[1];
+    let depth = 0;
+    for (let i = startLine; i < lines.length; i++) {
+        const line = lines[i];
+        // 開きタグをカウント
+        const opens = (line.match(new RegExp(`<${tagName}\\b`, 'g')) || []).length;
+        // 閉じタグをカウント
+        const closes = (line.match(new RegExp(`</${tagName}>`, 'g')) || []).length;
+        depth += opens - closes;
+        if (depth <= 0) {
+            return i;
         }
     }
     return lines.length - 1;

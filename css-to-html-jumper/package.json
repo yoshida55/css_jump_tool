@@ -135,7 +135,7 @@
       },
       {
         "command": "cssToHtmlJumper.searchMemo",
-        "key": "ctrl+shift+m",
+        "key": "ctrl+enter",
         "when": "editorTextFocus"
       },
       {
