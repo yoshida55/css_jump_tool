@@ -2677,7 +2677,18 @@ ${explanation}
 
 【禁止】タブ・アコーディオン
 
-【出力】HTMLコードのみ`, showBeside: true }
+【出力】HTMLコードのみ`, showBeside: true },
+    { label: '🎬 HTML動画を生成', prompt: `選択内容について、実際に動いている立体的な分かりやすいアニメーションを作成してください。
+アニメーションというか実際のHTML画像を作成してください。できればリアリティのあるようにHTMLで作成してください。
+
+【必須】
+- 完全HTML（<!DOCTYPE>〜、<style>内蔵、JavaScript内蔵）
+- CSSアニメーション・transitionを活用した動的な表現
+- 立体感のある見た目（box-shadow、transform、perspective等）
+- 日本語ラベル付き
+- 配色は見やすく美しいもの
+
+【出力】HTMLコードのみ`, showBeside: false }
   ];
 
   const claudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
@@ -2786,7 +2797,7 @@ ${explanation}
           let finalQuestion = selected.prompt;
           const isSkeleton = selected.label.includes('スケルトン');
           const isStructural = selected.label.includes('構造改善');
-          const isHtmlGeneration = selected.label.includes('HTML生成');
+          const isHtmlGeneration = selected.label.includes('HTML生成') || selected.label.includes('HTML動画');
 
           if (userInput.trim() && code && !isSkeleton && !isStructural) {
             // 入力あり + 選択範囲あり
