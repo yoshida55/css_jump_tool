@@ -2379,6 +2379,8 @@ ${explanation}
 - コードブロック: #2d2d2d、コピーボタン
 - フォント游ゴシック、max-width: 900px
 - 簡潔に（冗長な説明・重複図・詳細表は削除）
+- HTMLの特徴的なクラス名をそのまま使用し、画面の構造をHTMLで表現してください
+- 元のHTMLのクラス名・ID名を活かしたリアルな見た目にしてください
 
 【アニメーション】
 - 二層構造・フロー図など理解を助ける場合のみシンプルなCSSアニメーション追加OK
@@ -2397,6 +2399,8 @@ ${explanation}
 - 立体感のある見た目（box-shadow、transform、perspective等）
 - 日本語ラベル付き
 - 配色は見やすく美しいもの
+- HTMLの特徴的なクラス名をそのまま使用し、画面の構造をHTMLで表現してください
+- 元のHTMLのクラス名・ID名を活かしたリアルな見た目にしてください
 
 【出力】HTMLコードのみ`, showBeside: false }
     ];
@@ -2546,7 +2550,29 @@ ${explanation}
         if (!result) {
             return; // キャンセル
         }
-        const { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
+        let { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
+        // HTML生成系プリセット + HTMLファイルで選択 → 関連CSSを自動添付
+        if (isHtmlGeneration && code && editor.document.languageId === 'html') {
+            try {
+                const cssFilePaths = await findLinkedCssFiles(editor.document);
+                const cssContents = [];
+                for (const cssPath of cssFilePaths) {
+                    try {
+                        const cssDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(cssPath));
+                        cssContents.push(`/* === ${path.basename(cssPath)} === */\n${cssDoc.getText()}`);
+                    }
+                    catch (e) {
+                        // CSS読み込みエラーは無視
+                    }
+                }
+                if (cssContents.length > 0) {
+                    question += `\n\n【関連CSS（このHTMLに適用されているスタイル）】\n${cssContents.join('\n\n')}`;
+                }
+            }
+            catch (e) {
+                // CSS取得失敗時は無視（CSSなしで続行）
+            }
+        }
         // プログレス表示
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
