@@ -2357,8 +2357,11 @@ ${explanation}
                 tab.input.uri.fsPath === firstResult.uri.fsPath
               );
 
-            if (existingTab) {
-              // 既にタブで開いている → そのタブを表示（フォーカスはCSSに残す）
+            // CSSエディタのviewColumnを取得
+            const cssViewColumn = vscode.window.activeTextEditor?.viewColumn;
+
+            if (existingTab && existingTab.group.viewColumn !== cssViewColumn) {
+              // 別グループにある → そのグループで表示（CSSは隠れない）
               const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
               htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
                 viewColumn: existingTab.group.viewColumn,
@@ -2366,7 +2369,7 @@ ${explanation}
                 preview: false
               });
             } else {
-              // 未オープン → サイドで開く（フォーカスはCSSに残す）
+              // 同じグループにある or 未オープン → サイドで開く
               const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
               htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
                 viewColumn: vscode.ViewColumn.Beside,

@@ -622,8 +622,16 @@ function jumpToVSCode(clickedElement, preferMobile) {
   }
 }
 
+// localhost / 127.0.0.1 / file:// のみで動作させるガード
+function isLocalPage() {
+  var host = location.hostname;
+  return host === "localhost" || host === "127.0.0.1" || location.protocol === "file:";
+}
+
 // Alt+クリックでVS Codeを開く / Alt+Shift+クリックでAIアドバイス
 document.addEventListener("click", function(event) {
+  if (!isLocalPage()) return;
+
   if (event.altKey && event.shiftKey) {
     // Alt+Shift+クリック → AIアドバイスモード
     event.preventDefault();
@@ -633,14 +641,11 @@ document.addEventListener("click", function(event) {
   }
 
   if (event.ctrlKey && !event.altKey && !event.shiftKey) {
-    // Ctrl+クリック → CSS説明表示 + ジャンプ（localhost/file://のみ）
-    var host = location.hostname;
-    if (host === "localhost" || host === "127.0.0.1" || location.protocol === "file:") {
-      event.preventDefault();
-      event.stopPropagation();
-      requestCssExplanationAndJump(event.target);
-      return;
-    }
+    // Ctrl+クリック → CSS説明表示 + ジャンプ
+    event.preventDefault();
+    event.stopPropagation();
+    requestCssExplanationAndJump(event.target);
+    return;
   }
 
   if (event.altKey) {
@@ -660,6 +665,8 @@ document.addEventListener("click", function(event) {
 // ダブルクリックでもVS Codeを開く
 // Ctrl+ダブルクリック → モバイル版CSS優先
 document.addEventListener("dblclick", function(event) {
+  if (!isLocalPage()) return;
+
   event.preventDefault();
   event.stopPropagation();
 
