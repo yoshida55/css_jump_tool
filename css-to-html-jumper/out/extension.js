@@ -2080,15 +2080,16 @@ ${explanation}
             }
             // HTMLファイルをハイライト（CSSにフォーカスを残したまま）
             const firstResult = results[0];
+            const targetFsPath = firstResult.uri.fsPath.toLowerCase();
             try {
-                // 既に開いているエディタを探す（画面に見えているタブ）
-                let htmlEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath === firstResult.uri.fsPath);
+                // 既に開いているエディタを探す（画面に見えているタブ、パス大文字小文字無視）
+                let htmlEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.fsPath.toLowerCase() === targetFsPath);
                 if (!htmlEditor) {
                     // 非表示タブも含めて既に開いているか確認
                     const existingTab = vscode.window.tabGroups.all
                         .flatMap(g => g.tabs)
                         .find(tab => tab.input instanceof vscode.TabInputText &&
-                        tab.input.uri.fsPath === firstResult.uri.fsPath);
+                        tab.input.uri.fsPath.toLowerCase() === targetFsPath);
                     // CSSエディタのviewColumnを取得
                     const cssViewColumn = vscode.window.activeTextEditor?.viewColumn;
                     if (existingTab && existingTab.group.viewColumn !== cssViewColumn) {
@@ -2100,8 +2101,12 @@ ${explanation}
                             preview: false
                         });
                     }
+                    else if (existingTab) {
+                        // 同じグループにある → CSSが隠れるのでスキップ（ハイライトなし）
+                        return null;
+                    }
                     else {
-                        // 同じグループにある or 未オープン → サイドで開く
+                        // 未オープン → サイドで開く
                         const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
                         htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
                             viewColumn: vscode.ViewColumn.Beside,
