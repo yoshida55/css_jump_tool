@@ -244,45 +244,109 @@ if (document.readyState === "loading") {
 // URLからプロジェクトを自動切替
 function autoSwitchProjectFromUrl() {
   var url = window.location.href;
-  
+
   // Live Serverかどうかをチェック（localhost or 127.0.0.1）
   if (!url.includes("127.0.0.1") && !url.includes("localhost")) {
     return;
   }
-  
+
   console.log("CSS Jumper: Live Server検出、プロジェクト自動切替チェック");
-  
-  // URLからフォルダ名を抽出（例: /61_応用編：スクール/index.html → 61_応用編：スクール）
+
+  // まずVS Codeから現在のプロジェクトパスを取得してみる
+  fetchProjectPathFromVSCode(function(vscodePath) {
+    if (vscodePath) {
+      // VS Codeからパスを取得できた → そのまま使う
+      applyProjectPath(vscodePath);
+    } else {
+      // VS Code連携失敗 → 従来のURL+履歴マッチングにフォールバック
+      console.log("CSS Jumper: VS Code連携失敗、URL履歴マッチングにフォールバック");
+      fallbackProjectSwitchFromUrl();
+    }
+  });
+}
+
+// VS Codeの /project-path エンドポイントからプロジェクトパスを取得
+function fetchProjectPathFromVSCode(callback) {
+  fetch("http://127.0.0.1:3848/project-path")
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      if (data.projectPath) {
+        // Windowsパスを正規化（バックスラッシュ → スラッシュ）
+        var normalized = data.projectPath.replace(/\\/g, "/");
+        console.log("CSS Jumper: VS Codeからプロジェクトパス取得:", normalized);
+        callback(normalized);
+      } else {
+        callback(null);
+      }
+    })
+    .catch(function(err) {
+      console.log("CSS Jumper: VS Code /project-path 取得失敗", err);
+      callback(null);
+    });
+}
+
+// 取得したプロジェクトパスを適用（storage更新 + 履歴追加 + CSS検出）
+function applyProjectPath(newPath) {
+  chrome.storage.local.get(["projectPath", "pathHistory"], function(result) {
+    var currentPath = result.projectPath || "";
+    var history = result.pathHistory || [];
+
+    // 既に同じパスなら切替不要
+    if (currentPath === newPath) {
+      console.log("CSS Jumper: プロジェクトパス変更なし");
+      autoDetectCssIfLiveServer();
+      return;
+    }
+
+    // 履歴に追加（重複除去）
+    var newHistory = [newPath];
+    for (var i = 0; i < history.length; i++) {
+      if (history[i] !== newPath) {
+        newHistory.push(history[i]);
+      }
+    }
+    // 履歴は最大10件
+    if (newHistory.length > 10) {
+      newHistory = newHistory.slice(0, 10);
+    }
+
+    var folderName = newPath.split("/").pop();
+    console.log("CSS Jumper: プロジェクト自動切替（VS Code連携）:", newPath);
+    chrome.storage.local.set({ projectPath: newPath, pathHistory: newHistory }, function() {
+      showNotification("✓ プロジェクト自動切替: " + folderName, "success");
+      autoDetectCssIfLiveServer();
+    });
+  });
+}
+
+// フォールバック: URLのフォルダ名と履歴からマッチング（従来ロジック）
+function fallbackProjectSwitchFromUrl() {
+  var url = window.location.href;
   var urlObj = new URL(url);
-  var pathname = urlObj.pathname; // 例: /61_応用編：スクール/index.html
+  var pathname = urlObj.pathname;
   var pathParts = pathname.split("/").filter(function(p) { return p.length > 0; });
-  
+
   if (pathParts.length === 0) {
     console.log("CSS Jumper: URLからフォルダ名を抽出できません");
     autoDetectCssIfLiveServer();
     return;
   }
-  
-  // 最初のフォルダ名を取得（プロジェクト名）
+
   var projectFolderFromUrl = pathParts[0];
   console.log("CSS Jumper: URLから検出したフォルダ名:", projectFolderFromUrl);
-  
-  // 履歴から一致するパスを探す
+
   chrome.storage.local.get(["pathHistory", "projectPath"], function(result) {
     var currentPath = result.projectPath || "";
     var history = result.pathHistory || [];
-    
-    // 現在のパスのフォルダ名を取得
+
     var currentFolderName = currentPath.split("/").pop();
-    
-    // 既に正しいプロジェクトが設定されている場合はCSS検出のみ
+
     if (currentFolderName === projectFolderFromUrl) {
       console.log("CSS Jumper: 既に正しいプロジェクトが設定済み");
       autoDetectCssIfLiveServer();
       return;
     }
-    
-    // 履歴から一致するパスを探す
+
     var matchedPath = null;
     for (var i = 0; i < history.length; i++) {
       var historyFolderName = history[i].split("/").pop();
@@ -291,16 +355,14 @@ function autoSwitchProjectFromUrl() {
         break;
       }
     }
-    
+
     if (matchedPath) {
-      // 一致するパスが見つかった！自動切替
       console.log("CSS Jumper: プロジェクト自動切替:", matchedPath);
       chrome.storage.local.set({ projectPath: matchedPath }, function() {
         showNotification("✓ プロジェクト自動切替: " + projectFolderFromUrl, "success");
         autoDetectCssIfLiveServer();
       });
     } else {
-      // 一致するパスがない場合は通常のCSS検出のみ
       console.log("CSS Jumper: 履歴に一致するパスなし、CSS検出のみ実行");
       autoDetectCssIfLiveServer();
     }
@@ -571,11 +633,14 @@ document.addEventListener("click", function(event) {
   }
 
   if (event.ctrlKey && !event.altKey && !event.shiftKey) {
-    // Ctrl+クリック → CSS説明表示 + ジャンプ
-    event.preventDefault();
-    event.stopPropagation();
-    requestCssExplanationAndJump(event.target);
-    return;
+    // Ctrl+クリック → CSS説明表示 + ジャンプ（localhost/file://のみ）
+    var host = location.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || location.protocol === "file:") {
+      event.preventDefault();
+      event.stopPropagation();
+      requestCssExplanationAndJump(event.target);
+      return;
+    }
   }
 
   if (event.altKey) {

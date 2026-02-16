@@ -2343,19 +2343,37 @@ ${explanation}
         // HTMLファイルをハイライト（CSSにフォーカスを残したまま）
         const firstResult = results[0];
         try {
-          // 既に開いているエディタを探す
+          // 既に開いているエディタを探す（画面に見えているタブ）
           let htmlEditor = vscode.window.visibleTextEditors.find(
             e => e.document.uri.fsPath === firstResult.uri.fsPath
           );
 
           if (!htmlEditor) {
-            // 開いていなければサイドで開く（フォーカスはCSSに残す）
-            const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
-            htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
-              viewColumn: vscode.ViewColumn.Beside,
-              preserveFocus: true,
-              preview: true
-            });
+            // 非表示タブも含めて既に開いているか確認
+            const existingTab = vscode.window.tabGroups.all
+              .flatMap(g => g.tabs)
+              .find(tab =>
+                tab.input instanceof vscode.TabInputText &&
+                tab.input.uri.fsPath === firstResult.uri.fsPath
+              );
+
+            if (existingTab) {
+              // 既にタブで開いている → そのタブを表示（フォーカスはCSSに残す）
+              const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
+              htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
+                viewColumn: existingTab.group.viewColumn,
+                preserveFocus: true,
+                preview: false
+              });
+            } else {
+              // 未オープン → サイドで開く（フォーカスはCSSに残す）
+              const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
+              htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
+                viewColumn: vscode.ViewColumn.Beside,
+                preserveFocus: true,
+                preview: true
+              });
+            }
           }
 
           // 該当行にスクロール
