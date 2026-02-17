@@ -278,7 +278,7 @@ function fuzzySearch(query: string, lines: string[]): { line: number; text: stri
 /**
  * Gemini Flash API呼び出し
  */
-async function searchWithGemini(query: string, memoContent: string): Promise<{ line: number; keyword: string; text: string; preview: string }[]> {
+async function searchWithGemini(query: string, memoContent: string): Promise<{ line: number; keyword: string; text: string; preview: string; context: string }[]> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('geminiApiKey', '');
 
@@ -312,17 +312,18 @@ ${query}
 
 【出力形式】
 JSON配列で返す。説明文は不要。必ず3件以内。
-各結果に**技術用語・キーワード**を必ず抽出して含める。
+各結果に**技術用語・キーワード**と**特徴的なコンテキスト**を必ず含める。
+- contextには、そのセクション内で検索クエリに最も関連する特徴的な1-2行を抜粋（見出し行とは別の、具体的なコード例や説明文）
 
 [
-  {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容"},
+  {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容", "context": "セクション内の特徴的な行を抜粋"},
   ...
 ]
 
 例:
 [
-  {"line": 1052, "keyword": "inline-block", "text": "## テキストなどの幅をサイズに丁度にボックスを調整する"},
-  {"line": 2536, "keyword": "fit-content", "text": "幅がひろいwidthを文字は文字幅にあわせる"}
+  {"line": 1052, "keyword": "inline-block", "text": "## テキストなどの幅をサイズに丁度にボックスを調整する", "context": "display: inline-block; → 幅が文字幅に合う"},
+  {"line": 2536, "keyword": "fit-content", "text": "幅がひろいwidthを文字は文字幅にあわせる", "context": "width: fit-content; で中身に合わせた幅"}
 ]`;
 
   return new Promise((resolve, reject) => {
@@ -365,7 +366,8 @@ JSON配列で返す。説明文は不要。必ず3件以内。
               line: r.line,
               keyword: r.keyword || '',
               text: r.text,
-              preview: r.text.substring(0, 100)
+              preview: r.text.substring(0, 100),
+              context: r.context || ''
             }));
             resolve(formatted);
           } else {
@@ -398,15 +400,20 @@ async function handleMemoSearch() {
     return;
   }
 
-  // 検索クエリ入力
+  // 検索クエリ入力（前回の値を初期表示）
   const query = await vscode.window.showInputBox({
     prompt: 'メモ内を検索',
-    placeHolder: '検索キーワードを入力...'
+    placeHolder: '検索キーワードを入力...',
+    value: memoSearchHistory.length > 0 ? memoSearchHistory[0] : '',
+    valueSelection: memoSearchHistory.length > 0 ? [0, memoSearchHistory[0].length] : undefined
   });
 
   if (!query) {
     return; // キャンセル
   }
+
+  // 前回の検索ワードを保持
+  memoSearchHistory = [query];
 
   try {
     // メモファイル読み込み
@@ -425,13 +432,15 @@ async function handleMemoSearch() {
 
         if (geminiResults.length > 0) {
           const items = geminiResults.map(r => ({
-            label: `行 ${r.line}: ${r.keyword}`,
+            label: `$(search) 行 ${r.line}: ${r.keyword}`,
             description: r.preview,
+            detail: r.context ? `　→ ${r.context}` : '',
             line: r.line
           }));
 
           const selected = await vscode.window.showQuickPick(items, {
-            placeHolder: `${geminiResults.length}件見つかりました`
+            placeHolder: `${geminiResults.length}件見つかりました`,
+            matchOnDetail: true
           });
 
           if (selected) {

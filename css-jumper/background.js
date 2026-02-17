@@ -1032,6 +1032,20 @@ chrome.commands.onCommand.addListener(function(command) {
       });
     });
   }
+
+  if (command === "toggleBoxModel") {
+    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, {
+          action: "toggleBoxModel"
+        }, function(response) {
+          if (chrome.runtime.lastError) {
+            console.log("CSS Jumper: メッセージ送信失敗（ページリロードが必要）");
+          }
+        });
+      }
+    });
+  }
 });
 
 // ========================================

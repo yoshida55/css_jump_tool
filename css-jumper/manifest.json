@@ -44,6 +44,12 @@
         "default": "Alt+F"
       },
       "description": "Flex情報表示をトグル"
+    },
+    "toggleBoxModel": {
+      "suggested_key": {
+        "default": "Alt+K"
+      },
+      "description": "ボックスモデル表示をトグル"
     }
   }
 }

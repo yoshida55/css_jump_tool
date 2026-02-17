@@ -832,6 +832,17 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     sendResponse({ removed: true });
   }
 
+  // ボックスモデル表示トグル（Alt+K）
+  if (message.action === "toggleBoxModel") {
+    if (boxModelActive) {
+      removeBoxModelOverlay();
+      showNotification("ボックスモデル表示: OFF", "success");
+    } else {
+      enableBoxModelOverlay();
+      showNotification("ボックスモデル表示: ON ✓", "success");
+    }
+    sendResponse({ active: boxModelActive });
+  }
 
   return true;
 });
@@ -2700,7 +2711,7 @@ function requestCssExplanationAndJump(element) {
   
   // 通知表示
   showNotification("🤖 CSS修正案を生成中...", "info");
-  
+
   // background scriptに説明リクエスト送信
   chrome.runtime.sendMessage({
     action: "explainAndJump",
@@ -2716,4 +2727,249 @@ function requestCssExplanationAndJump(element) {
       showNotification("❌ 生成に失敗しました", "error");
     }
   });
+}
+
+// ========================================
+// ボックスモデル表示（Alt+K）
+// ========================================
+var boxModelActive = false;
+var boxModelOverlay = null;
+var boxModelLabel = null;
+var boxModelCurrentTarget = null;
+
+function enableBoxModelOverlay() {
+  boxModelActive = true;
+
+  // オーバーレイ用のコンテナ（margin/padding/content の色分け表示）
+  boxModelOverlay = document.createElement("div");
+  boxModelOverlay.id = "css-jumper-boxmodel-overlay";
+  boxModelOverlay.style.cssText = "position:absolute;pointer-events:none;z-index:2147483646;display:none;";
+  document.body.appendChild(boxModelOverlay);
+
+  // ラベル（数値表示）
+  boxModelLabel = document.createElement("div");
+  boxModelLabel.id = "css-jumper-boxmodel-label";
+  boxModelLabel.style.cssText = "position:absolute;pointer-events:none;z-index:2147483647;display:none;" +
+    "background:rgba(0,0,0,0.85);color:#fff;font:12px/1.4 monospace;padding:6px 10px;border-radius:4px;" +
+    "white-space:pre;max-width:350px;";
+  document.body.appendChild(boxModelLabel);
+
+  document.addEventListener("mousemove", boxModelMouseMove, true);
+  document.addEventListener("scroll", boxModelHide, true);
+}
+
+function removeBoxModelOverlay() {
+  boxModelActive = false;
+  document.removeEventListener("mousemove", boxModelMouseMove, true);
+  document.removeEventListener("scroll", boxModelHide, true);
+  if (boxModelOverlay) { boxModelOverlay.remove(); boxModelOverlay = null; }
+  if (boxModelLabel) { boxModelLabel.remove(); boxModelLabel = null; }
+  boxModelCurrentTarget = null;
+}
+
+function boxModelHide() {
+  if (boxModelOverlay) { boxModelOverlay.style.display = "none"; }
+  if (boxModelLabel) { boxModelLabel.style.display = "none"; }
+  boxModelCurrentTarget = null;
+}
+
+function boxModelMouseMove(e) {
+  var el = e.target;
+
+  // 自分自身のオーバーレイは無視
+  if (!el || el.id === "css-jumper-boxmodel-overlay" || el.id === "css-jumper-boxmodel-label" ||
+      el.closest("#css-jumper-boxmodel-overlay") || el.closest("#css-jumper-boxmodel-label")) {
+    return;
+  }
+  // CSS Jumperの通知やFlexラベルも無視
+  if (el.closest(".css-jumper-notification") || el.closest("[data-cssjumper-flex]")) {
+    return;
+  }
+
+  if (el === boxModelCurrentTarget) { return; }
+  boxModelCurrentTarget = el;
+
+  var style = window.getComputedStyle(el);
+  var rect = el.getBoundingClientRect();
+  var scrollX = window.scrollX;
+  var scrollY = window.scrollY;
+
+  // margin値
+  var mt = parseFloat(style.marginTop) || 0;
+  var mr = parseFloat(style.marginRight) || 0;
+  var mb = parseFloat(style.marginBottom) || 0;
+  var ml = parseFloat(style.marginLeft) || 0;
+
+  // padding値
+  var pt = parseFloat(style.paddingTop) || 0;
+  var pr = parseFloat(style.paddingRight) || 0;
+  var pb = parseFloat(style.paddingBottom) || 0;
+  var pl = parseFloat(style.paddingLeft) || 0;
+
+  // border値
+  var bt = parseFloat(style.borderTopWidth) || 0;
+  var br2 = parseFloat(style.borderRightWidth) || 0;
+  var bb = parseFloat(style.borderBottomWidth) || 0;
+  var bl = parseFloat(style.borderLeftWidth) || 0;
+
+  // gap値（flex/grid コンテナの場合）
+  var rowGap = parseFloat(style.rowGap) || 0;
+  var colGap = parseFloat(style.columnGap) || 0;
+  var isFlex = style.display === "flex" || style.display === "inline-flex";
+  var isGrid = style.display === "grid" || style.display === "inline-grid";
+  var hasGap = (isFlex || isGrid) && (rowGap > 0 || colGap > 0);
+
+  // content size
+  var cw = rect.width - pl - pr - bl - br2;
+  var ch = rect.height - pt - pb - bt - bb;
+
+  // オーバーレイ描画（marginエリア全体をカバー）
+  var overlayLeft = rect.left + scrollX - ml;
+  var overlayTop = rect.top + scrollY - mt;
+  var overlayWidth = ml + rect.width + mr;
+  var overlayHeight = mt + rect.height + mb;
+
+  // box-shadow で margin(オレンジ), border(黄), padding(緑), content(青) を表現
+  boxModelOverlay.style.display = "block";
+  boxModelOverlay.style.left = (rect.left + scrollX) + "px";
+  boxModelOverlay.style.top = (rect.top + scrollY) + "px";
+  boxModelOverlay.style.width = rect.width + "px";
+  boxModelOverlay.style.height = rect.height + "px";
+
+  // 内部を色分け表示
+  boxModelOverlay.innerHTML = "";
+
+  // margin overlay（オレンジ）
+  if (mt > 0 || mr > 0 || mb > 0 || ml > 0) {
+    var marginDiv = document.createElement("div");
+    marginDiv.style.cssText = "position:absolute;pointer-events:none;" +
+      "left:" + (-ml) + "px;top:" + (-mt) + "px;" +
+      "width:" + overlayWidth + "px;height:" + overlayHeight + "px;" +
+      "background:rgba(255,165,0,0.25);";
+    boxModelOverlay.appendChild(marginDiv);
+  }
+
+  // element area（marginの色を打ち消す）
+  var elemClear = document.createElement("div");
+  elemClear.style.cssText = "position:absolute;pointer-events:none;" +
+    "left:0;top:0;width:" + rect.width + "px;height:" + rect.height + "px;" +
+    "background:rgba(255,165,0,0.001);";
+  boxModelOverlay.appendChild(elemClear);
+
+  // padding overlay（緑）
+  if (pt > 0 || pr > 0 || pb > 0 || pl > 0) {
+    var paddingDiv = document.createElement("div");
+    paddingDiv.style.cssText = "position:absolute;pointer-events:none;" +
+      "left:" + bl + "px;top:" + bt + "px;" +
+      "width:" + (rect.width - bl - br2) + "px;height:" + (rect.height - bt - bb) + "px;" +
+      "background:rgba(0,180,0,0.25);";
+    boxModelOverlay.appendChild(paddingDiv);
+  }
+
+  // content area（青）
+  var contentDiv = document.createElement("div");
+  contentDiv.style.cssText = "position:absolute;pointer-events:none;" +
+    "left:" + (bl + pl) + "px;top:" + (bt + pt) + "px;" +
+    "width:" + Math.max(0, cw) + "px;height:" + Math.max(0, ch) + "px;" +
+    "background:rgba(100,150,255,0.25);";
+  boxModelOverlay.appendChild(contentDiv);
+
+  // gap表示（紫）- flex/gridコンテナの子要素間の隙間
+  if (hasGap) {
+    var children = el.children;
+    var flexDir = style.flexDirection || "row";
+    var isColumn = flexDir === "column" || flexDir === "column-reverse";
+    var contentLeft = bl + pl;
+    var contentTop = bt + pt;
+
+    for (var ci = 0; ci < children.length; ci++) {
+      var child = children[ci];
+      var childStyle = window.getComputedStyle(child);
+      if (childStyle.position === "absolute" || childStyle.position === "fixed" || childStyle.display === "none") { continue; }
+
+      var childRect = child.getBoundingClientRect();
+      var childRelX = childRect.left - rect.left;
+      var childRelY = childRect.top - rect.top;
+
+      // 子要素の後ろにgap領域を描画（最後の子以外）
+      if (ci < children.length - 1) {
+        var gapDiv = document.createElement("div");
+        if (isFlex && isColumn || isGrid) {
+          // 縦方向gap（row-gap）
+          if (rowGap > 0) {
+            gapDiv.style.cssText = "position:absolute;pointer-events:none;" +
+              "left:" + contentLeft + "px;" +
+              "top:" + (childRelY + childRect.height) + "px;" +
+              "width:" + Math.max(0, cw) + "px;height:" + rowGap + "px;" +
+              "background:rgba(180,0,255,0.25);";
+            boxModelOverlay.appendChild(gapDiv);
+          }
+        }
+        if (isFlex && !isColumn || isGrid) {
+          // 横方向gap（column-gap）
+          if (colGap > 0) {
+            gapDiv.style.cssText = "position:absolute;pointer-events:none;" +
+              "left:" + (childRelX + childRect.width) + "px;" +
+              "top:" + contentTop + "px;" +
+              "width:" + colGap + "px;height:" + Math.max(0, ch) + "px;" +
+              "background:rgba(180,0,255,0.25);";
+            boxModelOverlay.appendChild(gapDiv);
+          }
+        }
+      }
+    }
+  }
+
+  // ラベル表示
+  var selector = getElemSelector(el);
+  var lines = [];
+  lines.push("📦 " + selector);
+  lines.push("─────────────────────");
+
+  if (mt > 0 || mr > 0 || mb > 0 || ml > 0) {
+    lines.push("🟠 margin:  " + formatBoxValues(mt, mr, mb, ml));
+  }
+  if (bt > 0 || br2 > 0 || bb > 0 || bl > 0) {
+    lines.push("🟡 border:  " + formatBoxValues(bt, br2, bb, bl));
+  }
+  if (pt > 0 || pr > 0 || pb > 0 || pl > 0) {
+    lines.push("🟢 padding: " + formatBoxValues(pt, pr, pb, pl));
+  }
+  lines.push("🔵 content: " + Math.round(cw) + " × " + Math.round(ch));
+  if (hasGap) {
+    var gapText = rowGap === colGap ? rowGap + "px" : "row:" + rowGap + "px col:" + colGap + "px";
+    lines.push("🟣 gap:     " + gapText);
+  }
+
+  // 主要プロパティも表示
+  var display = style.display;
+  var position = style.position;
+  if (display !== "block" && display !== "inline") {
+    lines.push("   display: " + display);
+  }
+  if (position !== "static") {
+    lines.push("   position: " + position);
+  }
+
+  boxModelLabel.textContent = lines.join("\n");
+  boxModelLabel.style.display = "block";
+
+  // ラベル位置（要素の上に配置、画面外なら下に）
+  var labelX = rect.left + scrollX;
+  var labelY = rect.top + scrollY - mt - boxModelLabel.offsetHeight - 4;
+  if (labelY < scrollY) {
+    labelY = rect.bottom + scrollY + mb + 4;
+  }
+  boxModelLabel.style.left = labelX + "px";
+  boxModelLabel.style.top = labelY + "px";
+}
+
+function formatBoxValues(top, right, bottom, left) {
+  if (top === right && right === bottom && bottom === left) {
+    return top + "px";
+  }
+  if (top === bottom && left === right) {
+    return top + "px " + right + "px";
+  }
+  return top + "px " + right + "px " + bottom + "px " + left + "px";
 }
