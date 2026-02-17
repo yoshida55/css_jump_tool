@@ -2078,8 +2078,35 @@ ${explanation}
             if (results.length === 0) {
                 return null;
             }
-            // HTMLファイルをハイライト（CSSにフォーカスを残したまま）
-            const firstResult = results[0];
+            // 優先順位: ①画面に見えているHTML → ②CSSと同グループのHTMLタブ → ③同ディレクトリ → ④最初のマッチ
+            let firstResult = results[0];
+            // ①画面に見えているHTMLエディタ（分割表示中のHTML）
+            const visibleHtml = vscode.window.visibleTextEditors.find(e => e.document.languageId === 'html' &&
+                results.some(r => r.uri.fsPath.toLowerCase() === e.document.uri.fsPath.toLowerCase()));
+            if (visibleHtml) {
+                firstResult = results.find(r => r.uri.fsPath.toLowerCase() === visibleHtml.document.uri.fsPath.toLowerCase()) || firstResult;
+            }
+            else {
+                // ②CSSエディタと同じタブグループ内のHTMLタブ（アクティブなものを優先）
+                const cssEditor = vscode.window.activeTextEditor;
+                if (cssEditor) {
+                    const cssGroup = vscode.window.tabGroups.all.find(g => g.tabs.some(t => t.input instanceof vscode.TabInputText &&
+                        t.input.uri.fsPath.toLowerCase() === cssEditor.document.uri.fsPath.toLowerCase()));
+                    if (cssGroup) {
+                        // 同グループ内のHTMLタブを探す
+                        for (const tab of cssGroup.tabs) {
+                            if (tab.input instanceof vscode.TabInputText && tab.input.uri.fsPath.toLowerCase().endsWith('.html')) {
+                                const tabPath = tab.input.uri.fsPath.toLowerCase();
+                                const match = results.find(r => r.uri.fsPath.toLowerCase() === tabPath);
+                                if (match) {
+                                    firstResult = match;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             const targetFsPath = firstResult.uri.fsPath.toLowerCase();
             try {
                 // 既に開いているエディタを探す（画面に見えているタブ、パス大文字小文字無視）
