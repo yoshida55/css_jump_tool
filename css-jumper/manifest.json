@@ -47,7 +47,7 @@
     },
     "toggleBoxModel": {
       "suggested_key": {
-        "default": "Alt+K"
+        "default": "Alt+A"
       },
       "description": "ボックスモデル表示をトグル"
     }

@@ -25,12 +25,15 @@ var flexInfoVisible = false;
 var autoShowFlexEnabled = false;
 
 // 設定を読み込み
-chrome.storage.local.get(["quickResizeTrigger", "autoShowFlex"], function(result) {
+chrome.storage.local.get(["quickResizeTrigger", "autoShowFlex", "boxModelEnabled"], function(result) {
   if (result.quickResizeTrigger) {
     quickResizeTrigger = result.quickResizeTrigger;
   }
   if (result.autoShowFlex) {
     autoShowFlexEnabled = result.autoShowFlex;
+  }
+  if (result.boxModelEnabled) {
+    enableBoxModelOverlay();
   }
 });
 
@@ -43,6 +46,13 @@ chrome.storage.onChanged.addListener(function(changes) {
   if (changes.autoShowFlex) {
     autoShowFlexEnabled = changes.autoShowFlex.newValue;
     console.log("CSS Jumper: Flex自動表示設定変更", autoShowFlexEnabled);
+  }
+  if (changes.boxModelEnabled) {
+    if (changes.boxModelEnabled.newValue) {
+      if (!boxModelActive) { enableBoxModelOverlay(); }
+    } else {
+      if (boxModelActive) { removeBoxModelOverlay(); }
+    }
   }
 });
 
@@ -836,9 +846,11 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   if (message.action === "toggleBoxModel") {
     if (boxModelActive) {
       removeBoxModelOverlay();
+      chrome.storage.local.set({ boxModelEnabled: false });
       showNotification("ボックスモデル表示: OFF", "success");
     } else {
       enableBoxModelOverlay();
+      chrome.storage.local.set({ boxModelEnabled: true });
       showNotification("ボックスモデル表示: ON ✓", "success");
     }
     sendResponse({ active: boxModelActive });
@@ -2736,6 +2748,9 @@ var boxModelActive = false;
 var boxModelOverlay = null;
 var boxModelLabel = null;
 var boxModelCurrentTarget = null;
+var boxModelEdgeContainer = null;
+var distanceFirstEl = null;
+var distanceOverlays = [];
 
 function enableBoxModelOverlay() {
   boxModelActive = true;
@@ -2746,34 +2761,49 @@ function enableBoxModelOverlay() {
   boxModelOverlay.style.cssText = "position:absolute;pointer-events:none;z-index:2147483646;display:none;";
   document.body.appendChild(boxModelOverlay);
 
-  // ラベル（数値表示）
+  // ラベル（数値表示）- position:fixedで確実に表示
   boxModelLabel = document.createElement("div");
   boxModelLabel.id = "css-jumper-boxmodel-label";
-  boxModelLabel.style.cssText = "position:absolute;pointer-events:none;z-index:2147483647;display:none;" +
-    "background:rgba(0,0,0,0.85);color:#fff;font:12px/1.4 monospace;padding:6px 10px;border-radius:4px;" +
-    "white-space:pre;max-width:350px;";
+  boxModelLabel.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;display:none;" +
+    "background:rgba(0,0,0,0.9);color:#fff;font:14px/1.5 monospace;padding:10px 14px;border-radius:4px;" +
+    "white-space:pre;max-width:400px;border:1px solid rgba(255,255,255,0.2);box-shadow:0 4px 12px rgba(0,0,0,0.5);";
   document.body.appendChild(boxModelLabel);
+
+  // 画面端距離用SVGコンテナ（position:fixedで画面に固定）
+  boxModelEdgeContainer = document.createElement("div");
+  boxModelEdgeContainer.id = "css-jumper-boxmodel-edge";
+  boxModelEdgeContainer.style.cssText = "position:fixed;pointer-events:none;z-index:2147483645;left:0;top:0;width:100%;height:100%;display:none;";
+  document.body.appendChild(boxModelEdgeContainer);
 
   document.addEventListener("mousemove", boxModelMouseMove, true);
   document.addEventListener("scroll", boxModelHide, true);
+  document.addEventListener("click", boxModelDistanceClick, true);
 }
 
 function removeBoxModelOverlay() {
   boxModelActive = false;
   document.removeEventListener("mousemove", boxModelMouseMove, true);
   document.removeEventListener("scroll", boxModelHide, true);
+  document.removeEventListener("click", boxModelDistanceClick, true);
   if (boxModelOverlay) { boxModelOverlay.remove(); boxModelOverlay = null; }
   if (boxModelLabel) { boxModelLabel.remove(); boxModelLabel = null; }
+  if (boxModelEdgeContainer) { boxModelEdgeContainer.remove(); boxModelEdgeContainer = null; }
   boxModelCurrentTarget = null;
+  clearDistanceOverlays();
+  distanceFirstEl = null;
 }
 
 function boxModelHide() {
   if (boxModelOverlay) { boxModelOverlay.style.display = "none"; }
   if (boxModelLabel) { boxModelLabel.style.display = "none"; }
+  if (boxModelEdgeContainer) { boxModelEdgeContainer.style.display = "none"; }
   boxModelCurrentTarget = null;
 }
 
 function boxModelMouseMove(e) {
+  // 距離計測中はホバー表示を一時停止
+  if (distanceFirstEl || distanceOverlays.length > 0) { return; }
+
   var el = e.target;
 
   // 自分自身のオーバーレイは無視
@@ -2786,7 +2816,14 @@ function boxModelMouseMove(e) {
     return;
   }
 
-  if (el === boxModelCurrentTarget) { return; }
+
+  // 同じ要素ならラベル位置だけ更新
+  if (el === boxModelCurrentTarget) {
+    if (boxModelLabel && boxModelLabel.style.display === "block") {
+      updateBoxModelLabelPos(e);
+    }
+    return;
+  }
   boxModelCurrentTarget = el;
 
   var style = window.getComputedStyle(el);
@@ -2937,7 +2974,7 @@ function boxModelMouseMove(e) {
   }
   lines.push("🔵 content: " + Math.round(cw) + " × " + Math.round(ch));
   if (hasGap) {
-    var gapText = rowGap === colGap ? rowGap + "px" : "row:" + rowGap + "px col:" + colGap + "px";
+    var gapText = rowGap === colGap ? Math.round(rowGap) + "px" : "row:" + Math.round(rowGap) + "px col:" + Math.round(colGap) + "px";
     lines.push("🟣 gap:     " + gapText);
   }
 
@@ -2951,25 +2988,762 @@ function boxModelMouseMove(e) {
     lines.push("   position: " + position);
   }
 
+  // フォント・色情報
+  var fontSize = style.fontSize;
+  if (fontSize) {
+    lines.push("   font-size: " + Math.round(parseFloat(fontSize)) + "px");
+  }
+  var fontWeight = style.fontWeight;
+  if (fontWeight && fontWeight !== "400" && fontWeight !== "normal") {
+    lines.push("   font-weight: " + fontWeight);
+  }
+  var color = style.color;
+  if (color) {
+    lines.push("   color: " + rgbToHex(color));
+  }
+
   boxModelLabel.textContent = lines.join("\n");
   boxModelLabel.style.display = "block";
+  updateBoxModelLabelPos(e);
 
-  // ラベル位置（要素の上に配置、画面外なら下に）
-  var labelX = rect.left + scrollX;
-  var labelY = rect.top + scrollY - mt - boxModelLabel.offsetHeight - 4;
-  if (labelY < scrollY) {
-    labelY = rect.bottom + scrollY + mb + 4;
+  // 画面端 + 親コンテナからの距離線を描画
+  drawEdgeDistanceLines(rect, el);
+}
+
+function drawEdgeDistanceLines(rect, el) {
+  if (!boxModelEdgeContainer) { return; }
+  var viewW = document.documentElement.clientWidth;
+  var viewH = window.innerHeight;
+
+  var eTop = Math.round(rect.top);
+  var eBottom = Math.round(viewH - rect.bottom);
+  var eLeft = Math.round(rect.left);
+  var eRight = Math.round(viewW - rect.right);
+
+  var cx = rect.left + rect.width / 2;
+  var cy = rect.top + rect.height / 2;
+
+  // SVGを毎回作り直し
+  boxModelEdgeContainer.innerHTML = "";
+  boxModelEdgeContainer.style.display = "block";
+
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", viewW);
+  svg.setAttribute("height", viewH);
+  svg.style.cssText = "position:absolute;left:0;top:0;";
+
+  var lineColor = "#FF3333";
+
+  // 先に隣接要素を検出（どの方向に隣接要素があるか）
+  var hasNeighbor = drawNeighborDistances(svg, rect, el);
+
+  // 画面端からの距離（隣接要素がない方向のみ）
+  // 上
+  if (eTop > 3 && !hasNeighbor.top) {
+    drawEdgeLine(svg, cx, rect.top, cx, 0, lineColor);
+    drawEdgeLabel(svg, cx + 6, rect.top / 2 + 4, eTop + "px", lineColor);
   }
+  // 下
+  if (eBottom > 3 && !hasNeighbor.bottom) {
+    drawEdgeLine(svg, cx, rect.bottom, cx, viewH, lineColor);
+    drawEdgeLabel(svg, cx + 6, rect.bottom + (viewH - rect.bottom) / 2 + 4, eBottom + "px", lineColor);
+  }
+  // 左
+  if (eLeft > 3 && !hasNeighbor.left) {
+    drawEdgeLine(svg, rect.left, cy, 0, cy, lineColor);
+    drawEdgeLabel(svg, rect.left / 2, cy - 8, eLeft + "px", lineColor, true);
+  }
+  // 右
+  if (eRight > 3 && !hasNeighbor.right) {
+    drawEdgeLine(svg, rect.right, cy, viewW, cy, lineColor);
+    drawEdgeLabel(svg, rect.right + (viewW - rect.right) / 2, cy - 8, eRight + "px", lineColor, true);
+  }
+
+  boxModelEdgeContainer.appendChild(svg);
+}
+
+// 上下左右の最も近い隣接要素を検出し距離線を描画（戻り値: どの方向に隣接要素があったか）
+function drawNeighborDistances(svg, rect, el) {
+  var neighborColor = "#4488FF";
+  var cx = rect.left + rect.width / 2;
+  var cy = rect.top + rect.height / 2;
+  var hasNeighbor = {top: false, bottom: false, left: false, right: false};
+
+  // 上方向: 複数点（左・中・右）からスキャン
+  var neighbor = findNeighborMultiPoint(el, rect, 'top');
+  if (neighbor) {
+    var nRect = neighbor.getBoundingClientRect();
+    var gap = Math.round(rect.top - nRect.bottom);
+    if (gap >= 0 && gap < 1000) {
+      hasNeighbor.top = true; // フラグは常に立てる
+      if (gap > 0) { // 線描画はgap > 0のみ
+        drawEdgeLine(svg, cx, rect.top, cx, nRect.bottom, neighborColor);
+        drawEdgeLabel(svg, cx + 6, nRect.bottom + gap / 2 + 4, gap + "px", neighborColor);
+      }
+    }
+  }
+
+  // 下方向
+  neighbor = findNeighborMultiPoint(el, rect, 'bottom');
+  if (neighbor) {
+    var nRect = neighbor.getBoundingClientRect();
+    var gap = Math.round(nRect.top - rect.bottom);
+    if (gap >= 0 && gap < 1000) {
+      hasNeighbor.bottom = true;
+      if (gap > 0) {
+        drawEdgeLine(svg, cx, rect.bottom, cx, nRect.top, neighborColor);
+        drawEdgeLabel(svg, cx + 6, rect.bottom + gap / 2 + 4, gap + "px", neighborColor);
+      }
+    }
+  }
+
+  // 左方向
+  neighbor = findNeighborMultiPoint(el, rect, 'left');
+  if (neighbor) {
+    var nRect = neighbor.getBoundingClientRect();
+    var gap = Math.round(rect.left - nRect.right);
+    if (gap >= 0 && gap < 1000) {
+      hasNeighbor.left = true;
+      if (gap > 0) {
+        drawEdgeLine(svg, rect.left, cy, nRect.right, cy, neighborColor);
+        drawEdgeLabel(svg, nRect.right + gap / 2, cy - 8, gap + "px", neighborColor, true);
+      }
+    }
+  }
+
+  // 右方向
+  neighbor = findNeighborMultiPoint(el, rect, 'right');
+  if (neighbor) {
+    var nRect = neighbor.getBoundingClientRect();
+    var gap = Math.round(nRect.left - rect.right);
+    if (gap >= 0 && gap < 1000) {
+      hasNeighbor.right = true;
+      if (gap > 0) {
+        drawEdgeLine(svg, rect.right, cy, nRect.left, cy, neighborColor);
+        drawEdgeLabel(svg, rect.right + gap / 2, cy - 8, gap + "px", neighborColor, true);
+      }
+    }
+  }
+
+  return hasNeighbor;
+}
+
+// 複数点からスキャンして最も近い隣接要素を検出
+function findNeighborMultiPoint(el, rect, direction) {
+  var points = [];
+
+  if (direction === 'top') {
+    points = [
+      {x: rect.left + rect.width * 0.25, y: rect.top - 1, dx: 0, dy: -1},
+      {x: rect.left + rect.width * 0.5, y: rect.top - 1, dx: 0, dy: -1},
+      {x: rect.left + rect.width * 0.75, y: rect.top - 1, dx: 0, dy: -1}
+    ];
+  } else if (direction === 'bottom') {
+    points = [
+      {x: rect.left + rect.width * 0.25, y: rect.bottom + 1, dx: 0, dy: 1},
+      {x: rect.left + rect.width * 0.5, y: rect.bottom + 1, dx: 0, dy: 1},
+      {x: rect.left + rect.width * 0.75, y: rect.bottom + 1, dx: 0, dy: 1}
+    ];
+  } else if (direction === 'left') {
+    points = [
+      {x: rect.left - 1, y: rect.top + rect.height * 0.25, dx: -1, dy: 0},
+      {x: rect.left - 1, y: rect.top + rect.height * 0.5, dx: -1, dy: 0},
+      {x: rect.left - 1, y: rect.top + rect.height * 0.75, dx: -1, dy: 0}
+    ];
+  } else if (direction === 'right') {
+    points = [
+      {x: rect.right + 1, y: rect.top + rect.height * 0.25, dx: 1, dy: 0},
+      {x: rect.right + 1, y: rect.top + rect.height * 0.5, dx: 1, dy: 0},
+      {x: rect.right + 1, y: rect.top + rect.height * 0.75, dx: 1, dy: 0}
+    ];
+  }
+
+  var closestNeighbor = null;
+  var minDistance = Infinity;
+
+  for (var i = 0; i < points.length; i++) {
+    var p = points[i];
+    var neighbor = findNeighborInDirection(el, p.x, p.y, p.dx, p.dy, 0);
+    if (neighbor) {
+      var nRect = neighbor.getBoundingClientRect();
+      var dist = 0;
+      if (direction === 'top') dist = rect.top - nRect.bottom;
+      else if (direction === 'bottom') dist = nRect.top - rect.bottom;
+      else if (direction === 'left') dist = rect.left - nRect.right;
+      else if (direction === 'right') dist = nRect.left - rect.right;
+
+      // dist >= 0 を許可（接している要素もOK）、マイナスは除外（重なり）
+      if (dist >= 0 && dist < minDistance) {
+        minDistance = dist;
+        closestNeighbor = neighbor;
+      }
+    }
+  }
+
+  return closestNeighbor;
+}
+
+// 指定方向にスキャンして最も近い隣接要素を検出
+// isHorizontal: 1=水平方向, 0=垂直方向
+function findNeighborInDirection(el, startX, startY, dx, dy, isHorizontal) {
+  var viewW = document.documentElement.clientWidth;
+  var viewH = window.innerHeight;
+  var x = startX, y = startY;
+  var maxSteps = 500;
+  var elRect = el.getBoundingClientRect();
+
+  for (var i = 0; i < maxSteps; i++) {
+    x += dx; y += dy;
+    if (x < 0 || x >= viewW || y < 0 || y >= viewH) { break; }
+
+    var hit = document.elementFromPoint(x, y);
+    if (!hit || hit === el) { continue; }
+
+    // 自分の子孫・先祖は無視
+    if (el.contains(hit) || hit.contains(el)) { continue; }
+
+    // body/html・オーバーレイは無視してスキャン継続
+    if (hit === document.body || hit === document.documentElement) { continue; }
+    if (hit.id && hit.id.indexOf("css-jumper") === 0) { continue; }
+    if (hit.className && typeof hit.className === "string" && hit.className.indexOf("css-jumper") >= 0) { continue; }
+
+    return hit;
+  }
+  return null;
+}
+
+function drawEdgeLine(svg, x1, y1, x2, y2, color) {
+  var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+  line.setAttribute("stroke", color); line.setAttribute("stroke-width", "1.5");
+  line.setAttribute("stroke-dasharray", "4,3");
+  svg.appendChild(line);
+}
+
+function drawEdgeLabel(svg, x, y, text, color, center) {
+  var t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  t.setAttribute("x", x); t.setAttribute("y", y);
+  if (center) { t.setAttribute("text-anchor", "middle"); }
+  t.setAttribute("fill", color);
+  t.setAttribute("font-size", "13"); t.setAttribute("font-family", "monospace");
+  t.setAttribute("font-weight", "bold");
+  t.textContent = text;
+  svg.appendChild(t);
+}
+
+function formatBoxValues(top, right, bottom, left) {
+  var t = Math.round(top), r = Math.round(right), b = Math.round(bottom), l = Math.round(left);
+  if (t === r && r === b && b === l) {
+    return t + "px";
+  }
+  if (t === b && l === r) {
+    return t + "px " + r + "px";
+  }
+  return t + "px " + r + "px " + b + "px " + l + "px";
+}
+
+function rgbToHex(rgb) {
+  var match = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!match) { return rgb; }
+  var r = parseInt(match[1]), g = parseInt(match[2]), b = parseInt(match[3]);
+  return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+}
+
+function updateBoxModelLabelPos(e) {
+  if (!boxModelLabel) { return; }
+  var labelW = boxModelLabel.offsetWidth || 200;
+  var labelH = boxModelLabel.offsetHeight || 100;
+  var viewW = document.documentElement.clientWidth;
+  var viewH = window.innerHeight;
+
+  // position:fixedなのでclientX/Yを使用
+  var labelX = e.clientX + 16;
+  var labelY = e.clientY + 16;
+
+  if (labelX + labelW > viewW) {
+    labelX = e.clientX - labelW - 8;
+  }
+  if (labelY + labelH > viewH) {
+    labelY = e.clientY - labelH - 8;
+  }
+  // 負の値にならないよう
+  if (labelX < 0) { labelX = 4; }
+  if (labelY < 0) { labelY = 4; }
+
   boxModelLabel.style.left = labelX + "px";
   boxModelLabel.style.top = labelY + "px";
 }
 
-function formatBoxValues(top, right, bottom, left) {
-  if (top === right && right === bottom && bottom === left) {
-    return top + "px";
+// ========================================
+// 要素間の距離表示（Shift+クリック）
+// ========================================
+function boxModelDistanceClick(e) {
+  if (!boxModelActive) { return; }
+
+  var el = e.target;
+  // 自分のオーバーレイ等は無視
+  if (!el || el.id === "css-jumper-boxmodel-overlay" || el.id === "css-jumper-boxmodel-label" ||
+      el.closest("#css-jumper-boxmodel-overlay") || el.closest("#css-jumper-boxmodel-label") ||
+      el.closest(".css-jumper-distance")) {
+    return;
   }
-  if (top === bottom && left === right) {
-    return top + "px " + right + "px";
+
+  // Shift無しクリック → 距離表示クリア
+  if (!e.shiftKey) {
+    if (distanceOverlays.length > 0 || distanceFirstEl) {
+      clearDistanceOverlays();
+      distanceFirstEl = null;
+      boxModelCurrentTarget = null;
+      document.removeEventListener("keydown", distanceEscHandler);
+    }
+    return;
   }
-  return top + "px " + right + "px " + bottom + "px " + left + "px";
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (!distanceFirstEl) {
+    // 1つ目の要素を選択 → ボックスモデル表示を一時停止
+    distanceFirstEl = el;
+    clearDistanceOverlays();
+    boxModelHide();
+    var marker = createDistanceMarker(el, "1️⃣ " + getElemSelector(el), "#FF6B6B");
+    distanceOverlays.push(marker);
+    showNotification("Shift+クリックで2つ目 / クリックでクリア", "info");
+    document.addEventListener("keydown", distanceEscHandler);
+  } else {
+    // 2つ目の要素 → 距離を計算・表示
+    showDistanceBetween(distanceFirstEl, el);
+    distanceFirstEl = null;
+  }
+}
+
+function createDistanceMarker(el, text, color) {
+  var rect = el.getBoundingClientRect();
+  var scrollX = window.scrollX;
+  var scrollY = window.scrollY;
+
+  var marker = document.createElement("div");
+  marker.className = "css-jumper-distance";
+  marker.style.cssText = "position:absolute;pointer-events:none;z-index:2147483645;" +
+    "border:2px dashed " + color + ";" +
+    "left:" + (rect.left + scrollX) + "px;top:" + (rect.top + scrollY) + "px;" +
+    "width:" + rect.width + "px;height:" + rect.height + "px;";
+
+  var label = document.createElement("div");
+  label.className = "css-jumper-distance";
+  label.style.cssText = "position:absolute;pointer-events:none;z-index:2147483647;" +
+    "background:" + color + ";color:#fff;font:12px/1.3 monospace;padding:2px 6px;border-radius:3px;" +
+    "white-space:nowrap;" +
+    "left:" + (rect.left + scrollX) + "px;top:" + (rect.top + scrollY - 20) + "px;";
+  label.textContent = text;
+
+  document.body.appendChild(marker);
+  document.body.appendChild(label);
+  return [marker, label];
+}
+
+function showAllNeighborDistances(el) {
+  var rect = el.getBoundingClientRect();
+  var scrollX = window.scrollX;
+  var scrollY = window.scrollY;
+
+  // 選択要素にマーカー
+  var marker = createDistanceMarker(el, "📏 " + getElemSelector(el), "#FF6B6B");
+  distanceOverlays.push(marker);
+
+  // SVGコンテナ
+  var lineContainer = document.createElement("div");
+  lineContainer.className = "css-jumper-distance";
+  lineContainer.style.cssText = "position:absolute;pointer-events:none;z-index:2147483645;left:0;top:0;";
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.style.cssText = "position:absolute;left:0;top:0;overflow:visible;pointer-events:none;";
+  svg.setAttribute("width", "1");
+  svg.setAttribute("height", "1");
+
+  // 兄弟要素を全て取得（非表示除外）
+  var siblings = el.parentElement ? Array.from(el.parentElement.children) : [];
+  var visibleSiblings = siblings.filter(function(sib) {
+    if (sib === el) { return false; }
+    var s = window.getComputedStyle(sib);
+    return s.display !== "none" && s.visibility !== "hidden";
+  });
+
+  // 上下左右で最も近い要素を探す
+  var nearest = { top: null, bottom: null, left: null, right: null };
+  var nearestDist = { top: Infinity, bottom: Infinity, left: Infinity, right: Infinity };
+
+  visibleSiblings.forEach(function(sib) {
+    var sRect = sib.getBoundingClientRect();
+
+    // 上（sibの下端が自分の上端より上）
+    if (sRect.bottom <= rect.top) {
+      var d = rect.top - sRect.bottom;
+      if (d < nearestDist.top) { nearestDist.top = d; nearest.top = sib; }
+    }
+    // 下（sibの上端が自分の下端より下）
+    if (sRect.top >= rect.bottom) {
+      var d2 = sRect.top - rect.bottom;
+      if (d2 < nearestDist.bottom) { nearestDist.bottom = d2; nearest.bottom = sib; }
+    }
+    // 左（sibの右端が自分の左端より左）
+    if (sRect.right <= rect.left) {
+      var d3 = rect.left - sRect.right;
+      if (d3 < nearestDist.left) { nearestDist.left = d3; nearest.left = sib; }
+    }
+    // 右（sibの左端が自分の右端より右）
+    if (sRect.left >= rect.right) {
+      var d4 = sRect.left - rect.right;
+      if (d4 < nearestDist.right) { nearestDist.right = d4; nearest.right = sib; }
+    }
+  });
+
+  var dirColors = { top: "#33BBFF", bottom: "#33BBFF", left: "#4ECDC4", right: "#4ECDC4" };
+  var cx = rect.left + rect.width / 2;
+  var cy = rect.top + rect.height / 2;
+
+  // 上
+  if (nearest.top) {
+    var sRect = nearest.top.getBoundingClientRect();
+    var dist = Math.round(rect.top - sRect.bottom);
+    var lx = cx + scrollX;
+    drawNeighborMarker(sRect, scrollX, scrollY, dirColors.top);
+    drawDistLine(svg, lx, sRect.bottom + scrollY, lx, rect.top + scrollY, dirColors.top);
+    drawDistLabel(svg, lx + 6, (sRect.bottom + rect.top) / 2 + scrollY + 5, dist + "px", dirColors.top);
+  }
+  // 下
+  if (nearest.bottom) {
+    var sRect2 = nearest.bottom.getBoundingClientRect();
+    var dist2 = Math.round(sRect2.top - rect.bottom);
+    var lx2 = cx + scrollX;
+    drawNeighborMarker(sRect2, scrollX, scrollY, dirColors.bottom);
+    drawDistLine(svg, lx2, rect.bottom + scrollY, lx2, sRect2.top + scrollY, dirColors.bottom);
+    drawDistLabel(svg, lx2 + 6, (rect.bottom + sRect2.top) / 2 + scrollY + 5, dist2 + "px", dirColors.bottom);
+  }
+  // 左
+  if (nearest.left) {
+    var sRect3 = nearest.left.getBoundingClientRect();
+    var dist3 = Math.round(rect.left - sRect3.right);
+    var ly = cy + scrollY;
+    drawNeighborMarker(sRect3, scrollX, scrollY, dirColors.left);
+    drawDistLine(svg, sRect3.right + scrollX, ly, rect.left + scrollX, ly, dirColors.left);
+    drawDistLabel(svg, (sRect3.right + rect.left) / 2 + scrollX, ly - 10, dist3 + "px", dirColors.left, true);
+  }
+  // 右
+  if (nearest.right) {
+    var sRect4 = nearest.right.getBoundingClientRect();
+    var dist4 = Math.round(sRect4.left - rect.right);
+    var ly2 = cy + scrollY;
+    drawNeighborMarker(sRect4, scrollX, scrollY, dirColors.right);
+    drawDistLine(svg, rect.right + scrollX, ly2, sRect4.left + scrollX, ly2, dirColors.right);
+    drawDistLabel(svg, (rect.right + sRect4.left) / 2 + scrollX, ly2 - 10, dist4 + "px", dirColors.right, true);
+  }
+
+  lineContainer.appendChild(svg);
+  document.body.appendChild(lineContainer);
+  distanceOverlays.push([lineContainer]);
+}
+
+function drawNeighborMarker(sRect, scrollX, scrollY, color) {
+  var m = document.createElement("div");
+  m.className = "css-jumper-distance";
+  m.style.cssText = "position:absolute;pointer-events:none;z-index:2147483644;" +
+    "border:2px dotted " + color + ";" +
+    "left:" + (sRect.left + scrollX) + "px;top:" + (sRect.top + scrollY) + "px;" +
+    "width:" + sRect.width + "px;height:" + sRect.height + "px;";
+  document.body.appendChild(m);
+  distanceOverlays.push([m]);
+}
+
+function drawDistLine(svg, x1, y1, x2, y2, color) {
+  var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+  line.setAttribute("stroke", color); line.setAttribute("stroke-width", "3");
+  line.setAttribute("stroke-dasharray", "8,4");
+  svg.appendChild(line);
+}
+
+function drawDistLabel(svg, x, y, text, color, center) {
+  // 背景
+  var bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  var textLen = text.length * 9;
+  bg.setAttribute("x", center ? x - textLen / 2 - 4 : x - 4);
+  bg.setAttribute("y", y - 14);
+  bg.setAttribute("width", textLen + 8); bg.setAttribute("height", "20");
+  bg.setAttribute("rx", "3"); bg.setAttribute("fill", "rgba(0,0,0,0.85)");
+  svg.appendChild(bg);
+  // テキスト
+  var t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  t.setAttribute("x", x); t.setAttribute("y", y);
+  if (center) { t.setAttribute("text-anchor", "middle"); }
+  t.setAttribute("fill", color);
+  t.setAttribute("font-size", "15"); t.setAttribute("font-family", "monospace");
+  t.setAttribute("font-weight", "bold");
+  t.textContent = text;
+  svg.appendChild(t);
+}
+
+function showDistanceBetween(el1, el2) {
+  var r1 = el1.getBoundingClientRect();
+  var r2 = el2.getBoundingClientRect();
+  var scrollX = window.scrollX;
+  var scrollY = window.scrollY;
+
+  // 2つ目のマーカー
+  var marker2 = createDistanceMarker(el2, "2️⃣ " + getElemSelector(el2), "#4ECDC4");
+  distanceOverlays.push(marker2);
+
+  // 水平・垂直の端間距離（最も近い辺同士）
+  var hGap, vGap;
+
+  // 水平方向: 重なりがなければ隙間を表示
+  if (r2.left >= r1.right) {
+    hGap = Math.round(r2.left - r1.right);
+  } else if (r1.left >= r2.right) {
+    hGap = Math.round(r1.left - r2.right);
+  } else {
+    hGap = null; // 水平方向に重なっている
+  }
+
+  // 垂直方向
+  if (r2.top >= r1.bottom) {
+    vGap = Math.round(r2.top - r1.bottom);
+  } else if (r1.top >= r2.bottom) {
+    vGap = Math.round(r1.top - r2.bottom);
+  } else {
+    vGap = null; // 垂直方向に重なっている
+  }
+
+  // 距離線を描画（最も近い辺同士を結ぶ）
+  var lineContainer = document.createElement("div");
+  lineContainer.className = "css-jumper-distance";
+  lineContainer.style.cssText = "position:absolute;pointer-events:none;z-index:2147483645;left:0;top:0;";
+
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.style.cssText = "position:absolute;left:0;top:0;overflow:visible;pointer-events:none;";
+  svg.setAttribute("width", "1");
+  svg.setAttribute("height", "1");
+
+  // 水平方向の線（辺同士）
+  if (hGap !== null && hGap > 0) {
+    var hx1, hx2, hy;
+    hy = Math.max(r1.top, r2.top) + (Math.min(r1.bottom, r2.bottom) - Math.max(r1.top, r2.top)) / 2;
+    // 垂直に重なりがない場合は中間点
+    if (r1.bottom <= r2.top || r2.bottom <= r1.top) {
+      hy = (r1.top + r1.height / 2 + r2.top + r2.height / 2) / 2;
+    }
+    if (r2.left >= r1.right) {
+      hx1 = r1.right; hx2 = r2.left;
+    } else {
+      hx1 = r2.right; hx2 = r1.left;
+    }
+    var hLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    hLine.setAttribute("x1", hx1 + scrollX); hLine.setAttribute("y1", hy + scrollY);
+    hLine.setAttribute("x2", hx2 + scrollX); hLine.setAttribute("y2", hy + scrollY);
+    hLine.setAttribute("stroke", "#FF3333"); hLine.setAttribute("stroke-width", "3");
+    hLine.setAttribute("stroke-dasharray", "8,4");
+    svg.appendChild(hLine);
+
+    // 背景付き数値ラベル
+    var hLabelX = (hx1 + hx2) / 2 + scrollX;
+    var hLabelY = hy + scrollY - 12;
+    var hBg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    hBg.setAttribute("x", hLabelX - 28); hBg.setAttribute("y", hLabelY - 14);
+    hBg.setAttribute("width", "56"); hBg.setAttribute("height", "20");
+    hBg.setAttribute("rx", "3"); hBg.setAttribute("fill", "rgba(0,0,0,0.85)");
+    svg.appendChild(hBg);
+    var hText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    hText.setAttribute("x", hLabelX);
+    hText.setAttribute("y", hLabelY);
+    hText.setAttribute("text-anchor", "middle");
+    hText.setAttribute("fill", "#FF5555");
+    hText.setAttribute("font-size", "15");
+    hText.setAttribute("font-family", "monospace");
+    hText.setAttribute("font-weight", "bold");
+    hText.textContent = hGap + "px";
+    svg.appendChild(hText);
+  }
+
+  // 垂直方向の線（辺同士）
+  if (vGap !== null && vGap > 0) {
+    var vy1, vy2, vx;
+    vx = Math.max(r1.left, r2.left) + (Math.min(r1.right, r2.right) - Math.max(r1.left, r2.left)) / 2;
+    // 水平に重なりがない場合は中間点
+    if (r1.right <= r2.left || r2.right <= r1.left) {
+      vx = (r1.left + r1.width / 2 + r2.left + r2.width / 2) / 2;
+    }
+    if (r2.top >= r1.bottom) {
+      vy1 = r1.bottom; vy2 = r2.top;
+    } else {
+      vy1 = r2.bottom; vy2 = r1.top;
+    }
+    var vLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    vLine.setAttribute("x1", vx + scrollX); vLine.setAttribute("y1", vy1 + scrollY);
+    vLine.setAttribute("x2", vx + scrollX); vLine.setAttribute("y2", vy2 + scrollY);
+    vLine.setAttribute("stroke", "#33BBFF"); vLine.setAttribute("stroke-width", "3");
+    vLine.setAttribute("stroke-dasharray", "8,4");
+    svg.appendChild(vLine);
+
+    // 背景付き数値ラベル
+    var vLabelX = vx + scrollX + 8;
+    var vLabelY = (vy1 + vy2) / 2 + scrollY + 5;
+    var vBg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    vBg.setAttribute("x", vLabelX - 4); vBg.setAttribute("y", vLabelY - 15);
+    vBg.setAttribute("width", "56"); vBg.setAttribute("height", "20");
+    vBg.setAttribute("rx", "3"); vBg.setAttribute("fill", "rgba(0,0,0,0.85)");
+    svg.appendChild(vBg);
+    var vText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    vText.setAttribute("x", vLabelX);
+    vText.setAttribute("y", vLabelY);
+    vText.setAttribute("fill", "#55CCFF");
+    vText.setAttribute("font-size", "15");
+    vText.setAttribute("font-family", "monospace");
+    vText.setAttribute("font-weight", "bold");
+    vText.textContent = vGap + "px";
+    svg.appendChild(vText);
+  }
+
+  lineContainer.appendChild(svg);
+  document.body.appendChild(lineContainer);
+  distanceOverlays.push([lineContainer]);
+
+  // 距離ラベル（結果表示）
+  var distLabel = document.createElement("div");
+  distLabel.className = "css-jumper-distance";
+  distLabel.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;" +
+    "background:rgba(0,0,0,0.95);color:#fff;font:14px/1.5 monospace;padding:10px 14px;border-radius:4px;" +
+    "white-space:pre;border:1px solid rgba(255,255,255,0.2);box-shadow:0 4px 12px rgba(0,0,0,0.5);" +
+    "left:50%;top:20px;transform:translateX(-50%);";
+
+  var lines = [];
+  lines.push("📏 要素間の距離");
+  lines.push("─────────────────────");
+  if (hGap !== null) {
+    lines.push("↔ 水平: " + hGap + "px");
+  }
+  if (vGap !== null) {
+    lines.push("↕ 垂直: " + vGap + "px");
+  }
+  if (hGap === null && vGap === null) {
+    lines.push("⚠ 要素が重なっています");
+  }
+  lines.push("─────────────────────");
+  lines.push("Shift+クリックで再計測 / Escでクリア");
+
+  distLabel.textContent = lines.join("\n");
+  document.body.appendChild(distLabel);
+  distanceOverlays.push([distLabel]);
+
+  // Escキーでクリア
+  document.addEventListener("keydown", distanceEscHandler);
+}
+
+function distanceEscHandler(e) {
+  if (e.key === "Escape") {
+    clearDistanceOverlays();
+    distanceFirstEl = null;
+    boxModelCurrentTarget = null; // ホバー再開時にすぐ表示されるよう
+    document.removeEventListener("keydown", distanceEscHandler);
+  }
+}
+
+function clearDistanceOverlays() {
+  distanceOverlays.forEach(function(items) {
+    if (Array.isArray(items)) {
+      items.forEach(function(el) { if (el && el.remove) { el.remove(); } });
+    }
+  });
+  distanceOverlays = [];
+}
+
+// 画面端（ビューポート）からの距離を表示
+function showEdgeDistances(el) {
+  var rect = el.getBoundingClientRect();
+  var scrollX = window.scrollX;
+  var scrollY = window.scrollY;
+  var viewW = document.documentElement.clientWidth;
+  var viewH = window.innerHeight;
+
+  var top = Math.round(rect.top);
+  var bottom = Math.round(viewH - rect.bottom);
+  var left = Math.round(rect.left);
+  var right = Math.round(viewW - rect.right);
+
+  var lineColor = "#FF3333";
+  var container = document.createElement("div");
+  container.className = "css-jumper-distance";
+  container.style.cssText = "position:absolute;pointer-events:none;z-index:2147483645;left:0;top:0;";
+
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.style.cssText = "position:absolute;left:0;top:0;overflow:visible;pointer-events:none;";
+  svg.setAttribute("width", "1");
+  svg.setAttribute("height", "1");
+
+  var cx = rect.left + rect.width / 2 + scrollX;
+  var cy = rect.top + rect.height / 2 + scrollY;
+
+  // 上方向の線
+  if (top > 5) {
+    addDistanceLine(svg, cx, rect.top + scrollY, cx, scrollY, lineColor, top + "px");
+  }
+  // 下方向の線
+  if (bottom > 5) {
+    addDistanceLine(svg, cx, rect.bottom + scrollY, cx, viewH + scrollY, lineColor, bottom + "px");
+  }
+  // 左方向の線
+  if (left > 5) {
+    addDistanceLineH(svg, rect.left + scrollX, cy, scrollX, cy, lineColor, left + "px");
+  }
+  // 右方向の線
+  if (right > 5) {
+    addDistanceLineH(svg, rect.right + scrollX, cy, viewW + scrollX, cy, lineColor, right + "px");
+  }
+
+  container.appendChild(svg);
+  document.body.appendChild(container);
+  distanceOverlays.push([container]);
+
+  // Escでクリアできるように
+  document.addEventListener("keydown", distanceEscHandler);
+}
+
+function addDistanceLine(svg, x1, y1, x2, y2, color, label) {
+  var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+  line.setAttribute("stroke", color); line.setAttribute("stroke-width", "1.5");
+  line.setAttribute("stroke-dasharray", "4,3");
+  svg.appendChild(line);
+
+  var text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  text.setAttribute("x", x1 + 6);
+  text.setAttribute("y", (y1 + y2) / 2 + 4);
+  text.setAttribute("fill", color);
+  text.setAttribute("font-size", "12");
+  text.setAttribute("font-family", "monospace");
+  text.setAttribute("font-weight", "bold");
+  text.textContent = label;
+  svg.appendChild(text);
+}
+
+function addDistanceLineH(svg, x1, y1, x2, y2, color, label) {
+  var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+  line.setAttribute("stroke", color); line.setAttribute("stroke-width", "1.5");
+  line.setAttribute("stroke-dasharray", "4,3");
+  svg.appendChild(line);
+
+  var text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  text.setAttribute("x", (x1 + x2) / 2);
+  text.setAttribute("y", y1 - 6);
+  text.setAttribute("text-anchor", "middle");
+  text.setAttribute("fill", color);
+  text.setAttribute("font-size", "12");
+  text.setAttribute("font-family", "monospace");
+  text.setAttribute("font-weight", "bold");
+  text.textContent = label;
+  svg.appendChild(text);
 }
