@@ -2751,6 +2751,8 @@ var boxModelCurrentTarget = null;
 var boxModelEdgeContainer = null;
 var distanceFirstEl = null;
 var distanceOverlays = [];
+var viewportPresetBar = null;
+var originalWindowSize = null; // Alt+A ON前のサイズ
 
 function enableBoxModelOverlay() {
   boxModelActive = true;
@@ -2778,6 +2780,10 @@ function enableBoxModelOverlay() {
   document.addEventListener("mousemove", boxModelMouseMove, true);
   document.addEventListener("scroll", boxModelHide, true);
   document.addEventListener("click", boxModelDistanceClick, true);
+
+  // ビューポートプリセットバー表示 + 自動リサイズ
+  showViewportPresetBar();
+  applyStoredViewport();
 }
 
 function removeBoxModelOverlay() {
@@ -2788,9 +2794,13 @@ function removeBoxModelOverlay() {
   if (boxModelOverlay) { boxModelOverlay.remove(); boxModelOverlay = null; }
   if (boxModelLabel) { boxModelLabel.remove(); boxModelLabel = null; }
   if (boxModelEdgeContainer) { boxModelEdgeContainer.remove(); boxModelEdgeContainer = null; }
+  if (viewportPresetBar) { viewportPresetBar.remove(); viewportPresetBar = null; }
   boxModelCurrentTarget = null;
   clearDistanceOverlays();
   distanceFirstEl = null;
+
+  // 元のウィンドウサイズに復元
+  restoreOriginalWindowSize();
 }
 
 function boxModelHide() {
@@ -3062,70 +3072,104 @@ function drawEdgeDistanceLines(rect, el) {
   boxModelEdgeContainer.appendChild(svg);
 }
 
-// 上下左右の最も近い隣接要素を検出し距離線を描画（戻り値: どの方向に隣接要素があったか）
+// 上下左右の距離を描画（兄弟要素 or 親padding距離）
 function drawNeighborDistances(svg, rect, el) {
-  var neighborColor = "#4488FF";
+  var siblingColor = "#4488FF"; // 兄弟要素: 青
+  var paddingColor = "#22CC66"; // 親padding: 緑
   var cx = rect.left + rect.width / 2;
   var cy = rect.top + rect.height / 2;
   var hasNeighbor = {top: false, bottom: false, left: false, right: false};
 
-  // 上方向: 複数点（左・中・右）からスキャン
-  var neighbor = findNeighborMultiPoint(el, rect, 'top');
-  if (neighbor) {
-    var nRect = neighbor.getBoundingClientRect();
-    var gap = Math.round(rect.top - nRect.bottom);
-    if (gap >= 0 && gap < 1000) {
-      hasNeighbor.top = true; // フラグは常に立てる
-      if (gap > 0) { // 線描画はgap > 0のみ
-        drawEdgeLine(svg, cx, rect.top, cx, nRect.bottom, neighborColor);
-        drawEdgeLabel(svg, cx + 6, nRect.bottom + gap / 2 + 4, gap + "px", neighborColor);
-      }
-    }
+  var parent = el.parentElement;
+  var pRect = null, pStyle = null;
+  if (parent && parent !== document.body && parent !== document.documentElement) {
+    pRect = parent.getBoundingClientRect();
+    pStyle = getComputedStyle(parent);
   }
 
-  // 下方向
-  neighbor = findNeighborMultiPoint(el, rect, 'bottom');
-  if (neighbor) {
-    var nRect = neighbor.getBoundingClientRect();
-    var gap = Math.round(nRect.top - rect.bottom);
-    if (gap >= 0 && gap < 1000) {
-      hasNeighbor.bottom = true;
-      if (gap > 0) {
-        drawEdgeLine(svg, cx, rect.bottom, cx, nRect.top, neighborColor);
-        drawEdgeLabel(svg, cx + 6, rect.bottom + gap / 2 + 4, gap + "px", neighborColor);
-      }
+  // 前の表示可能な兄弟要素を取得
+  var prevSib = getVisibleSibling(el, 'prev');
+  // 次の表示可能な兄弟要素を取得
+  var nextSib = getVisibleSibling(el, 'next');
+
+  // ===== 上方向 =====
+  if (prevSib) {
+    var sibRect = prevSib.getBoundingClientRect();
+    var gap = Math.round(rect.top - sibRect.bottom);
+    if (gap > 0) {
+      drawEdgeLine(svg, cx, rect.top, cx, sibRect.bottom, siblingColor);
+      drawEdgeLabel(svg, cx + 6, sibRect.bottom + gap / 2 + 4, gap + "px", siblingColor);
     }
+    hasNeighbor.top = true;
+  } else if (pRect) {
+    var pBorderTop = parseFloat(pStyle.borderTopWidth) || 0;
+    var parentInnerTop = pRect.top + pBorderTop;
+    var gap = Math.round(rect.top - parentInnerTop);
+    if (gap > 0) {
+      drawEdgeLine(svg, cx, rect.top, cx, parentInnerTop, paddingColor);
+      drawEdgeLabel(svg, cx + 6, parentInnerTop + gap / 2 + 4, gap + "px", paddingColor);
+    }
+    hasNeighbor.top = true;
   }
 
-  // 左方向
-  neighbor = findNeighborMultiPoint(el, rect, 'left');
-  if (neighbor) {
-    var nRect = neighbor.getBoundingClientRect();
-    var gap = Math.round(rect.left - nRect.right);
-    if (gap >= 0 && gap < 1000) {
-      hasNeighbor.left = true;
-      if (gap > 0) {
-        drawEdgeLine(svg, rect.left, cy, nRect.right, cy, neighborColor);
-        drawEdgeLabel(svg, nRect.right + gap / 2, cy - 8, gap + "px", neighborColor, true);
-      }
+  // ===== 下方向 =====
+  if (nextSib) {
+    var sibRect = nextSib.getBoundingClientRect();
+    var gap = Math.round(sibRect.top - rect.bottom);
+    if (gap > 0) {
+      drawEdgeLine(svg, cx, rect.bottom, cx, sibRect.top, siblingColor);
+      drawEdgeLabel(svg, cx + 6, rect.bottom + gap / 2 + 4, gap + "px", siblingColor);
     }
+    hasNeighbor.bottom = true;
+  } else if (pRect) {
+    var pBorderBottom = parseFloat(pStyle.borderBottomWidth) || 0;
+    var parentInnerBottom = pRect.bottom - pBorderBottom;
+    var gap = Math.round(parentInnerBottom - rect.bottom);
+    if (gap > 0) {
+      drawEdgeLine(svg, cx, rect.bottom, cx, parentInnerBottom, paddingColor);
+      drawEdgeLabel(svg, cx + 6, rect.bottom + gap / 2 + 4, gap + "px", paddingColor);
+    }
+    hasNeighbor.bottom = true;
   }
 
-  // 右方向
-  neighbor = findNeighborMultiPoint(el, rect, 'right');
-  if (neighbor) {
-    var nRect = neighbor.getBoundingClientRect();
-    var gap = Math.round(nRect.left - rect.right);
-    if (gap >= 0 && gap < 1000) {
-      hasNeighbor.right = true;
-      if (gap > 0) {
-        drawEdgeLine(svg, rect.right, cy, nRect.left, cy, neighborColor);
-        drawEdgeLabel(svg, rect.right + gap / 2, cy - 8, gap + "px", neighborColor, true);
-      }
+  // ===== 左方向 =====
+  if (pRect) {
+    var pBorderLeft = parseFloat(pStyle.borderLeftWidth) || 0;
+    var parentInnerLeft = pRect.left + pBorderLeft;
+    var gap = Math.round(rect.left - parentInnerLeft);
+    if (gap > 0) {
+      drawEdgeLine(svg, rect.left, cy, parentInnerLeft, cy, paddingColor);
+      drawEdgeLabel(svg, parentInnerLeft + gap / 2, cy - 8, gap + "px", paddingColor, true);
     }
+    hasNeighbor.left = true;
+  }
+
+  // ===== 右方向 =====
+  if (pRect) {
+    var pBorderRight = parseFloat(pStyle.borderRightWidth) || 0;
+    var parentInnerRight = pRect.right - pBorderRight;
+    var gap = Math.round(parentInnerRight - rect.right);
+    if (gap > 0) {
+      drawEdgeLine(svg, rect.right, cy, parentInnerRight, cy, paddingColor);
+      drawEdgeLabel(svg, rect.right + gap / 2, cy - 8, gap + "px", paddingColor, true);
+    }
+    hasNeighbor.right = true;
   }
 
   return hasNeighbor;
+}
+
+// 表示可能な兄弟要素を取得
+function getVisibleSibling(el, direction) {
+  var sibling = direction === 'prev' ? el.previousElementSibling : el.nextElementSibling;
+  while (sibling) {
+    var style = getComputedStyle(sibling);
+    if (style.display !== 'none' && style.visibility !== 'hidden') {
+      return sibling;
+    }
+    sibling = direction === 'prev' ? sibling.previousElementSibling : sibling.nextElementSibling;
+  }
+  return null;
 }
 
 // 複数点からスキャンして最も近い隣接要素を検出
@@ -3746,4 +3790,262 @@ function addDistanceLineH(svg, x1, y1, x2, y2, color, label) {
   text.setAttribute("font-weight", "bold");
   text.textContent = label;
   svg.appendChild(text);
+}
+
+// ========================================
+// ビューポートプリセット
+// ========================================
+var DEFAULT_VIEWPORT_PRESETS = [1920, 1440, 1280, 768, 375];
+
+// プリセットバー表示
+function showViewportPresetBar() {
+  if (viewportPresetBar) { return; }
+  chrome.storage.local.get(["viewportCustomPresets", "viewportExcluded"], function(result) {
+    var custom = result.viewportCustomPresets || [];
+    var excluded = result.viewportExcluded || [];
+    buildViewportPresetBar(custom, excluded);
+  });
+}
+
+function buildViewportPresetBar(customPresets, excluded) {
+  if (viewportPresetBar) { viewportPresetBar.remove(); viewportPresetBar = null; }
+
+  // デフォルト（除外を引く）+ カスタムを統合、大→小ソート
+  var allPresets = DEFAULT_VIEWPORT_PRESETS.filter(function(w) {
+    return excluded.indexOf(w) === -1;
+  });
+  customPresets.forEach(function(w) {
+    if (allPresets.indexOf(w) === -1) { allPresets.push(w); }
+  });
+  allPresets.sort(function(a, b) { return b - a; });
+
+  viewportPresetBar = document.createElement("div");
+  viewportPresetBar.id = "css-jumper-viewport-bar";
+  viewportPresetBar.style.cssText = "position:fixed;top:0;left:50%;transform:translateX(-50%);" +
+    "z-index:2147483647;display:flex;align-items:center;gap:2px;padding:4px 8px;" +
+    "background:rgba(0,0,0,0.85);border-radius:0 0 8px 8px;" +
+    "box-shadow:0 2px 8px rgba(0,0,0,0.5);font:13px/1 monospace;";
+
+  // 現在のビューポート幅
+  var currentLabel = document.createElement("span");
+  currentLabel.id = "css-jumper-viewport-current";
+  currentLabel.style.cssText = "color:#4488FF;padding:6px 8px;font-weight:bold;";
+  currentLabel.textContent = "📐" + document.documentElement.clientWidth + "px";
+  viewportPresetBar.appendChild(currentLabel);
+  addBarSep(viewportPresetBar);
+
+  // プリセットボタン（長押し1秒で削除）
+  allPresets.forEach(function(width) {
+    viewportPresetBar.appendChild(createPresetBtn(width));
+  });
+
+  addBarSep(viewportPresetBar);
+
+  // 直接入力欄
+  var input = document.createElement("input");
+  input.type = "number";
+  input.placeholder = "px";
+  input.style.cssText = "width:56px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);" +
+    "color:#fff;padding:4px 6px;border-radius:4px;font:13px/1 monospace;text-align:center;" +
+    "outline:none;-moz-appearance:textfield;";
+  input.addEventListener("keydown", function(e) {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      var val = parseInt(input.value);
+      if (val > 0) { applyViewportWidth(val); }
+    }
+  });
+  input.addEventListener("click", function(e) { e.stopPropagation(); });
+  viewportPresetBar.appendChild(input);
+
+  // 登録ボタン
+  var regBtn = document.createElement("button");
+  regBtn.style.cssText = "background:none;border:1px solid rgba(100,255,100,0.5);color:#66FF66;" +
+    "padding:5px 8px;border-radius:4px;cursor:pointer;font:12px/1 monospace;transition:background 0.15s;";
+  regBtn.textContent = "登録";
+  regBtn.addEventListener("mouseenter", function() { regBtn.style.background = "rgba(100,255,100,0.2)"; });
+  regBtn.addEventListener("mouseleave", function() { regBtn.style.background = "none"; });
+  regBtn.addEventListener("click", function(e) {
+    e.stopPropagation(); e.preventDefault();
+    var val = parseInt(input.value);
+    if (val > 0) {
+      registerPreset(val);
+      input.value = "";
+    }
+  });
+  viewportPresetBar.appendChild(regBtn);
+
+  addBarSep(viewportPresetBar);
+
+  // 戻すボタン
+  var restoreBtn = document.createElement("button");
+  restoreBtn.style.cssText = "background:none;border:1px solid rgba(255,100,100,0.5);color:#FF6B6B;" +
+    "padding:5px 8px;border-radius:4px;cursor:pointer;font:12px/1 monospace;transition:background 0.15s;";
+  restoreBtn.textContent = "戻す";
+  restoreBtn.addEventListener("mouseenter", function() { restoreBtn.style.background = "rgba(255,100,100,0.2)"; });
+  restoreBtn.addEventListener("mouseleave", function() { restoreBtn.style.background = "none"; });
+  restoreBtn.addEventListener("click", function(e) {
+    e.stopPropagation(); e.preventDefault();
+    restoreOriginalWindowSize();
+  });
+  viewportPresetBar.appendChild(restoreBtn);
+
+  document.body.appendChild(viewportPresetBar);
+}
+
+function addBarSep(bar) {
+  var s = document.createElement("span");
+  s.style.cssText = "color:rgba(255,255,255,0.3);padding:6px 2px;";
+  s.textContent = "|";
+  bar.appendChild(s);
+}
+
+// プリセットボタン（クリック=適用、長押し1秒=削除）
+function createPresetBtn(width) {
+  var btn = document.createElement("button");
+  btn.style.cssText = "background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;" +
+    "padding:5px 10px;border-radius:4px;cursor:pointer;font:13px/1 monospace;transition:all 0.15s;";
+  btn.textContent = width;
+
+  var holdTimer = null;
+  var held = false;
+
+  btn.addEventListener("mouseenter", function() {
+    if (!held) { btn.style.background = "rgba(255,255,255,0.2)"; }
+  });
+  btn.addEventListener("mouseleave", function() {
+    btn.style.background = "none";
+    btn.style.borderColor = "rgba(255,255,255,0.3)";
+    clearTimeout(holdTimer); held = false;
+  });
+  btn.addEventListener("mousedown", function(e) {
+    e.preventDefault();
+    held = false;
+    holdTimer = setTimeout(function() {
+      held = true;
+      btn.style.background = "rgba(255,50,50,0.4)";
+      btn.style.borderColor = "#FF3333";
+      deletePreset(width);
+    }, 1000);
+  });
+  btn.addEventListener("mouseup", function(e) {
+    clearTimeout(holdTimer);
+    if (!held) {
+      e.stopPropagation(); e.preventDefault();
+      applyViewportWidth(width);
+    }
+    held = false;
+  });
+
+  return btn;
+}
+
+// プリセット登録
+function registerPreset(width) {
+  chrome.storage.local.get(["viewportCustomPresets", "viewportExcluded"], function(result) {
+    var custom = result.viewportCustomPresets || [];
+    var excluded = result.viewportExcluded || [];
+    // 除外リストから復活
+    var exIdx = excluded.indexOf(width);
+    if (exIdx >= 0) { excluded.splice(exIdx, 1); }
+    // カスタムに追加（デフォルトにないもののみ）
+    if (DEFAULT_VIEWPORT_PRESETS.indexOf(width) === -1 && custom.indexOf(width) === -1) {
+      custom.push(width);
+    }
+    chrome.storage.local.set({ viewportCustomPresets: custom, viewportExcluded: excluded }, function() {
+      rebuildBar();
+      applyViewportWidth(width);
+      showNotification(width + "px を登録", "success");
+    });
+  });
+}
+
+// プリセット削除
+function deletePreset(width) {
+  chrome.storage.local.get(["viewportCustomPresets", "viewportExcluded"], function(result) {
+    var custom = result.viewportCustomPresets || [];
+    var excluded = result.viewportExcluded || [];
+    // カスタムから削除
+    var cIdx = custom.indexOf(width);
+    if (cIdx >= 0) { custom.splice(cIdx, 1); }
+    // デフォルトなら除外リストに追加
+    if (DEFAULT_VIEWPORT_PRESETS.indexOf(width) >= 0 && excluded.indexOf(width) === -1) {
+      excluded.push(width);
+    }
+    chrome.storage.local.set({ viewportCustomPresets: custom, viewportExcluded: excluded }, function() {
+      rebuildBar();
+      showNotification(width + "px を削除", "info");
+    });
+  });
+}
+
+// バー再構築
+function rebuildBar() {
+  chrome.storage.local.get(["viewportCustomPresets", "viewportExcluded"], function(result) {
+    buildViewportPresetBar(result.viewportCustomPresets || [], result.viewportExcluded || []);
+  });
+}
+
+// 保存済みビューポート幅を自動適用
+function applyStoredViewport() {
+  chrome.storage.local.get("viewportPreset", function(result) {
+    if (result.viewportPreset) {
+      applyViewportWidth(result.viewportPreset);
+    }
+  });
+}
+
+// ビューポート幅を適用
+function applyViewportWidth(width) {
+  // 元のサイズを保存（初回のみ）
+  if (!originalWindowSize) {
+    originalWindowSize = {};
+  }
+
+  // storage に保存
+  chrome.storage.local.set({ viewportPreset: width });
+
+  // background.jsにリサイズ依頼
+  chrome.runtime.sendMessage({
+    action: "resizeViewport",
+    width: width
+  }, function(response) {
+    if (response && response.success) {
+      // 元のサイズ・位置を保存（初回のみ）
+      if (!originalWindowSize.saved) {
+        originalWindowSize.prevWidth = response.previousWidth;
+        originalWindowSize.prevHeight = response.previousHeight;
+        originalWindowSize.prevLeft = response.previousLeft;
+        originalWindowSize.prevTop = response.previousTop;
+        originalWindowSize.saved = true;
+      }
+      // プリセットバーの現在値を更新
+      setTimeout(updateViewportCurrentLabel, 200);
+    }
+  });
+}
+
+// 元のウィンドウサイズに復元
+function restoreOriginalWindowSize() {
+  if (!originalWindowSize || !originalWindowSize.saved) { return; }
+
+  // background.jsで直接ウィンドウサイズを復元
+  chrome.runtime.sendMessage({
+    action: "restoreWindow",
+    width: originalWindowSize.prevWidth,
+    height: originalWindowSize.prevHeight,
+    left: originalWindowSize.prevLeft,
+    top: originalWindowSize.prevTop
+  }, function() {
+    originalWindowSize = null;
+    setTimeout(updateViewportCurrentLabel, 200);
+  });
+}
+
+// プリセットバーの現在値を更新
+function updateViewportCurrentLabel() {
+  var label = document.getElementById("css-jumper-viewport-current");
+  if (label) {
+    label.textContent = "📐" + document.documentElement.clientWidth + "px";
+  }
 }

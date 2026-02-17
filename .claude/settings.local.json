@@ -34,7 +34,8 @@
       "Bash(wmic process where processid=30072 get name,commandline:*)",
       "Bash(curl:*)",
       "WebSearch",
-      "WebFetch(domain:gemini.google.com)"
+      "WebFetch(domain:gemini.google.com)",
+      "Bash(test:*)"
     ]
   }
 }

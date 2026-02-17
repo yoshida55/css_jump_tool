@@ -1053,12 +1053,90 @@ chrome.commands.onCommand.addListener(function(command) {
 // ========================================
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   console.log("CSS Jumper background: メッセージ受信", request.action);
-  
+
   if (request.action === "explainAndJump") {
     handleExplainAndJump(request, sender.tab.id, sendResponse);
     return true; // 非同期レスポンスを有効化
   }
+
+  if (request.action === "resizeViewport") {
+    resizeToViewport(request.width, request.height, sender.tab.id, sendResponse);
+    return true;
+  }
+
+  if (request.action === "restoreWindow") {
+    restoreWindow(request, sender.tab.id, sendResponse);
+    return true;
+  }
 });
+
+// 元のウィンドウサイズ・位置に復元
+async function restoreWindow(request, tabId, sendResponse) {
+  try {
+    var tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, {
+      width: request.width,
+      height: request.height,
+      left: request.left,
+      top: request.top
+    });
+    sendResponse({ success: true });
+  } catch (e) {
+    console.error("CSS Jumper: 復元エラー", e);
+    sendResponse({ success: false, error: e.message });
+  }
+}
+
+// ビューポートサイズに合わせてウィンドウをリサイズ
+async function resizeToViewport(targetWidth, targetHeight, tabId, sendResponse) {
+  try {
+    var tab = await chrome.tabs.get(tabId);
+    var win = await chrome.windows.get(tab.windowId);
+
+    // 現在のウィンドウサイズとビューポートの差分を取得
+    var results = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: function() {
+        return {
+          viewportWidth: document.documentElement.clientWidth,
+          viewportHeight: window.innerHeight,
+          screenWidth: screen.availWidth,
+          screenHeight: screen.availHeight
+        };
+      }
+    });
+
+    var viewport = results[0].result;
+    var diffW = win.width - viewport.viewportWidth;
+    var diffH = win.height - viewport.viewportHeight;
+
+    // 差分を加算してウィンドウサイズを設定
+    var newWidth = targetWidth + diffW;
+    var newHeight = targetHeight ? targetHeight + diffH : win.height;
+
+    // 画面サイズの上限チェック
+    var maxW = viewport.screenWidth;
+    var maxH = viewport.screenHeight;
+    if (newWidth > maxW) { newWidth = maxW; }
+    if (newHeight > maxH) { newHeight = maxH; }
+
+    // サイズのみ変更、位置は画面外にはみ出す場合のみ調整
+    var updateObj = { width: newWidth, height: newHeight };
+    if (win.left + newWidth > maxW) {
+      updateObj.left = Math.max(0, maxW - newWidth);
+    }
+    if (win.top + newHeight > maxH) {
+      updateObj.top = Math.max(0, maxH - newHeight);
+    }
+
+    await chrome.windows.update(tab.windowId, updateObj);
+
+    sendResponse({ success: true, previousWidth: win.width, previousHeight: win.height, previousLeft: win.left, previousTop: win.top });
+  } catch (e) {
+    console.error("CSS Jumper: リサイズエラー", e);
+    sendResponse({ success: false, error: e.message });
+  }
+}
 
 // CSS説明 + ジャンプ処理
 async function handleExplainAndJump(request, tabId, sendResponse) {
