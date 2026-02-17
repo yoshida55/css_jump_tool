@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>position:absolute + display:grid の構造説明</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; background: #f0f0f0; padding: 40px; }
+
+  h2 { margin-bottom: 8px; font-size: 16px; color: #333; }
+  .desc { font-size: 13px; color: #555; margin-bottom: 24px; line-height: 1.7; }
+  .label {
+    font-size: 11px; font-weight: bold;
+    background: rgba(0,0,0,0.75); color: #fff;
+    padding: 2px 8px; border-radius: 3px;
+    display: inline-block; margin-bottom: 6px;
+  }
+  .code {
+    font-family: Consolas, monospace; font-size: 11px;
+    background: rgba(0,0,0,0.55); color: #7fffb0;
+    padding: 2px 8px; border-radius: 3px;
+    display: inline-block; margin-top: 2px;
+  }
+
+  /* ==============================
+     祖父母要素
+  ============================== */
+  .grandparent {
+    position: relative;          /* ← absoluteの基準になる */
+    width: 600px;
+    height: 400px;
+    background: #dce8ff;
+    border: 3px solid #4a90d9;
+    padding: 12px;
+  }
+  .grandparent > .label { background: #4a90d9; }
+
+  /* ==============================
+     position: absolute + display: grid の要素
+     ＝ div.p-top-concept__media
+  ============================== */
+  .p-top-concept__media {
+    position: absolute;          /* ← 祖父母基準で配置 */
+    top: 60px;
+    left: 80px;
+    width: 420px;
+    height: 280px;
+
+    display: grid;               /* ← 子をグリッドで並べる */
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+
+    background: #fff3cd;
+    border: 3px dashed #f0a500;
+    padding: 10px;
+  }
+
+  /* ==============================
+     グリッドセルの中の子要素
+     ＝ img.js-parallax（position: static）
+  ============================== */
+  .js-parallax {
+    position: static;            /* ← グリッドセルの中に普通に収まる */
+    display: inline;             /* ← ブロックではなくインライン */
+    width: 100%;
+    height: 100%;
+    background: #c8f0c8;
+    border: 2px solid #3a9a3a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: #1a5c1a;
+    font-weight: bold;
+  }
+
+  /* ==============================
+     矢印・注釈エリア
+  ============================== */
+  .section {
+    margin-bottom: 48px;
+  }
+  .annotation {
+    margin-top: 16px;
+    background: #fff;
+    border-left: 4px solid #4a90d9;
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.8;
+    border-radius: 0 6px 6px 0;
+  }
+  .annotation b { color: #c00; }
+  .annotation .ok { color: #090; font-weight: bold; }
+
+  /* ==============================
+     ステップ説明
+  ============================== */
+  .steps {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 48px;
+    flex-wrap: wrap;
+  }
+  .step {
+    flex: 1;
+    min-width: 200px;
+    background: #fff;
+    border-radius: 8px;
+    padding: 16px;
+    border-top: 4px solid #888;
+  }
+  .step.s1 { border-color: #4a90d9; }
+  .step.s2 { border-color: #f0a500; }
+  .step.s3 { border-color: #3a9a3a; }
+  .step h3 { font-size: 13px; margin-bottom: 8px; }
+  .step p  { font-size: 12px; color: #555; line-height: 1.7; }
+  .step pre {
+    font-size: 11px; background: #f5f5f5;
+    padding: 8px; border-radius: 4px; margin-top: 8px;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== STEP説明 ========== -->
+<h2>構造のポイント（3要素）</h2>
+<div class="desc">
+  <code>position</code> は「自分がどこに置かれるか」<br>
+  <code>display</code> は「自分の<b>子</b>をどう並べるか」<br>
+  → 2つは別軸なので、同じ要素に両方指定できる。
+</div>
+
+<div class="steps">
+  <div class="step s1">
+    <h3>① 祖父母要素（青枠）</h3>
+    <p>absoluteの<b>基準点</b>になる要素。<br>これが <code>position: relative</code> を持つ。</p>
+    <pre>position: relative;</pre>
+  </div>
+  <div class="step s2">
+    <h3>② div.p-top-concept__media（黄破線）</h3>
+    <p>
+      <b>absolute</b> → 祖父母基準でピタッと置かれる<br>
+      <b>grid</b> → 自分の中の子を2列に並べる<br>
+      この2つが<b>同じ要素</b>に同時にかかっている。
+    </p>
+    <pre>position: absolute;
+top: 60px; left: 80px;
+display: grid;
+grid-template-columns: 1fr 1fr;</pre>
+  </div>
+  <div class="step s3">
+    <h3>③ img.js-parallax（緑セル）</h3>
+    <p>グリッドセルの中に<b>普通に</b>収まる。<br>position: static なので特別な配置は何もしていない。</p>
+    <pre>position: static;
+/* グリッドが並べてくれる */</pre>
+  </div>
+</div>
+
+<!-- ========== 実際の見た目 ========== -->
+<h2>実際の見た目</h2>
+<div class="desc">
+  青枠の中に、黄破線の箱が「絶対配置」で置かれている。<br>
+  黄破線の箱の中では、緑のセルが「グリッド」で2列に並んでいる。
+</div>
+
+<div class="section">
+
+  <!-- 祖父母 -->
+  <div class="grandparent">
+    <span class="label">① 祖父母 position: relative（青枠）</span>
+
+    <!-- これがdiv.p-top-concept__media -->
+    <div class="p-top-concept__media">
+      <span class="label" style="position:absolute;top:-26px;left:0;background:#f0a500;color:#000;">
+        ② div.p-top-concept__media　position:absolute ＋ display:grid（黄破線）
+      </span>
+
+      <!-- グリッドの子 -->
+      <div class="js-parallax">③ img.js-parallax<br>position:static<br>（グリッド1列目）</div>
+      <div class="js-parallax">③ img.js-parallax<br>position:static<br>（グリッド2列目）</div>
+    </div>
+
+  </div>
+
+  <div class="annotation">
+    <b>「absoluteで箱ごと持ってきて、その箱の中をgridで仕切った」</b> イメージ。<br><br>
+    <span class="ok">✅ position: absolute</span> → 黄破線の箱を、青枠の左上(80px, 60px)に置く<br>
+    <span class="ok">✅ display: grid</span> → 黄破線の箱の中を2列に分割する<br>
+    → 緑セル（img）はその列の中に自動で収まるだけ。位置指定は不要。
+  </div>
+
+</div>
+
+</body>
+</html>

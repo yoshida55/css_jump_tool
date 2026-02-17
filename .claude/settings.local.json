@@ -35,7 +35,8 @@
       "Bash(curl:*)",
       "WebSearch",
       "WebFetch(domain:gemini.google.com)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(\"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-jumper\\\\content.js\":*)"
     ]
   }
 }

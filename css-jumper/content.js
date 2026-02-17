@@ -856,6 +856,12 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     sendResponse({ active: boxModelActive });
   }
 
+  // 配置方法を解析（トグル）
+  if (message.action === "analyzeLayout") {
+    toggleLayoutAnalysis();
+    sendResponse({ analyzed: true });
+  }
+
   return true;
 });
 
@@ -1113,13 +1119,14 @@ function removeSectionOutline() {
   sectionOutlineVisible = false;
 }
 
-// Flex階層の深さを計算（親のflexコンテナを何個持つか）
+// Flex/Grid階層の深さを計算（親のflex/gridコンテナを何個持つか）
 function getFlexDepth(elem) {
   var depth = 0;
   var parent = elem.parentElement;
   while (parent) {
     if (parent.classList && (
       parent.classList.contains("css-jumper-flex-info") ||
+      parent.classList.contains("css-jumper-grid-info") ||
       parent.classList.contains("css-jumper-size-overlay") ||
       parent.classList.contains("css-jumper-spacing-overlay") ||
       parent.classList.contains("css-jumper-outline")
@@ -1128,7 +1135,8 @@ function getFlexDepth(elem) {
       continue;
     }
     var parentStyle = window.getComputedStyle(parent);
-    if (parentStyle.display === "flex" || parentStyle.display === "inline-flex") {
+    var d = parentStyle.display;
+    if (d === "flex" || d === "inline-flex" || d === "grid" || d === "inline-grid") {
       depth++;
     }
     parent = parent.parentElement;
@@ -1185,8 +1193,10 @@ function showFlexInfo() {
 
     var style = window.getComputedStyle(elem);
 
-    // Flexコンテナのみ対象
-    if (style.display !== "flex" && style.display !== "inline-flex") {
+    // FlexまたはGridコンテナのみ対象
+    var isFlex = style.display === "flex" || style.display === "inline-flex";
+    var isGrid = style.display === "grid" || style.display === "inline-grid";
+    if (!isFlex && !isGrid) {
       return;
     }
 
@@ -1195,13 +1205,6 @@ function showFlexInfo() {
     // 小さすぎる要素は除外
     if (rect.width < 30 || rect.height < 20) {
       return;
-    }
-
-    // Flex情報を収集
-    var dir = style.flexDirection;
-    var dirLabel = "横";
-    if (dir === "column" || dir === "column-reverse") {
-      dirLabel = "縦";
     }
 
     // 階層の深さを計算
@@ -1217,11 +1220,28 @@ function showFlexInfo() {
     // クラス名/IDを取得
     var selector = getElemSelector(elem);
 
-    // ラベルテキスト
-    var labelText = treePrefix + "flex " + dirLabel + "  " + selector;
+    var labelText, bgColor, labelClass;
 
-    // 深さに応じた色
-    var bgColor = depthColors[Math.min(depth, depthColors.length - 1)];
+    if (isFlex) {
+      // Flex情報を収集
+      var dir = style.flexDirection;
+      var dirLabel = "横";
+      if (dir === "column" || dir === "column-reverse") {
+        dirLabel = "縦";
+      }
+      labelText = treePrefix + "flex " + dirLabel + "  " + selector;
+      bgColor = depthColors[Math.min(depth, depthColors.length - 1)];
+      labelClass = "css-jumper-flex-info";
+    } else {
+      // Grid情報を収集
+      var cols = style.gridTemplateColumns ? style.gridTemplateColumns.trim().split(/\s+/).filter(function(s) { return s.length > 0; }).length : 0;
+      var rows = style.gridTemplateRows ? style.gridTemplateRows.trim().split(/\s+/).filter(function(s) { return s.length > 0; }).length : 0;
+      var gridDesc = cols > 0 ? cols + "列" : "";
+      if (rows > 0) gridDesc += (gridDesc ? " " : "") + rows + "行";
+      labelText = treePrefix + "grid " + gridDesc + "  " + selector;
+      bgColor = "rgba(0, 150, 136, 0.9)"; // teal（Flexと区別）
+      labelClass = "css-jumper-grid-info";
+    }
 
     // 画面からはみ出さないよう位置調整
     var labelLeft = rect.left + window.scrollX;
@@ -1251,7 +1271,7 @@ function showFlexInfo() {
 
     // ラベルを作成
     var label = document.createElement("div");
-    label.className = "css-jumper-flex-info";
+    label.className = labelClass;
     label.textContent = labelText;
 
     // クリックでCSS定義へジャンプ用のデータを保存
@@ -1365,6 +1385,48 @@ function showFlexInfo() {
 
     document.body.appendChild(label);
     flexCount++;
+
+    // Gridの場合：セルに枠線オーバーレイを描画
+    if (isGrid) {
+      // グリッドコンテナ自体に外枠
+      var containerOverlay = document.createElement("div");
+      containerOverlay.className = "css-jumper-grid-info";
+      containerOverlay.style.cssText =
+        "position:absolute !important;" +
+        "pointer-events:none !important;" +
+        "z-index:999993 !important;" +
+        "border:2px dashed rgba(0,150,136,0.8) !important;" +
+        "left:" + (rect.left + window.scrollX) + "px !important;" +
+        "top:" + (rect.top + window.scrollY) + "px !important;" +
+        "width:" + rect.width + "px !important;" +
+        "height:" + rect.height + "px !important;";
+      document.body.appendChild(containerOverlay);
+
+      // 各セル（直接の子要素）に点線枠
+      var children = elem.children;
+      for (var ci = 0; ci < children.length; ci++) {
+        var child = children[ci];
+        if (child.classList && (
+          child.classList.contains("css-jumper-flex-info") ||
+          child.classList.contains("css-jumper-grid-info")
+        )) continue;
+        var childRect = child.getBoundingClientRect();
+        if (childRect.width < 5 || childRect.height < 5) continue;
+        var cellOverlay = document.createElement("div");
+        cellOverlay.className = "css-jumper-grid-info";
+        cellOverlay.style.cssText =
+          "position:absolute !important;" +
+          "pointer-events:none !important;" +
+          "z-index:999992 !important;" +
+          "border:1px dashed rgba(0,150,136,0.5) !important;" +
+          "background:rgba(0,150,136,0.04) !important;" +
+          "left:" + (childRect.left + window.scrollX) + "px !important;" +
+          "top:" + (childRect.top + window.scrollY) + "px !important;" +
+          "width:" + childRect.width + "px !important;" +
+          "height:" + childRect.height + "px !important;";
+        document.body.appendChild(cellOverlay);
+      }
+    }
   });
 
   flexInfoVisible = true;
@@ -1373,9 +1435,9 @@ function showFlexInfo() {
   // 通知は手動実行時のみ（自動リロード時にうるさいため削除）
 }
 
-// Flex情報を削除
+// Flex/Grid情報を削除
 function removeFlexInfo() {
-  var labels = document.querySelectorAll(".css-jumper-flex-info");
+  var labels = document.querySelectorAll(".css-jumper-flex-info, .css-jumper-grid-info");
   for (var i = 0; i < labels.length; i++) {
     labels[i].remove();
   }
@@ -4048,4 +4110,107 @@ function updateViewportCurrentLabel() {
   if (label) {
     label.textContent = "📐" + document.documentElement.clientWidth + "px";
   }
+}
+
+// ========================================
+// 配置方法を解析（ホバー追従モード）
+// ========================================
+var layoutAnalysisActive = false;
+var layoutTooltip = null;
+var layoutHighlight = null;
+
+function toggleLayoutAnalysis() {
+  if (layoutAnalysisActive) {
+    disableLayoutAnalysis();
+    showNotification("🔍 配置解析: OFF", "success");
+  } else {
+    enableLayoutAnalysis();
+    showNotification("🔍 配置解析: ON（ホバーで表示）", "success");
+  }
+}
+
+function enableLayoutAnalysis() {
+  layoutAnalysisActive = true;
+
+  // ツールチップ作成
+  layoutTooltip = document.createElement("div");
+  layoutTooltip.id = "css-jumper-layout-tooltip";
+  layoutTooltip.style.cssText = "position:fixed;display:none;background:rgba(0,0,0,0.9);color:#fff;border-radius:6px;padding:10px 14px;z-index:999999;pointer-events:none;font-family:Consolas,Monaco,monospace;font-size:12px;line-height:1.5;max-width:420px;white-space:pre-line;box-shadow:0 2px 10px rgba(0,0,0,0.4);";
+  document.body.appendChild(layoutTooltip);
+
+  // ハイライト枠
+  layoutHighlight = document.createElement("div");
+  layoutHighlight.id = "css-jumper-layout-highlight";
+  layoutHighlight.style.cssText = "position:fixed;display:none;border:2px solid #00bcd4;background:rgba(0,188,212,0.1);z-index:999998;pointer-events:none;";
+  document.body.appendChild(layoutHighlight);
+
+  document.addEventListener("mousemove", onLayoutMouseMove, true);
+}
+
+function disableLayoutAnalysis() {
+  layoutAnalysisActive = false;
+  document.removeEventListener("mousemove", onLayoutMouseMove, true);
+  if (layoutTooltip) { layoutTooltip.remove(); layoutTooltip = null; }
+  if (layoutHighlight) { layoutHighlight.remove(); layoutHighlight = null; }
+}
+
+function onLayoutMouseMove(e) {
+  var el = document.elementFromPoint(e.clientX, e.clientY);
+  if (!el || el === layoutTooltip || el === layoutHighlight) return;
+
+  // ツールチップ内容を構築
+  var s = getComputedStyle(el);
+  var parent = el.offsetParent || el.parentElement;
+  var ps = parent ? getComputedStyle(parent) : null;
+
+  var selector = el.tagName.toLowerCase();
+  if (el.id) selector += "#" + el.id;
+  var cls = el.className;
+  if (typeof cls === "string" && cls.trim()) {
+    selector += "." + cls.trim().split(/\s+/)[0];
+  }
+
+  var parentSelector = parent ? parent.tagName.toLowerCase() : "-";
+  if (parent && parent.className && typeof parent.className === "string" && parent.className.trim()) {
+    parentSelector += "." + parent.className.trim().split(/\s+/)[0];
+  }
+
+  var lines = [];
+  lines.push("🔍 " + selector);
+  lines.push("─────────────────");
+  lines.push("position: " + s.position);
+  lines.push("display:  " + s.display);
+  if (s.position !== "static") {
+    lines.push("top: " + s.top + "  left: " + s.left);
+    lines.push("right: " + s.right + "  bottom: " + s.bottom);
+  }
+  lines.push("width: " + s.width + "  height: " + s.height);
+  if (s.zIndex !== "auto") lines.push("z-index: " + s.zIndex);
+  lines.push("─────────────────");
+  lines.push("親: " + parentSelector);
+  if (ps) {
+    lines.push("  position: " + ps.position);
+    lines.push("  display:  " + ps.display);
+  }
+
+  layoutTooltip.textContent = lines.join("\n");
+  layoutTooltip.style.display = "block";
+
+  // 位置調整（画面端で反転）
+  var tx = e.clientX + 15;
+  var ty = e.clientY + 15;
+  var tw = layoutTooltip.offsetWidth;
+  var th = layoutTooltip.offsetHeight;
+  if (tx + tw > window.innerWidth) tx = e.clientX - tw - 10;
+  if (ty + th > window.innerHeight) ty = e.clientY - th - 10;
+  layoutTooltip.style.left = tx + "px";
+  layoutTooltip.style.top = ty + "px";
+
+  // ハイライト枠
+  var rect = el.getBoundingClientRect();
+  layoutHighlight.style.display = "block";
+  layoutHighlight.style.left = rect.left + "px";
+  layoutHighlight.style.top = rect.top + "px";
+  layoutHighlight.style.width = rect.width + "px";
+  layoutHighlight.style.height = rect.height + "px";
 }

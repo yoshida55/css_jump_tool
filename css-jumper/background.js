@@ -20,7 +20,14 @@ chrome.runtime.onInstalled.addListener(function() {
       title: "🔲 CSS Jumper: セクション枠を表示",
       contexts: ["all"]
     });
-    
+
+    // 配置方法を解析
+    chrome.contextMenus.create({
+      id: "analyzeLayout",
+      title: "🔍 CSS Jumper: 配置方法を解析",
+      contexts: ["all"]
+    });
+
     console.log("CSS Jumper: メニュー作成完了");
   });
 });
@@ -116,12 +123,22 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
   
   // セクションサブメニューがクリックされた場合
   if (info.menuItemId && info.menuItemId.startsWith("section_")) {
-    chrome.tabs.sendMessage(tab.id, { 
-      action: "showSectionOutline", 
-      sectionId: info.menuItemId 
+    chrome.tabs.sendMessage(tab.id, {
+      action: "showSectionOutline",
+      sectionId: info.menuItemId
     }, function(response) {
       if (chrome.runtime.lastError) {
         console.error("CSS Jumper: showSectionOutline送信エラー", chrome.runtime.lastError);
+      }
+    });
+  }
+
+  // 配置方法を解析
+  if (info.menuItemId === "analyzeLayout") {
+    chrome.tabs.sendMessage(tab.id, { action: "analyzeLayout" }, function(response) {
+      if (chrome.runtime.lastError) {
+        console.error("CSS Jumper: analyzeLayout送信エラー", chrome.runtime.lastError);
+        notifyUserToTab(tab.id, "ページをリロードしてください（F5）", "error");
       }
     });
   }
