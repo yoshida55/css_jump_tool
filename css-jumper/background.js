@@ -806,11 +806,13 @@ function triggerBrowserHighlight(selector, type) {
 
 // VS Codeを開く（Native Messaging経由、code --goto方式）
 function openInVscode(filePath, lineNumber) {
-  console.log("CSS Jumper: VS Codeを開く", filePath, lineNumber);
+  // URLエンコードされたパスをデコード（日本語フォルダ対応）
+  var decodedPath = decodeURIComponent(filePath);
+  console.log("CSS Jumper: VS Codeを開く", decodedPath, lineNumber);
 
   chrome.runtime.sendNativeMessage(
     "com.cssjumper.open_vscode",
-    { file: filePath, line: lineNumber },
+    { file: decodedPath, line: lineNumber },
     function(response) {
       if (chrome.runtime.lastError) {
         console.error("CSS Jumper: Native Messaging失敗", chrome.runtime.lastError.message);
@@ -824,12 +826,14 @@ function openInVscode(filePath, lineNumber) {
 
 // VS Code拡張にHTTPリクエストを送ってハイライト表示
 function highlightLineInVSCode(filePath, lineNumber) {
-  console.log("CSS Jumper: VS Code行ハイライト", filePath, lineNumber);
+  // URLエンコードされたパスをデコード（日本語フォルダ対応）
+  var decodedPath = decodeURIComponent(filePath);
+  console.log("CSS Jumper: VS Code行ハイライト", decodedPath, lineNumber);
 
   fetch("http://127.0.0.1:3848/highlight-line", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filePath: filePath, lineNumber: lineNumber })
+    body: JSON.stringify({ filePath: decodedPath, lineNumber: lineNumber })
   })
   .then(function(res) { return res.json(); })
   .then(function(data) {
