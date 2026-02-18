@@ -1115,8 +1115,8 @@ async function resizeToViewport(targetWidth, targetHeight, tabId, sendResponse) 
       target: { tabId: tabId },
       func: function() {
         return {
-          viewportWidth: document.documentElement.clientWidth,
-          viewportHeight: window.innerHeight,
+          clientWidth: document.documentElement.clientWidth,
+          innerHeight: window.innerHeight,
           screenWidth: screen.availWidth,
           screenHeight: screen.availHeight
         };
@@ -1124,8 +1124,8 @@ async function resizeToViewport(targetWidth, targetHeight, tabId, sendResponse) 
     });
 
     var viewport = results[0].result;
-    var diffW = win.width - viewport.viewportWidth;
-    var diffH = win.height - viewport.viewportHeight;
+    var diffW = win.width - viewport.clientWidth;
+    var diffH = win.height - viewport.innerHeight;
 
     // 差分を加算してウィンドウサイズを設定
     var newWidth = targetWidth + diffW;

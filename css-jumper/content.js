@@ -2815,6 +2815,7 @@ var distanceFirstEl = null;
 var distanceOverlays = [];
 var viewportPresetBar = null;
 var originalWindowSize = null; // Alt+A ON前のサイズ
+var boxModelResizeHandler = null;
 
 function enableBoxModelOverlay() {
   boxModelActive = true;
@@ -3892,7 +3893,7 @@ function buildViewportPresetBar(customPresets, excluded) {
   var currentLabel = document.createElement("span");
   currentLabel.id = "css-jumper-viewport-current";
   currentLabel.style.cssText = "color:#4488FF;padding:6px 8px;font-weight:bold;";
-  currentLabel.textContent = "📐" + document.documentElement.clientWidth + "px";
+  currentLabel.textContent = "📐" + window.innerWidth + "px";
   viewportPresetBar.appendChild(currentLabel);
   addBarSep(viewportPresetBar);
 
@@ -4067,6 +4068,10 @@ function applyViewportWidth(width) {
   // storage に保存
   chrome.storage.local.set({ viewportPreset: width });
 
+  // ラベルを即座にターゲット値で更新
+  var label = document.getElementById("css-jumper-viewport-current");
+  if (label) { label.textContent = "📐" + width + "px"; }
+
   // background.jsにリサイズ依頼
   chrome.runtime.sendMessage({
     action: "resizeViewport",
@@ -4081,8 +4086,6 @@ function applyViewportWidth(width) {
         originalWindowSize.prevTop = response.previousTop;
         originalWindowSize.saved = true;
       }
-      // プリセットバーの現在値を更新
-      setTimeout(updateViewportCurrentLabel, 200);
     }
   });
 }
@@ -4108,7 +4111,7 @@ function restoreOriginalWindowSize() {
 function updateViewportCurrentLabel() {
   var label = document.getElementById("css-jumper-viewport-current");
   if (label) {
-    label.textContent = "📐" + document.documentElement.clientWidth + "px";
+    label.textContent = "📐" + window.innerWidth + "px";
   }
 }
 
