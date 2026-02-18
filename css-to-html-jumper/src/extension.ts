@@ -20,6 +20,7 @@ interface QuizHistory {
   lastReviewed: number;   // 最終復習日時（Unix timestamp）
   reviewCount: number;    // 復習回数
   evaluations?: number[];  // 評価履歴（3=簡単, 2=普通, 1=難しい）
+  questionText?: string;   // 最後に出題した問題文（重複防止用）
 }
 
 let quizHistoryMap: Map<string, QuizHistory> = new Map();
@@ -36,6 +37,8 @@ let pendingQuizEvaluation: {
   quiz: { title: string; line: number; content: string[]; category: string };
   quizAnswerDoc: vscode.TextDocument;
   newAnswerStartLine: number;
+  claudeAnswer: string;
+  answerContent: string;
 } | null = null;
 
 let statusBarItem: vscode.StatusBarItem | null = null;
@@ -155,18 +158,22 @@ function hideEvaluationStatusBar() {
 /**
  * 評価QuickPickを表示
  */
-async function showEvaluationQuickPick() {
-  const afterAnswer = await vscode.window.showQuickPick(
-    [
-      { label: '😊 簡単→削除して次へ', description: '理解済み（回答を保存しない）', eval: 3 },
-      { label: '😐 普通→保存して次へ', description: '復習したい（回答を保存）', eval: 2 },
-      { label: '😓 難しい→保存して次へ', description: '要復習（回答を保存）', eval: 1 },
-      { label: '✅ 終了', description: '', action: 'exit' }
-    ],
-    {
-      placeHolder: '理解度を評価してください'
-    }
-  );
+async function showEvaluationQuickPick(hasFactCheckError: boolean = false) {
+  const items: { label: string; description: string; eval?: number; action?: string }[] = [
+    { label: '😊 簡単→削除して次へ', description: '理解済み（回答を保存しない）', eval: 3 },
+    { label: '😐 普通→保存して次へ', description: '復習したい（回答を保存）', eval: 2 },
+    { label: '😓 難しい→保存して次へ', description: '要復習（回答を保存）', eval: 1 },
+  ];
+
+  if (hasFactCheckError) {
+    items.push({ label: '📝 メモを修正する', description: 'AIがメモの誤りを自動修正してmemo.mdも更新', action: 'correct' });
+  }
+
+  items.push({ label: '✅ 終了', description: '', action: 'exit' });
+
+  const afterAnswer = await vscode.window.showQuickPick(items, {
+    placeHolder: hasFactCheckError ? '⚠ ファクトチェックで誤りが検出されました。理解度を評価またはメモを修正してください' : '理解度を評価してください'
+  });
 
   return afterAnswer;
 }
@@ -234,6 +241,130 @@ async function processEvaluation(evaluation: any) {
 
   // 次の問題へ
   await handleQuiz();
+}
+
+// ========================================
+// メモ自動修正関数
+// ========================================
+async function correctMemo() {
+  if (!pendingQuizEvaluation) { return; }
+
+  const { quiz, quizAnswerDoc, claudeAnswer, answerContent } = pendingQuizEvaluation;
+  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+  const claudeApiKey = config.get<string>('claudeApiKey', '');
+  const memoFilePath = config.get<string>('memoFilePath', '');
+
+  if (!claudeApiKey) {
+    vscode.window.showErrorMessage('Claude APIキーが設定されていません');
+    return;
+  }
+
+  // ファクトチェック部分を抽出
+  const factCheckMatch = claudeAnswer.match(/⚠\s*ファクトチェック[：:]([\s\S]*?)$/);
+  const factCheckText = factCheckMatch ? factCheckMatch[1].trim() : claudeAnswer;
+
+  // 1. Claudeにメモ修正内容を生成させる
+  const correctPrompt = `以下のメモ内容に技術的な誤りがあります。ファクトチェック結果をもとに修正してください。
+
+【元のメモ内容（見出し行を除く本文）】
+${answerContent}
+
+【ファクトチェック（誤りの指摘）】
+${factCheckText}
+
+【修正要件】
+- 元の文章構造（箇条書き・コード例など）を維持する
+- 誤っている部分のみ修正し、正しい部分は変えない
+- 見出し行（## で始まる行）は出力しない
+- 修正後の本文のみ出力（前置き・説明文・見出し不要）`;
+
+  vscode.window.showInformationMessage('⏳ AIがメモを修正中...');
+
+  let correctedContent: string;
+  try {
+    correctedContent = await askClaudeAPI('', correctPrompt);
+  } catch (e: any) {
+    vscode.window.showErrorMessage(`修正エラー: ${e.message}`);
+    return;
+  }
+
+  const fs = require('fs');
+
+  // 2. 01_memo.md を更新
+  if (memoFilePath && fs.existsSync(memoFilePath)) {
+    const memoRaw = fs.readFileSync(memoFilePath, 'utf8');
+    const memoLines = memoRaw.split('\n');
+
+    // 見出し行のインデックス（quiz.line は1ベース）
+    const headingIdx = quiz.line - 1;
+    const headingLine = memoLines[headingIdx];
+
+    // 次の同レベル以上の見出しを探してセクション末尾を特定
+    const headingLevelMatch = headingLine.match(/^(#+)/);
+    const headingLevel = headingLevelMatch ? headingLevelMatch[1].length : 2;
+    let sectionEnd = memoLines.length;
+    for (let i = headingIdx + 1; i < memoLines.length; i++) {
+      const m = memoLines[i].match(/^(#+)\s/);
+      if (m && m[1].length <= headingLevel) {
+        sectionEnd = i;
+        break;
+      }
+    }
+
+    // 見出し行を維持して本文を置き換え
+    const newMemoLines = [
+      ...memoLines.slice(0, headingIdx + 1),
+      ...correctedContent.split('\n'),
+      ...memoLines.slice(sectionEnd)
+    ];
+    const newMemoContent = newMemoLines.join('\n');
+    fs.writeFileSync(memoFilePath, newMemoContent, 'utf8');
+
+    // VS Codeで開いていれば即反映
+    const memoUri = vscode.Uri.file(memoFilePath);
+    const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === memoUri.fsPath);
+    if (openDoc) {
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(memoUri, new vscode.Range(
+        new vscode.Position(0, 0),
+        new vscode.Position(openDoc.lineCount, 0)
+      ), newMemoContent);
+      await vscode.workspace.applyEdit(edit);
+      await openDoc.save();
+    }
+  }
+
+  // 3. クイズ回答.md の⚠ファクトチェック部分を「✅ メモ修正済み」に置き換え
+  const answerContent2 = quizAnswerDoc.getText();
+  const fixedAnswerContent = answerContent2.replace(
+    /⚠\s*ファクトチェック[：:][\s\S]*?(?=\n━|$)/,
+    '✅ メモ修正済み'
+  );
+  if (fixedAnswerContent !== answerContent2) {
+    const edit2 = new vscode.WorkspaceEdit();
+    edit2.replace(quizAnswerDoc.uri, new vscode.Range(
+      new vscode.Position(0, 0),
+      new vscode.Position(quizAnswerDoc.lineCount, 0)
+    ), fixedAnswerContent);
+    await vscode.workspace.applyEdit(edit2);
+    await quizAnswerDoc.save();
+  }
+
+  vscode.window.showInformationMessage('✅ メモを修正しました（memo.md + クイズ回答.md）');
+
+  // 4. 評価を求める（修正オプションなし）
+  const afterCorrect = await showEvaluationQuickPick(false);
+  if (!afterCorrect) {
+    showEvaluationStatusBar();
+    return;
+  }
+  if (afterCorrect.action === 'exit') {
+    hideEvaluationStatusBar();
+    return;
+  }
+  if (afterCorrect.eval) {
+    await processEvaluation(afterCorrect);
+  }
 }
 
 // ========================================
@@ -705,7 +836,7 @@ ${contentPreview}
 
       if (claudeApiKey) {
         // Claude API で質問に対する回答生成
-        const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。
+        const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。また、メモ内容に技術的な誤りがあればファクトチェックとして指摘してください。
 
 【質問】
 ${questionText}
@@ -723,12 +854,17 @@ ${answerContent}
 コード
 \`\`\`
 
+⚠ ファクトチェック：（メモに技術的誤りがある場合のみ記載）
+「〜」は誤りです。正しくは〜
+
 【要件】
 - 超シンプルに、核心だけ書く
 - 見出し禁止（**答え**、**説明**、**メモの要約：** 等を使わない）
 - 箇条書きは最小限（❌⭕は特に必要な時のみ）
 - 200文字以内（コード除く）
 - 回答内に「# 」で始まる見出しを含めない
+- ファクトチェックは誤りがない場合は完全に省略（「問題ありません」等も書かない）
+- メモが正確なら回答のみ出力する
 
 【悪い例】
 **答え**
@@ -745,7 +881,7 @@ vertical-align
 
 （見出しが多すぎ、長すぎ）
 
-【良い例】
+【良い例（誤りなし）】
 vertical-align
 
 インライン要素の縦位置を調整。負の値（-0.2rem等）で下方向に微調整できる。
@@ -755,7 +891,15 @@ vertical-align
 .icon {
   vertical-align: -0.2rem;
 }
-\`\`\``;
+\`\`\`
+
+【良い例（誤りあり）】
+z-index
+
+重なり順を制御するプロパティ。positionと併用が必要。
+
+⚠ ファクトチェック：
+「子要素も含めて他の要素より前面に配置できる」は誤りです。正しくは、stacking contextが形成されるため、親のz-indexが低いと子は他のstacking context内の要素より後ろになる場合があります。`;
 
         try {
           claudeAnswer = await askClaudeAPI('', answerPrompt);
@@ -817,7 +961,39 @@ vertical-align
       let newContent: string;
       let newAnswerStartLine: number;
 
-      if (categoryExists && insertPosition !== -1) {
+      // 画像リンク・プレビューリンクを抽出（共通）
+      const imageLinks = quiz.content.filter(line =>
+        line.match(/!\[.*?\]\(.*?\)/) ||  // ![](...)
+        line.match(/\[プレビュー\]/)        // [プレビュー](...)
+      );
+      const imageLinkSection = imageLinks.length > 0
+        ? '\n\n' + imageLinks.join('\n')
+        : '';
+
+      const SEP = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+      const newEntryContent = `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
+
+      // 既存エントリを履歴JSONのquestionTextで検索（mdファイルを汚さない）
+      const prevHistory = quizHistoryMap.get(quiz.title);
+      const prevQuestionText = prevHistory?.questionText;
+      const prevEntryMarker = prevQuestionText ? `**Q: ${prevQuestionText}**` : null;
+      const existingIdx = prevEntryMarker ? currentContent.indexOf(prevEntryMarker) : -1;
+
+      if (existingIdx !== -1) {
+        // 同じメモ見出しのエントリが既存 → 重複を避けて上書き
+        const nextSep = currentContent.indexOf(SEP, existingIdx);
+        const nextCat = currentContent.indexOf('\n# ', existingIdx);
+        let endIdx: number;
+        if (nextSep !== -1 && (nextCat === -1 || nextSep < nextCat)) {
+          endIdx = nextSep;
+        } else if (nextCat !== -1) {
+          endIdx = nextCat;
+        } else {
+          endIdx = currentContent.length;
+        }
+        newContent = currentContent.slice(0, existingIdx) + newEntryContent + currentContent.slice(endIdx);
+        newAnswerStartLine = currentContent.slice(0, existingIdx).split('\n').length - 1;
+      } else if (categoryExists && insertPosition !== -1) {
         // 既存カテゴリセクション末尾に追記
         const before = lines.slice(0, insertPosition).join('\n');
         const after = insertPosition < lines.length ? '\n' + lines.slice(insertPosition).join('\n') : '';
@@ -826,7 +1002,6 @@ vertical-align
         let hasContent = false;
         for (let i = lines.length - 1; i >= 0; i--) {
           if (lines[i].trim() === categoryHeading) {
-            // この見出しから次の見出しまでに**Q:**があるか
             for (let j = i + 1; j < insertPosition; j++) {
               if (lines[j].includes('**Q:')) {
                 hasContent = true;
@@ -837,32 +1012,13 @@ vertical-align
           }
         }
 
-        // 画像リンク・プレビューリンクを抽出（改行区切りで1行ずつ表示）
-        const imageLinks = quiz.content.filter(line =>
-          line.match(/!\[.*?\]\(.*?\)/) ||  // ![](...)
-          line.match(/\[プレビュー\]/)        // [プレビュー](...)
-        );
-        const imageLinkSection = imageLinks.length > 0
-          ? '\n\n' + imageLinks.join('\n')
-          : '';
-
-        const separator = hasContent ? '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' : '';
-        const newEntry = `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
-        newContent = before + separator + newEntry + after;
+        const separator = hasContent ? SEP : '';
+        newContent = before + separator + newEntryContent + after;
         newAnswerStartLine = insertPosition + (hasContent ? 3 : 0);
       } else {
-        // 画像リンク・プレビューリンクを抽出（改行区切りで1行ずつ表示）
-        const imageLinks = quiz.content.filter(line =>
-          line.match(/!\[.*?\]\(.*?\)/) ||  // ![](...)
-          line.match(/\[プレビュー\]/)        // [プレビュー](...)
-        );
-        const imageLinkSection = imageLinks.length > 0
-          ? '\n\n' + imageLinks.join('\n')
-          : '';
-
         // 新規カテゴリ見出し作成
         const separator = currentContent.trim() ? '\n\n' : '';
-        const newSection = separator + categoryHeading + '\n\n' + `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
+        const newSection = separator + categoryHeading + '\n\n' + newEntryContent;
         newContent = currentContent + newSection;
         newAnswerStartLine = quizAnswerDoc.lineCount + (currentContent.trim() ? 4 : 2);
       }
@@ -923,11 +1079,23 @@ vertical-align
       pendingQuizEvaluation = {
         quiz: quiz,
         quizAnswerDoc: quizAnswerDoc,
-        newAnswerStartLine: newAnswerStartLine
+        newAnswerStartLine: newAnswerStartLine,
+        claudeAnswer: claudeAnswer,
+        answerContent: answerContent
       };
 
+      // questionText を履歴に保存（次回の重複検出用）
+      const historyForQ = quizHistoryMap.get(quiz.title);
+      if (historyForQ) {
+        historyForQ.questionText = questionText;
+        saveQuizHistory();
+      }
+
+      // ファクトチェックエラー検出
+      const hasFactCheckError = claudeAnswer.includes('⚠ ファクトチェック');
+
       // 答え確認後の評価選択
-      const afterAnswer = await showEvaluationQuickPick();
+      const afterAnswer = await showEvaluationQuickPick(hasFactCheckError);
 
       if (!afterAnswer) {
         // キャンセル → ステータスバーに評価待ち表示
@@ -938,6 +1106,12 @@ vertical-align
       if (afterAnswer.action === 'exit') {
         // 終了を選択 → 評価待ちクリア
         hideEvaluationStatusBar();
+        return;
+      }
+
+      if (afterAnswer.action === 'correct') {
+        // メモ修正
+        await correctMemo();
         return;
       }
 
@@ -3435,7 +3609,8 @@ ${explanation}
     }
 
     // 評価QuickPick表示
-    const afterAnswer = await showEvaluationQuickPick();
+    const hasFactCheckError = pendingQuizEvaluation.claudeAnswer?.includes('⚠ ファクトチェック') ?? false;
+    const afterAnswer = await showEvaluationQuickPick(hasFactCheckError);
 
     if (!afterAnswer) {
       // キャンセル → ステータスバー再表示
@@ -3446,6 +3621,11 @@ ${explanation}
     if (afterAnswer.action === 'exit') {
       // 終了 → 評価待ちクリア
       hideEvaluationStatusBar();
+      return;
+    }
+
+    if (afterAnswer.action === 'correct') {
+      await correctMemo();
       return;
     }
 
