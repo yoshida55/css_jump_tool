@@ -1382,6 +1382,91 @@ async function findLinkedCssFiles(htmlDocument: vscode.TextDocument): Promise<st
   return cssFiles;
 }
 
+// CSSにリンクするHTMLファイルをワークスペースから検索（ファイル名で簡易マッチ）
+async function findLinkedHtmlFiles(cssDocument: vscode.TextDocument): Promise<vscode.TextDocument[]> {
+  const cssFileName = path.basename(cssDocument.uri.fsPath);
+  const result: vscode.TextDocument[] = [];
+  const htmlUris = await vscode.workspace.findFiles('**/*.html', '**/node_modules/**', 20);
+  for (const uri of htmlUris) {
+    try {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      if (doc.getText().includes(cssFileName)) {
+        result.push(doc);
+      }
+    } catch (e) { /* 無視 */ }
+  }
+  return result;
+}
+
+// CSSドキュメント内でセクション名が一致するセクションのテキストを返す（Stage 1）
+function findCssSectionByName(cssDoc: vscode.TextDocument, targetName: string): string | null {
+  const lines = cssDoc.getText().split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].search(/[┌]/) < 0) { continue; }
+    let sectionName = '';
+    for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+      const pipeIdx = lines[j].search(/[│|]/);
+      if (pipeIdx < 0) { continue; }
+      let content = lines[j].substring(pipeIdx + 1).replace(/[│|].*$/, '').trim();
+      content = content.replace(/\/\*|\*\//g, '').trim();
+      if (content && !/^[─━┈┄┌┐└┘│|]+$/.test(content)) { sectionName = content; break; }
+    }
+    if (sectionName !== targetName) { continue; }
+    let end = lines.length - 1;
+    for (let k = i + 1; k < lines.length; k++) {
+      if (lines[k].search(/[┌]/) >= 0) { end = k - 1; break; }
+    }
+    return lines.slice(i, end + 1).join('\n');
+  }
+  return null;
+}
+
+// CSSドキュメント内でセレクタが含まれるセクションのテキストを返す（Stage 2）
+function findCssSectionBySelectors(cssDoc: vscode.TextDocument, selectors: string[]): string | null {
+  if (selectors.length === 0) { return null; }
+  const lines = cssDoc.getText().split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].search(/[┌]/) < 0) { continue; }
+    let end = lines.length - 1;
+    for (let k = i + 1; k < lines.length; k++) {
+      if (lines[k].search(/[┌]/) >= 0) { end = k - 1; break; }
+    }
+    const sectionText = lines.slice(i, end + 1).join('\n');
+    if (selectors.some(sel => sectionText.includes(sel))) { return sectionText; }
+  }
+  return null;
+}
+
+// HTMLテキスト内で罫線ボックスセクション名が一致するセクションのテキストを返す（Stage 1）
+function findHtmlBoxSectionByName(htmlLines: string[], targetName: string): string | null {
+  for (let i = 0; i < htmlLines.length; i++) {
+    if (htmlLines[i].search(/[┌]/) < 0) { continue; }
+    let sectionName = '';
+    for (let j = i + 1; j < Math.min(i + 5, htmlLines.length); j++) {
+      const pipeIdx = htmlLines[j].search(/[│|]/);
+      if (pipeIdx < 0) { continue; }
+      let content = htmlLines[j].substring(pipeIdx + 1).replace(/[│|].*$/, '').trim();
+      content = content.replace(/<!--|-->|\/\*|\*\//g, '').trim();
+      if (content && !/^[─━┈┄┌┐└┘│|]+$/.test(content)) { sectionName = content; break; }
+    }
+    if (sectionName !== targetName) { continue; }
+    let end = htmlLines.length - 1;
+    for (let k = i + 1; k < htmlLines.length; k++) {
+      if (htmlLines[k].search(/[┌]/) >= 0) { end = k - 1; break; }
+    }
+    return htmlLines.slice(i, end + 1).join('\n');
+  }
+  return null;
+}
+
+// CSSテキストからセレクタ（.class, #id）を抽出
+function extractSelectorsFromCss(cssText: string): string[] {
+  const selectors = new Set<string>();
+  for (const m of cssText.matchAll(/\.([a-zA-Z_][\w-]*)/g)) { selectors.add('.' + m[1]); }
+  for (const m of cssText.matchAll(/#([a-zA-Z_][\w-]*)/g)) { selectors.add('#' + m[1]); }
+  return [...selectors];
+}
+
 // HTMLファイルからセクション候補を3段階で検出
 function detectHtmlSections(document: vscode.TextDocument): { label: string; line: number; type: string }[] {
   const sections: { label: string; line: number; type: string }[] = [];
@@ -2948,6 +3033,136 @@ ${explanation}
         let htmlContext = '';
         let codeToSend = code;
 
+        // CSS/HTMLファイル: セクション全体を自動添付（3段階フォールバック）
+        // 特殊プリセット（セクション質問・構造改善・スケルトン・クイズ等）は除外
+        const langId = editor.document.languageId;
+        const skipSectionEnrich = isSectionQuestion || isStructural || isSkeleton || isMemoSearch || isQuiz || isHtmlGeneration;
+        if ((langId === 'css' || langId === 'html') && !skipSectionEnrich) {
+          try {
+            if (langId === 'css') {
+              const sectionRange = getCurrentSectionRange(editor);
+              if (sectionRange) {
+                const cssSection = editor.document.getText(
+                  new vscode.Range(
+                    new vscode.Position(sectionRange.start, 0),
+                    new vscode.Position(sectionRange.end + 1, 0)
+                  )
+                );
+                let htmlSection = '';
+                const htmlDocs = await findLinkedHtmlFiles(editor.document);
+
+                // Stage 1: セクション名一致
+                for (const htmlDoc of htmlDocs) {
+                  const match = findHtmlBoxSectionByName(htmlDoc.getText().split('\n'), sectionRange.sectionName);
+                  if (match) { htmlSection = match; break; }
+                }
+
+                // Stage 2: セレクタでHTML内セクションを検索
+                if (!htmlSection) {
+                  const selectors = extractSelectorsFromCss(cssSection);
+                  for (const htmlDoc of htmlDocs) {
+                    const htmlLines = htmlDoc.getText().split('\n');
+                    outer: for (const sel of selectors) {
+                      const searchStr = sel.startsWith('.') ? sel.slice(1) : sel.slice(1);
+                      for (let li = 0; li < htmlLines.length; li++) {
+                        if (!htmlLines[li].includes(searchStr)) { continue; }
+                        for (let j = li; j >= 0; j--) {
+                          if (htmlLines[j].search(/[┌]/) >= 0) {
+                            let end = htmlLines.length - 1;
+                            for (let k = j + 1; k < htmlLines.length; k++) {
+                              if (htmlLines[k].search(/[┌]/) >= 0) { end = k - 1; break; }
+                            }
+                            htmlSection = htmlLines.slice(j, end + 1).join('\n');
+                            break outer;
+                          }
+                          const tagMatch = htmlLines[j].match(/^\s*<(header|section|footer)\b/);
+                          if (tagMatch) {
+                            const endLine = findSectionEnd(htmlLines, j);
+                            htmlSection = htmlLines.slice(j, endLine + 1).join('\n');
+                            break outer;
+                          }
+                        }
+                      }
+                    }
+                    if (htmlSection) { break; }
+                  }
+                }
+
+                // Stage 3: CSSセクションのみ
+                codeToSend = `【CSSセクション: ${sectionRange.sectionName}】\n${cssSection}`;
+                if (htmlSection) {
+                  codeToSend += `\n\n【対応HTMLセクション】\n${htmlSection}`;
+                }
+              }
+            } else if (langId === 'html') {
+              let htmlSectionText = '';
+              let htmlSectionName = '';
+
+              // 罫線ボックス形式のセクション優先
+              const boxRange = getCurrentSectionRange(editor);
+              if (boxRange) {
+                const lines = editor.document.getText().split('\n');
+                htmlSectionText = lines.slice(boxRange.start, boxRange.end + 1).join('\n');
+                htmlSectionName = boxRange.sectionName;
+              } else {
+                // <header>/<section>/<footer> タグでフォールバック
+                const cursorLine = editor.selection.active.line;
+                const htmlLines = editor.document.getText().split('\n');
+                const sections = detectHtmlSections(editor.document);
+                for (let i = sections.length - 1; i >= 0; i--) {
+                  if (sections[i].line <= cursorLine) {
+                    const endLine = findSectionEnd(htmlLines, sections[i].line);
+                    if (cursorLine <= endLine) {
+                      htmlSectionText = htmlLines.slice(sections[i].line, endLine + 1).join('\n');
+                      htmlSectionName = sections[i].label.replace(/^[🔝📦🔚]\s*/, '');
+                      break;
+                    }
+                  }
+                }
+              }
+
+              if (htmlSectionText) {
+                let cssSection = '';
+                const cssFilePaths = await findLinkedCssFiles(editor.document);
+
+                for (const cssPath of cssFilePaths) {
+                  try {
+                    const cssDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(cssPath));
+                    // Stage 1: セクション名一致
+                    const match = findCssSectionByName(cssDoc, htmlSectionName);
+                    if (match) { cssSection = match; break; }
+                  } catch (e) { /* 無視 */ }
+                }
+
+                // Stage 2: HTMLのクラス/IDでCSS検索
+                if (!cssSection) {
+                  const classSelectors = [...htmlSectionText.matchAll(/class="([^"]+)"/g)]
+                    .flatMap(m => m[1].split(/\s+/).map(c => '.' + c));
+                  const idSelectors = [...htmlSectionText.matchAll(/id="([^"]+)"/g)]
+                    .map(m => '#' + m[1]);
+                  const selectors = [...classSelectors, ...idSelectors];
+                  for (const cssPath of cssFilePaths) {
+                    try {
+                      const cssDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(cssPath));
+                      const match = findCssSectionBySelectors(cssDoc, selectors);
+                      if (match) { cssSection = match; break; }
+                    } catch (e) { /* 無視 */ }
+                  }
+                }
+
+                codeToSend = `【HTMLセクション: ${htmlSectionName}】\n${htmlSectionText}`;
+                if (cssSection) {
+                  codeToSend += `\n\n【対応CSSセクション】\n${cssSection}`;
+                }
+              }
+            }
+            // その他（md等）: codeToSend = code のまま（選択行のみ）
+          } catch (e) {
+            console.error('[SectionContext] エラー:', e);
+            // エラー時は選択行のみで続行
+          }
+        }
+
         if (isSectionQuestion) {
           // セクション質問: カーソル位置のセクション全体を送信
           const sectionRange = getCurrentSectionRange(editor);
@@ -4171,72 +4386,6 @@ ${explanation}
     statusBarItem.text = statusText;
     statusBarItem.show();
   }
-
-  // ========================================
-  // Ctrl+I: AIに質問（モデル選択可能）
-  // ========================================
-  const askClaudeCommand = vscode.commands.registerCommand('cssToHtmlJumper.askClaude', async () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showWarningMessage('エディタが開かれていません');
-      return;
-    }
-
-    // 設定から使用モデルを取得
-    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
-    const aiModel = config.get<string>('aiModel', 'claude-sonnet-4-5');
-
-    // 選択範囲のコードを取得
-    const selection = editor.selection;
-    const selectedText = editor.document.getText(selection);
-
-    // 質問を入力
-    const question = await vscode.window.showInputBox({
-      prompt: '質問を入力してください',
-      placeHolder: '例: このコードを図解して'
-    });
-
-    if (!question) {
-      return;
-    }
-
-    try {
-      let response: string = '';
-      
-      // モデルに応じてAPI呼び出しを分岐
-      if (aiModel === 'gemini-3-flash') {
-        await vscode.window.withProgress({
-          location: vscode.ProgressLocation.Notification,
-          title: '🤖 Gemini 3.0 Flash で処理中...',
-          cancellable: false
-        }, async () => {
-          response = await askGeminiAPI(selectedText, question);
-        });
-      } else {
-        await vscode.window.withProgress({
-          location: vscode.ProgressLocation.Notification,
-          title: '🤖 Claude Sonnet 4.5 で処理中...',
-          cancellable: false
-        }, async () => {
-          response = await askClaudeAPI(selectedText, question);
-        });
-      }
-
-      // インライン入力ボックスで回答を表示
-      vscode.window.showInformationMessage(response, { modal: false });
-      
-      // 回答を新しいドキュメントで開く
-      const doc = await vscode.workspace.openTextDocument({
-        content: `# 質問\n${question}\n\n# 回答\n${response}`,
-        language: 'markdown'
-      });
-      await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
-
-    } catch (e: any) {
-      vscode.window.showErrorMessage(`AI質問エラー: ${e.message}`);
-    }
-  });
-  context.subscriptions.push(askClaudeCommand);
 
   // ========================================
   // 一時ファイルからSVGリンク挿入 (Ctrl+Alt+S)
