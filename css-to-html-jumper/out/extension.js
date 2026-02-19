@@ -251,8 +251,7 @@ ${factCheckText}
             ...memoLines.slice(sectionEnd)
         ];
         const newMemoContent = newMemoLines.join('\n');
-        fs.writeFileSync(memoFilePath, newMemoContent, 'utf8');
-        // VS Codeで開いていれば即反映
+        // VS Codeで開いている場合はWorkspaceEditのみ（fs.writeFileSyncと併用すると競合して未保存マークが残る）
         const memoUri = vscode.Uri.file(memoFilePath);
         const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === memoUri.fsPath);
         if (openDoc) {
@@ -260,6 +259,10 @@ ${factCheckText}
             edit.replace(memoUri, new vscode.Range(new vscode.Position(0, 0), new vscode.Position(openDoc.lineCount, 0)), newMemoContent);
             await vscode.workspace.applyEdit(edit);
             await openDoc.save();
+        }
+        else {
+            // 開いていない場合のみ直接書き込み
+            fs.writeFileSync(memoFilePath, newMemoContent, 'utf8');
         }
     }
     // 3. クイズ回答.md の⚠ファクトチェック部分を「✅ メモ修正済み」に置き換え
