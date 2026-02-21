@@ -8,6 +8,8 @@ const http = require("http");
 const https = require("https");
 const cssProperties_1 = require("./cssProperties");
 const jsProperties_1 = require("./jsProperties");
+const aiHoverProvider_1 = require("./aiHoverProvider");
+const overviewGenerator_1 = require("./overviewGenerator");
 // ========================================
 // メモ検索履歴（最新10件）
 // ========================================
@@ -1619,6 +1621,10 @@ async function extractRelatedCssRules(htmlContent, cssFilePaths) {
 let currentBrowserSelector = null;
 function activate(context) {
     console.log('CSS to HTML Jumper: 拡張機能が有効化されました');
+    // AIホバーの有効化
+    (0, aiHoverProvider_1.registerAiHoverProvider)(context);
+    // JS Overview Generator の有効化
+    (0, overviewGenerator_1.registerOverviewGenerator)(context);
     // クイズ履歴をファイルから復元
     loadQuizHistory();
     // 起動時クイズリマインダー（5秒後、1日1回のみ）

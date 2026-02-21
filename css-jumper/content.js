@@ -650,8 +650,8 @@ document.addEventListener("click", function(event) {
     return;
   }
 
-  if (event.ctrlKey && !event.altKey && !event.shiftKey) {
-    // Ctrl+クリック → CSS説明表示 + ジャンプ
+  if (event.shiftKey && !event.altKey && !event.ctrlKey) {
+    // Shift+クリック → CSS説明表示 + ジャンプ
     event.preventDefault();
     event.stopPropagation();
     requestCssExplanationAndJump(event.target);

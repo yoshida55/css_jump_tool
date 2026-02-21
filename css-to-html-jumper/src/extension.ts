@@ -5,6 +5,8 @@ import * as https from 'https';
 import * as net from 'net';
 import { cssProperties, analyzeValue } from './cssProperties';
 import { jsMethods } from './jsProperties';
+import { registerAiHoverProvider } from './aiHoverProvider';
+import { registerOverviewGenerator } from './overviewGenerator';
 
 // ========================================
 // メモ検索履歴（最新10件）
@@ -1778,6 +1780,12 @@ let currentBrowserSelector: { type: 'class' | 'id' | 'tag'; name: string; timest
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('CSS to HTML Jumper: 拡張機能が有効化されました');
+
+  // AIホバーの有効化
+  registerAiHoverProvider(context);
+
+  // JS Overview Generator の有効化
+  registerOverviewGenerator(context);
 
   // クイズ履歴をファイルから復元
   loadQuizHistory();

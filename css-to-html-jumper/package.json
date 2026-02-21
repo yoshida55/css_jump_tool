@@ -81,6 +81,11 @@
         "command": "cssToHtmlJumper.insertSvgFromTemp",
         "title": "📋 一時ファイルからSVG挿入",
         "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.generateOverview",
+        "title": "🎇 JS Overview を自動生成",
+        "category": "CSS to HTML"
       }
     ],
     "menus": {
@@ -99,6 +104,18 @@
           "command": "cssToHtmlJumper.askClaude",
           "when": "editorTextFocus",
           "group": "navigation@101"
+        },
+        {
+          "command": "cssToHtmlJumper.generateOverview",
+          "when": "editorLangId == javascript || editorLangId == typescript",
+          "group": "navigation@102"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "cssToHtmlJumper.generateOverview",
+          "when": "resourceExtname == .js || resourceExtname == .ts",
+          "group": "navigation"
         }
       ]
     },
