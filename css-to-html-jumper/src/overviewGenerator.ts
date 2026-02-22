@@ -2,6 +2,74 @@ import * as vscode from 'vscode';
 import * as https from 'https';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
+
+
+// ステータスバーアイテム（overview の新鮮さを表示）
+let overviewStatusBar: vscode.StatusBarItem | null = null;
+// 現在監視中のソースファイルパス
+let watchedSourcePath: string | null = null;
+
+/**
+ * ソースコードを SHA-256 ハッシュに変換（短縮8文字）
+ */
+function computeHash(content: string): string {
+    return crypto.createHash('sha256').update(content).digest('hex').slice(0, 8);
+}
+
+/**
+ * 生成済み overview.html から埋め込みハッシュを読み出す
+ */
+function readStoredHash(htmlPath: string): string | null {
+    try {
+        const content = fs.readFileSync(htmlPath, 'utf-8');
+        const m = content.match(/<meta name="overview-source-hash" content="([a-f0-9]+)">/);
+        return m ? m[1] : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * ステータスバーを更新する
+ * @param sourcePath  JS/TSファイルのフルパス
+ * @param sourceCode  現在のソースコード文字列
+ */
+function updateOverviewStatusBar(sourcePath: string, sourceCode: string) {
+    if (!overviewStatusBar) {
+        overviewStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
+    }
+
+    const dirPath   = path.dirname(sourcePath);
+    const baseName  = path.basename(sourcePath, path.extname(sourcePath));
+    const htmlPath  = path.join(dirPath, `${baseName}_overview.html`);
+
+    if (!fs.existsSync(htmlPath)) {
+        overviewStatusBar.hide();
+        return;
+    }
+
+    const currentHash = computeHash(sourceCode);
+    const storedHash  = readStoredHash(htmlPath);
+
+    const isFresh = (storedHash === currentHash);
+    watchedSourcePath = sourcePath;
+
+    overviewStatusBar.command = 'cssToHtmlJumper.generateOverview';
+
+    if (isFresh) {
+        overviewStatusBar.text            = `🎇 overview ✅`;
+        overviewStatusBar.tooltip         = `${baseName}_overview.html は最新です\nクリックで再生成`;
+        overviewStatusBar.color           = new vscode.ThemeColor('statusBar.foreground');
+        overviewStatusBar.backgroundColor = undefined;
+    } else {
+        overviewStatusBar.text            = `🎇 overview ⚠ 要更新`;
+        overviewStatusBar.tooltip         = `${baseName} のコードが変更されています\nクリックして overview を再生成`;
+        overviewStatusBar.color           = new vscode.ThemeColor('statusBarItem.warningForeground');
+        overviewStatusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    }
+    overviewStatusBar.show();
+}
 
 export function registerOverviewGenerator(context: vscode.ExtensionContext) {
     const generatorCommand = vscode.commands.registerCommand('cssToHtmlJumper.generateOverview', async (uri: vscode.Uri) => {
@@ -24,12 +92,28 @@ export function registerOverviewGenerator(context: vscode.ExtensionContext) {
         try {
             const doc = await vscode.workspace.openTextDocument(targetUri);
             await generateOverview(doc);
+            // 生成後にステータスバーを更新
+            updateOverviewStatusBar(targetUri.fsPath, doc.getText());
         } catch (err: any) {
             vscode.window.showErrorMessage(`ファイルの読み込みに失敗しました: ${err.message}`);
         }
     });
 
-    context.subscriptions.push(generatorCommand);
+    // JS/TS が保存されたときにハッシュを再チェック
+    const saveWatcher = vscode.workspace.onDidSaveTextDocument((doc) => {
+        if (!doc.uri.fsPath.endsWith('.js') && !doc.uri.fsPath.endsWith('.ts')) { return; }
+        updateOverviewStatusBar(doc.uri.fsPath, doc.getText());
+    });
+
+    // エディタが切り替わったときもステータスバーを更新
+    const editorWatcher = vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (!editor) { overviewStatusBar?.hide(); return; }
+        const fp = editor.document.uri.fsPath;
+        if (!fp.endsWith('.js') && !fp.endsWith('.ts')) { overviewStatusBar?.hide(); return; }
+        updateOverviewStatusBar(fp, editor.document.getText());
+    });
+
+    context.subscriptions.push(generatorCommand, saveWatcher, editorWatcher);
 }
 
 async function generateOverview(doc: vscode.TextDocument) {
@@ -79,9 +163,21 @@ async function generateOverview(doc: vscode.TextDocument) {
   ]
 }
 
+【説明の書き方ルール — 必ず守ること】
+1. desc・tip・role に他の関数名を書くときは、画面上での役割も添える。
+   悪い例: 「btnNextClickHandler で使用される」
+   良い例: 「次へボタン（btnNextClickHandler）がクリックされたときに使用される」
+2. index・counter・position などの抽象的な変数は、画面上で何を意味するか一言添える。
+   悪い例: 「カルーセルがスライドできる最大のインデックス位置を定義する」
+   良い例: 「カルーセルがスライドできる最大のインデックス位置（＝画面に表示されるスライド枚数の上限）を定義する」
+3. 専門用語は使ってよいが、必ず画面・ユーザー操作に結びつけた言葉を1つ以上含める。
+4. desc は1行20〜40文字程度のシンプルな日本語にする。
+5. tip はより詳しく、具体的な動作の例や「なぜそうなるか」まで説明する。
+
 【対象コード】
 ${codeContext.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
 `;
+
 
         const postData = JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
@@ -123,7 +219,9 @@ ${codeContext.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
         const overviewData = JSON.parse(cleanText);
 
         // HTML テンプレートにデータを差し込む (ソースコードも直接埋め込む)
-        const htmlContent = buildHtmlOverview(fileName, lineCount, overviewData, codeContext);
+        const sourceHash = computeHash(codeContext);
+        const generatedAt = new Date().toLocaleString('ja-JP', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+        const htmlContent = buildHtmlOverview(fileName, lineCount, overviewData, codeContext, sourceHash, generatedAt);
 
         // 同フォルダに overview.html を保存
         const dirPath = path.dirname(fsPath);
@@ -154,7 +252,7 @@ ${codeContext.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
 // ========================================
 // HTML テンプレート生成
 // ========================================
-function buildHtmlOverview(fileName: string, lineCount: number, data: any, sourceCode: string): string {
+function buildHtmlOverview(fileName: string, lineCount: number, data: any, sourceCode: string, sourceHash: string = '', generatedAt: string = ''): string {
     const functionsHtml = generateLeftPanelHtml(data);
     const fnMapJson = JSON.stringify(data.functions.map((f: any) => ({
         name: f.name,
@@ -173,6 +271,8 @@ function buildHtmlOverview(fileName: string, lineCount: number, data: any, sourc
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="overview-source-hash" content="${sourceHash}">
+<meta name="overview-generated-at" content="${generatedAt}">
 <title>${fileName} — 概要ビュア</title>
 <link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet">
@@ -353,6 +453,7 @@ body.ctrl-held #code-el .token.function.fn-link { cursor: pointer; background: r
     <h1>🎆 ${fileName} 概要ビュア</h1>
     <span class="badge">左ブロックをクリック → スポットライト</span>
     <span class="badge">コード内関数名は <kbd>Ctrl</kbd>+クリックでジャンプ</span>
+    ${generatedAt ? `<span class="badge" style="color:#3fb950;border-color:#3fb950;opacity:0.7">🕐 生成: ${generatedAt}</span>` : ''}
     <span id="esc-hint">ESC でハイライト解除</span>
 </div>
 

@@ -19,6 +19,17 @@ interface DiskCacheEntry {
 // --- インメモリキャッシュ（セッション中の高速アクセス用）---
 const hoverCache = new Map<string, Map<string, AiHoverInfo>>();
 const isCaching = new Set<string>(); // 処理中のファイル（多重呼び出し防止）
+const contentHashMap = new Map<string, number>(); // コンテンツハッシュ（保存時の不要なAPI呼び出し防止）
+
+// 簡易ハッシュ関数（コンテンツ変更検知用）
+function simpleHash(str: string): number {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return hash;
+}
 
 // --- ディスクキャッシュ（VS Code再起動を跨いで持続）---
 let diskCachePath = '';
@@ -91,11 +102,18 @@ export function registerAiHoverProvider(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(hoverProvider);
 
-    // 2. 保存時の自動キャッシュ更新（コードが変わったので必ず再解析）
+    // 2. 保存時の自動キャッシュ更新（コンテンツが実際に変わった場合のみ再解析）
     const saveListener = vscode.workspace.onDidSaveTextDocument(async (doc) => {
         const lang = doc.languageId;
         if (lang === 'javascript' || lang === 'typescript' || lang === 'html') {
-            // 保存時はイン-メモリキャッシュを削除して強制再解析
+            const content = doc.getText();
+            const hash = simpleHash(content);
+            const prevHash = contentHashMap.get(doc.uri.fsPath);
+            if (prevHash === hash) {
+                // コンテンツ変更なし → API呼び出しスキップ
+                return;
+            }
+            contentHashMap.set(doc.uri.fsPath, hash);
             hoverCache.delete(doc.uri.fsPath);
             await cacheFileWithAI(doc);
         }
@@ -144,6 +162,8 @@ async function cacheFileWithAI(document: vscode.TextDocument) {
                     fileCache.set(name, info);
                 }
                 hoverCache.set(fsPath, fileCache);
+                // コンテンツハッシュも記録（保存時の不要API呼び出し防止）
+                contentHashMap.set(fsPath, simpleHash(document.getText()));
                 // loadingMsgはfinallyで自動的に破棄される
                 vscode.window.setStatusBarMessage(`💾 AI ${fileCache.size} functions (cached)`, 3000);
                 return;
@@ -228,7 +248,12 @@ ${codeContext}
         if (text) {
             // Markdownのバッククォートが混ざるケースを考慮して除去
             const cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-            const responseData = JSON.parse(cleanText);
+            // GeminiがJSON文字列値内に生の改行/タブを入れることがある → エスケープして修正
+            const sanitized = cleanText.replace(
+                /"(?:[^"\\]|\\.)*"/g,
+                (match: string) => match.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+            );
+            const responseData = JSON.parse(sanitized);
             const fileCache = new Map<string, AiHoverInfo>();
             
             if (responseData.symbols && Array.isArray(responseData.symbols)) {
@@ -244,6 +269,8 @@ ${codeContext}
                 }
             }
             hoverCache.set(fsPath, fileCache);
+            // コンテンツハッシュを記録（保存時の不要API呼び出し防止）
+            contentHashMap.set(fsPath, simpleHash(document.getText()));
 
             // ---- ディスクキャッシュに保存（次回VS Code起動時はAPIをスキップできる）----
             try {
