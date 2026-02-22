@@ -160,8 +160,12 @@ function hideEvaluationStatusBar() {
 /**
  * 評価QuickPickを表示
  */
-async function showEvaluationQuickPick(hasFactCheckError: boolean = false) {
-  const items: { label: string; description: string; eval?: number; action?: string }[] = [
+async function showEvaluationQuickPick(hasFactCheckError: boolean = false, isRepeat: boolean = false) {
+  const items: { label: string; description: string; eval?: number; action?: string }[] = isRepeat ? [
+    { label: '😊 簡単→次へ', description: '覚えた！（回答はそのまま）', eval: 3 },
+    { label: '😐 普通→次へ', description: 'まあまあ（回答はそのまま）', eval: 2 },
+    { label: '😓 難しい→次へ', description: '要復習（回答はそのまま）', eval: 1 },
+  ] : [
     { label: '😊 簡単→削除して次へ', description: '理解済み（回答を保存しない）', eval: 3 },
     { label: '😐 普通→保存して次へ', description: '復習したい（回答を保存）', eval: 2 },
     { label: '😓 難しい→保存して次へ', description: '要復習（回答を保存）', eval: 1 },
@@ -174,7 +178,7 @@ async function showEvaluationQuickPick(hasFactCheckError: boolean = false) {
   items.push({ label: '✅ 終了', description: '', action: 'exit' });
 
   const afterAnswer = await vscode.window.showQuickPick(items, {
-    placeHolder: hasFactCheckError ? '⚠ ファクトチェックで誤りが検出されました。理解度を評価またはメモを修正してください' : '理解度を評価してください'
+    placeHolder: hasFactCheckError ? '⚠ ファクトチェックで誤りが検出されました。理解度を評価またはメモを修正してください' : isRepeat ? '復習完了！理解度を評価してください（回答はそのまま保存）' : '理解度を評価してください'
   });
 
   return afterAnswer;
@@ -212,8 +216,8 @@ async function processEvaluation(evaluation: any) {
 
   saveQuizHistory();
 
-  // 簡単評価の場合は回答を削除
-  if (evaluation.eval === 3) {
+  // 簡単評価の場合は回答を削除（初回のみ：2回目以降は書き込んでいないので削除しない）
+  if (evaluation.eval === 3 && pendingQuizEvaluation?.claudeAnswer !== '') {
     const currentContent = answerDoc.getText();
     const lines = currentContent.split('\n');
 
@@ -702,8 +706,10 @@ async function handleQuiz() {
     });
 
     let quiz;
-    if (reviewCandidates.length > 0) {
-      // 復習問題を優先（古い順）
+    const useReview = reviewCandidates.length > 0 && Math.random() < 0.3; // 30%で復習
+
+    if (useReview) {
+      // 復習問題（古い順で選出）
       reviewCandidates.sort((a, b) => {
         const historyA = quizHistoryMap.get(a.title)!;
         const historyB = quizHistoryMap.get(b.title)!;
@@ -711,7 +717,7 @@ async function handleQuiz() {
       });
       quiz = reviewCandidates[0];
     } else {
-      // 復習なし → 未出題 or ランダム
+      // 70%: 新規（未出題）を優先、なければ全体からランダム
       const unreviewed = filteredHeadings.filter(h => !quizHistoryMap.has(h.title));
       if (unreviewed.length > 0) {
         const randomIndex = Math.floor(Math.random() * unreviewed.length);
@@ -722,11 +728,17 @@ async function handleQuiz() {
       }
     }
 
-    // Gemini 2.5 Flash-Liteで問題生成
+    // 問題文の決定（初回のみGeminiで生成→JSON保存、2回目以降は保存済みを再利用）
     const geminiApiKey = config.get<string>('geminiApiKey', '');
+    const savedHistory = quizHistoryMap.get(quiz.title);
     let questionText = quiz.title; // フォールバック
 
-    if (geminiApiKey) {
+    if (savedHistory?.questionText) {
+      // 2回目以降：JSONに保存済みの問題文を再利用（重複防止のため固定）
+      questionText = savedHistory.questionText;
+      console.log('[Quiz] 保存済み問題文を再利用:', questionText.substring(0, 50));
+    } else if (geminiApiKey) {
+      // 初回：Geminiで問題文を新規生成
       try {
         const contentPreview = quiz.content.slice(0, 10).join('\n');
         const prompt = `以下のメモの見出しと内容から、簡潔なクイズ問題を1つ生成してください。
@@ -768,6 +780,7 @@ ${contentPreview}
           const generatedQuestion = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
           if (generatedQuestion) {
             questionText = generatedQuestion;
+            console.log('[Quiz] Gemini新規問題文を生成:', questionText.substring(0, 50));
           }
         }
       } catch (e) {
@@ -831,11 +844,91 @@ ${contentPreview}
       await new Promise(resolve => setTimeout(resolve, 3000));
       console.log('[Quiz] 3秒待機完了 → 回答取得開始');
 
-      // === 3. 回答を取得（Claude or メモ内容） ===
+      // === 3. 初回 or 既回答かを判定 ===
       const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
       const claudeApiKey = config.get<string>('claudeApiKey', '');
       const answerContent = quiz.content.join('\n');
+      const fs = require('fs');
+      const memoDir = path.dirname(memoFilePath);
+      const answerFilePath = path.join(memoDir, 'クイズ回答.md');
 
+      // 初回判定：savedHistory が存在しない場合のみ初回扱い（questionText未保存でも既回答は既回答）
+      const isFirstTime = !savedHistory;
+
+      if (!isFirstTime) {
+        // ===== 2回目以降：既存エントリにジャンプするだけ（Claude呼び出し・md書き込みなし）=====
+        console.log('[Quiz] 既回答 → 既存エントリにジャンプ（書き込みなし）');
+
+        if (fs.existsSync(answerFilePath)) {
+          quizAnswerDoc = await vscode.workspace.openTextDocument(answerFilePath);
+          const existingContent = quizAnswerDoc.getText();
+          const jumpMarker = `**Q: ${questionText}**`;
+          const jumpIdx = existingContent.indexOf(jumpMarker);
+
+          const existingTab = vscode.window.tabGroups.all
+            .flatMap(group => group.tabs)
+            .find(tab =>
+              tab.input instanceof vscode.TabInputText &&
+              tab.input.uri.fsPath === answerFilePath
+            );
+          const targetViewColumn = existingTab ? existingTab.group.viewColumn : vscode.ViewColumn.Two;
+
+          const answerEditor = await vscode.window.showTextDocument(quizAnswerDoc, {
+            viewColumn: targetViewColumn,
+            preview: false,
+            preserveFocus: false
+          });
+
+          if (jumpIdx !== -1) {
+            // questionText でヒット → 直接ジャンプ
+            const jumpLine = existingContent.slice(0, jumpIdx).split('\n').length - 1;
+            const jumpPosition = new vscode.Position(jumpLine, 0);
+            answerEditor.selection = new vscode.Selection(jumpPosition, jumpPosition);
+            answerEditor.revealRange(new vscode.Range(jumpPosition, jumpPosition), vscode.TextEditorRevealType.InCenter);
+            const jumpDecorationType = vscode.window.createTextEditorDecorationType({
+              backgroundColor: 'rgba(255, 255, 0, 0.3)'
+            });
+            answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, jumpLine + 5, 0)]);
+            setTimeout(() => jumpDecorationType.dispose(), 1500);
+          } else {
+            // 古いエントリで特定できない → quiz.title でCtrl+F自動検索
+            console.log('[Quiz] jumpIdx=-1 → findWithArgs で自動検索:', quiz.title);
+            // 検索しやすいようにquiz.titleの最初の20文字を使う
+            const searchKeyword = quiz.title.substring(0, 20);
+            await vscode.commands.executeCommand('editor.actions.findWithArgs', {
+              searchString: searchKeyword,
+              isRegex: false,
+              isCaseSensitive: false
+            });
+          }
+
+          pendingQuizEvaluation = {
+            quiz: quiz,
+            quizAnswerDoc: quizAnswerDoc,
+            newAnswerStartLine: 0,
+            claudeAnswer: '',
+            answerContent: answerContent
+          };
+        }
+
+        // 評価（2回目以降：文言を変える・削除しない）
+        const afterAnswerRepeat = await showEvaluationQuickPick(false, true);
+        if (!afterAnswerRepeat) {
+          showEvaluationStatusBar();
+          return;
+        }
+        if (afterAnswerRepeat.action === 'exit') {
+          hideEvaluationStatusBar();
+          return;
+        }
+        if (afterAnswerRepeat.eval) {
+          await processEvaluation(afterAnswerRepeat);
+          return;
+        }
+        return;
+      }
+
+      // ===== 初回：Claude呼び出し → md書き込み =====
       let claudeAnswer = '';
 
       if (claudeApiKey) {
@@ -867,6 +960,9 @@ ${answerContent}
 - 箇条書きは最小限（❌⭕は特に必要な時のみ）
 - 200文字以内（コード除く）
 - 回答内に「# 」で始まる見出しを含めない
+- 【重要】「答え」と「説明」は、あなたの知識ではなく100%「メモの内容」を正として出力してください。メモの内容がCSSの仕様と異なっていても、現場の経験則として書かれている場合はそのまま回答として出力してください。
+- 【重要】メモの内容に対して「実際には不要です」「これは誤りです」などの否定や訂正を「答え」「説明」の中に絶対に混ぜないでください。
+- 仕様との乖離や訂正がある場合は、すべて「⚠ ファクトチェック：」の項目の中だけで行ってください。
 - ファクトチェックは誤りがない場合は完全に省略（「問題ありません」等も書かない）
 - メモが正確なら回答のみ出力する
 
@@ -918,10 +1014,6 @@ z-index
       }
 
       // === 4. 回答ファイルを開く/作成（メモと同じフォルダ） ===
-      const fs = require('fs');
-      const memoDir = path.dirname(memoFilePath);
-      const answerFilePath = path.join(memoDir, 'クイズ回答.md');
-
       // ファイルが存在しない場合は作成
       if (!fs.existsSync(answerFilePath)) {
         fs.writeFileSync(answerFilePath, '', 'utf8');
@@ -977,7 +1069,7 @@ z-index
       const SEP = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
       const newEntryContent = `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
 
-      // 既存エントリを履歴JSONのquestionTextで検索（mdファイルを汚さない）
+      // 既存エントリをquestionTextで検索（Fix1でquestionText固定のため確実にヒットするはず）
       const prevHistory = quizHistoryMap.get(quiz.title);
       const prevQuestionText = prevHistory?.questionText;
       const prevEntryMarker = prevQuestionText ? `**Q: ${prevQuestionText}**` : null;
