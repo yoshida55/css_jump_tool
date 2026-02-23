@@ -672,10 +672,48 @@ document.addEventListener("click", function(event) {
   }
 }, true);
 
+// ダブルクリック時のリンク誤作動防止（300ms遅延方式）
+// 仕組み: clickを一旦止め → 300ms以内にdblclickが来たらキャンセル → 来なければリンク実行
+var _linkClickPending = null;
+document.addEventListener("click", function(event) {
+  if (!isLocalPage()) return;
+  var anchor = event.target.closest("a[href]");
+  if (!anchor) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  // 前のタイマーをクリア（2回目のクリックで1回目を上書き）
+  if (_linkClickPending) {
+    clearTimeout(_linkClickPending.timer);
+  }
+
+  var href = anchor.getAttribute("href");
+  var linkTarget = anchor.getAttribute("target");
+
+  _linkClickPending = {
+    timer: setTimeout(function() {
+      _linkClickPending = null;
+      if (!href) return; // href="" は何もしない
+      if (linkTarget === "_blank") {
+        window.open(anchor.href, "_blank");
+      } else {
+        window.location.href = anchor.href;
+      }
+    }, 300)
+  };
+}, true);
+
 // ダブルクリックでもVS Codeを開く
 // Ctrl+ダブルクリック → モバイル版CSS優先
 document.addEventListener("dblclick", function(event) {
   if (!isLocalPage()) return;
+
+  // リンク遅延タイマーをキャンセル（リンク遷移させない）
+  if (_linkClickPending) {
+    clearTimeout(_linkClickPending.timer);
+    _linkClickPending = null;
+  }
 
   event.preventDefault();
   event.stopPropagation();
