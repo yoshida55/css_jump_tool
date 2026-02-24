@@ -2,9 +2,9 @@
     "description":  "Open VS Code from CSS Jumper",
     "type":  "stdio",
     "name":  "com.cssjumper.open_vscode",
-    "path":  "D:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-jumper\\\\native-host\\\\open_vscode.exe",
+    "path":  "C:\\\\Users\\\\guest04\\\\Desktop\\\\高橋研三\\\\01_研修用\\\\96_過去の成果物（最新）\\\\css_jump_tool\\\\css-jumper\\\\native-host\\\\open_vscode.exe",
     "allowed_origins":  [
-                            "chrome-extension://hoplahamgadnacgmihmaceglgeopkfeg/",
+                            "chrome-extension://iaelchgbkjnhaljogobhbmknglclkapj/",
                             "chrome-extension://fkifbncjllbmkkbpoijpafgholpicbmg/"
                         ]
 }
