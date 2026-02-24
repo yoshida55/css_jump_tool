@@ -681,7 +681,7 @@ document.addEventListener("click", function(event) {
   if (!anchor) return;
 
   event.preventDefault();
-  event.stopPropagation();
+  // stopPropagation削除: ユーザーのaddeventlistenerが発火しなくなるため
 
   // 前のタイマーをクリア（2回目のクリックで1回目を上書き）
   if (_linkClickPending) {
@@ -694,7 +694,7 @@ document.addEventListener("click", function(event) {
   _linkClickPending = {
     timer: setTimeout(function() {
       _linkClickPending = null;
-      if (!href) return; // href="" は何もしない
+      if (!href || href === "#") return; // href="" / href="#" は何もしない（JSで処理するボタン対応）
       if (linkTarget === "_blank") {
         window.open(anchor.href, "_blank");
       } else {

@@ -37,7 +37,14 @@
       "WebFetch(domain:gemini.google.com)",
       "Bash(test:*)",
       "Bash(\"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-jumper\\\\content.js\":*)",
-      "WebFetch(domain:ai.google.dev)"
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(gh repo delete yoshida55/css_jump_pikaso_zyou --yes)",
+      "Bash(gh repo delete yoshida55/css_jump_Sneaker --yes)",
+      "Bash(gh repo delete yoshida55/css_jump_storeSite_zyou --yes)",
+      "Bash(gh repo delete yoshida55/step06_- --yes)",
+      "Bash(/c/Users/sensh/AppData/Local/Programs/gh/bin/gh --version)",
+      "Bash(cmd.exe /c \"where gh\")",
+      "Bash(cmd.exe /c \"gh repo delete yoshida55/css_jump_pikaso_zyou --yes && echo OK1 && gh repo delete yoshida55/css_jump_Sneaker --yes && echo OK2 && gh repo delete yoshida55/css_jump_storeSite_zyou --yes && echo OK3 && gh repo delete yoshida55/step06_- --yes && echo OK4\")"
     ]
   }
 }
