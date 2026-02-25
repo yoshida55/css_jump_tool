@@ -44,7 +44,11 @@
       "Bash(gh repo delete yoshida55/step06_- --yes)",
       "Bash(/c/Users/sensh/AppData/Local/Programs/gh/bin/gh --version)",
       "Bash(cmd.exe /c \"where gh\")",
-      "Bash(cmd.exe /c \"gh repo delete yoshida55/css_jump_pikaso_zyou --yes && echo OK1 && gh repo delete yoshida55/css_jump_Sneaker --yes && echo OK2 && gh repo delete yoshida55/css_jump_storeSite_zyou --yes && echo OK3 && gh repo delete yoshida55/step06_- --yes && echo OK4\")"
+      "Bash(cmd.exe /c \"gh repo delete yoshida55/css_jump_pikaso_zyou --yes && echo OK1 && gh repo delete yoshida55/css_jump_Sneaker --yes && echo OK2 && gh repo delete yoshida55/css_jump_storeSite_zyou --yes && echo OK3 && gh repo delete yoshida55/step06_- --yes && echo OK4\")",
+      "Bash(git rm --cached \"css-jumper/native-host/com.cssjumper.open_vscode.json\")",
+      "Bash(git add .gitignore)",
+      "Bash(git commit:*)",
+      "Bash(git push)"
     ]
   }
 }
