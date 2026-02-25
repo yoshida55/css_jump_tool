@@ -5,3 +5,5 @@ tmpclaude-*-cwd
 # out/ ← ビルド済みJSをGit管理（会社PCでnpm不要にするため）
 .vscode/
 css-jumper/.claude/
+# PC固有設定（パスが環境依存のためGit管理外）
+css-jumper/native-host/com.cssjumper.open_vscode.json
