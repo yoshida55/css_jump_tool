@@ -704,6 +704,104 @@ document.addEventListener("click", function(event) {
   };
 }, true);
 
+// clip-pathの値をpx換算する
+function parseClipVal(val, size) {
+  if (!val) return 0;
+  if (val.indexOf("%") !== -1) return parseFloat(val) / 100 * size;
+  return parseFloat(val) || 0;
+}
+
+// クリック位置がclip-pathの可視領域の「内側」かどうか判定
+// 内側 → その要素がターゲット, 外側 → スキップして下の要素へ
+function isClickInsideClipPath(el, clientX, clientY) {
+  var style = window.getComputedStyle(el);
+  var cp = style.clipPath;
+  if (!cp || cp === "none") return true;
+
+  var rect = el.getBoundingClientRect();
+  var px = clientX - rect.left;
+  var py = clientY - rect.top;
+  var w = rect.width;
+  var h = rect.height;
+
+  // ellipse(rx ry at cx cy)
+  var em = cp.match(/^ellipse\(\s*(\S+)\s+(\S+)\s+at\s+(\S+)\s+(\S+)\s*\)/);
+  if (em) {
+    var rx = parseClipVal(em[1], w);
+    var ry = parseClipVal(em[2], h);
+    var cx = parseClipVal(em[3], w);
+    var cy = parseClipVal(em[4], h);
+    return ((px - cx) / rx) * ((px - cx) / rx) + ((py - cy) / ry) * ((py - cy) / ry) <= 1;
+  }
+
+  // circle(r at cx cy)
+  var cm = cp.match(/^circle\(\s*(\S+)\s+at\s+(\S+)\s+(\S+)\s*\)/);
+  if (cm) {
+    var r = parseClipVal(cm[1], Math.sqrt((w * w + h * h) / 2));
+    var cx = parseClipVal(cm[2], w);
+    var cy = parseClipVal(cm[3], h);
+    return (px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r;
+  }
+
+  // inset(top right bottom left) - 矩形クリップ
+  var im = cp.match(/^inset\(\s*(\S+)(?:\s+(\S+)(?:\s+(\S+)(?:\s+(\S+))?)?)?\s*(?:round.*)?\/?\s*\)/);
+  if (im) {
+    var t = parseClipVal(im[1], h);
+    var r2 = parseClipVal(im[2] || im[1], w);
+    var b = parseClipVal(im[3] || im[1], h);
+    var l = parseClipVal(im[4] || (im[2] || im[1]), w);
+    return px >= l && px <= w - r2 && py >= t && py <= h - b;
+  }
+
+  // polygon や path は計算が複雑 → 内側と見なして通常通りターゲットにする
+  return true;
+}
+
+// 透明オーバーレイ / clip-path領域外をスキップして意味のある要素を返す
+function getBestTarget(event) {
+  var target = event.target;
+  var disabled = [];
+  var maxAttempts = 5;
+
+  // 視覚コンテンツを持つ要素タグ（絶対にスキップしない）
+  var VISUAL_TAGS = { IMG: 1, VIDEO: 1, CANVAS: 1, SVG: 1, PICTURE: 1, IFRAME: 1 };
+
+  for (var i = 0; i < maxAttempts; i++) {
+    if (!target || target === document.body || target === document.documentElement) break;
+    // img/video/canvas等は常に確定（透明でもオーバーレイ扱いしない）
+    if (VISUAL_TAGS[target.tagName]) break;
+    var style = window.getComputedStyle(target);
+    var bg = style.backgroundColor;
+
+    // clip-path: クリック位置が可視領域の外側ならスキップ、内側なら確定
+    var hasClipPath = style.clipPath && style.clipPath !== "none";
+    if (hasClipPath) {
+      if (isClickInsideClipPath(target, event.clientX, event.clientY)) break; // 内側→確定
+      // 外側→スキップ
+      target.style.pointerEvents = "none";
+      disabled.push(target);
+      target = document.elementFromPoint(event.clientX, event.clientY);
+      continue;
+    }
+
+    // 透明なposition付き要素（z-index設定あり）はスキップ
+    var isOverlay = (bg === "rgba(0, 0, 0, 0)" || bg === "transparent")
+      && style.backgroundImage === "none"
+      && style.borderTopWidth === "0px"
+      && style.position !== "static"
+      && style.zIndex !== "auto";
+    if (!isOverlay) break;
+    target.style.pointerEvents = "none";
+    disabled.push(target);
+    target = document.elementFromPoint(event.clientX, event.clientY);
+  }
+
+  for (var j = 0; j < disabled.length; j++) {
+    disabled[j].style.pointerEvents = "";
+  }
+  return target || event.target;
+}
+
 // ダブルクリックでもVS Codeを開く
 // Ctrl+ダブルクリック → モバイル版CSS優先
 document.addEventListener("dblclick", function(event) {
@@ -720,21 +818,23 @@ document.addEventListener("dblclick", function(event) {
 
   var preferMobile = event.ctrlKey;
 
+  // z-indexが高い透明オーバーレイを飛ばして最適な要素を取得
+  var bestTarget = getBestTarget(event);
+
   // デバッグ: クリックされた要素の詳細情報
   console.log("CSS Jumper: ダブルクリック検知", {
     ctrlKey: preferMobile,
-    tagName: event.target.tagName,
-    id: event.target.id,
-    className: event.target.className,
-    parentTagName: event.target.parentElement ? event.target.parentElement.tagName : null,
-    parentClassName: event.target.parentElement ? event.target.parentElement.className : null
+    tagName: bestTarget.tagName,
+    id: bestTarget.id,
+    className: bestTarget.className,
+    original: event.target !== bestTarget ? event.target.tagName + " (スキップ)" : "なし"
   });
 
   if (preferMobile) {
     showNotification("📱 モバイル版CSSを検索中...", "info");
   }
 
-  jumpToVSCode(event.target, preferMobile);
+  jumpToVSCode(bestTarget, preferMobile);
 }, true);
 
 
