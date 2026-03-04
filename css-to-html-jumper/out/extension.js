@@ -474,16 +474,87 @@ async function handleMemoSearch() {
         query = selectedText;
     }
     else {
-        const input = await vscode.window.showInputBox({
-            prompt: 'メモ内を検索',
-            placeHolder: '検索キーワードを入力...',
-            value: memoSearchHistory.length > 0 ? memoSearchHistory[0] : '',
-            valueSelection: memoSearchHistory.length > 0 ? [0, memoSearchHistory[0].length] : undefined
+        // メモファイルから見出し行を抽出（サジェスト用）
+        let headingItems = [];
+        const historyItems = memoSearchHistory.map(h => ({
+            label: `🕐 ${h}`, description: '検索履歴'
+        }));
+        try {
+            const tmpDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(memoFilePath));
+            headingItems = tmpDoc.getText().split('\n')
+                .filter(line => /^#{1,3}\s/.test(line))
+                .map(line => ({ label: line.replace(/^#+\s*/, '').trim(), description: '見出し' }));
+        }
+        catch { /* 見出し取得失敗時は候補なし */ }
+        // CSS辞書 + 追加CSS + JS辞書をサジェスト候補に追加
+        const cssQpItems = Object.keys(cssProperties_1.cssProperties).map(k => ({
+            label: k, description: cssProperties_1.cssProperties[k].description
+        }));
+        const extraCssQpProps = [
+            'border', 'border-top', 'border-bottom', 'border-left', 'border-right',
+            'border-style', 'border-color', 'border-width',
+            'font-family', 'font-weight', 'font-style',
+            'text-decoration', 'text-align', 'text-transform', 'text-indent',
+            'letter-spacing', 'word-spacing', 'white-space', 'word-break', 'text-overflow',
+            'list-style', 'list-style-type', 'cursor', 'visibility', 'pointer-events', 'user-select',
+            'clip-path', 'filter', 'backdrop-filter',
+            'animation', 'animation-name', 'animation-duration', 'animation-timing-function',
+            'animation-delay', 'animation-iteration-count', 'animation-fill-mode',
+            'flex', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
+            'grid', 'grid-template-rows', 'grid-template-areas', 'grid-column', 'grid-row',
+            'align-content', 'align-self', 'justify-self', 'place-items',
+            'min-height', 'min-width', 'max-height', 'aspect-ratio',
+            'outline', 'box-shadow', 'text-shadow', 'float', 'clear', 'vertical-align',
+            'scroll-behavior', 'will-change', 'columns', 'column-count'
+        ].filter(p => !cssProperties_1.cssProperties[p]);
+        const extraCssQpItems = extraCssQpProps.map(p => ({ label: p, description: 'CSS' }));
+        const jsQpItems = Object.keys(jsProperties_1.jsMethods).map(k => ({
+            label: k, description: jsProperties_1.jsMethods[k].description
+        }));
+        const memoAllItems = [...historyItems, ...headingItems, ...cssQpItems, ...extraCssQpItems, ...jsQpItems];
+        // QuickPick1本で完結：最後の単語で候補表示 → Enter で単語置き換え → 候補なし状態でEnter → 検索
+        query = await new Promise((resolve) => {
+            const qp = vscode.window.createQuickPick();
+            qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で検索';
+            qp.value = memoSearchHistory[0] || '';
+            qp.items = [];
+            qp.onDidChangeValue(value => {
+                // 最後の単語を取り出してフィルタ
+                const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
+                if (!lastWord || lastWord.length < 1) {
+                    qp.items = [];
+                    return;
+                }
+                const starts = memoAllItems.filter(i => i.label.toLowerCase().startsWith(lastWord));
+                const contains = memoAllItems.filter(i => !i.label.toLowerCase().startsWith(lastWord) && i.label.toLowerCase().includes(lastWord));
+                qp.items = [...starts, ...contains];
+            });
+            let accepted = false;
+            qp.onDidAccept(() => {
+                const sel = qp.selectedItems[0];
+                if (sel && qp.items.length > 0) {
+                    // 候補あり → 最後の単語を選択テキストで置き換え（続けて入力可能）
+                    const raw = sel.label.replace(/^🕐\s*/, '');
+                    const parts = qp.value.split(/[\s　]+/);
+                    parts[parts.length - 1] = raw;
+                    qp.value = parts.join(' ') + ' ';
+                    qp.items = [];
+                }
+                else {
+                    // 候補なし or 空 → 確定して検索
+                    accepted = true;
+                    resolve(qp.value.trim());
+                    qp.hide();
+                }
+            });
+            qp.onDidHide(() => { qp.dispose(); if (!accepted) {
+                resolve('');
+            } });
+            qp.show();
         });
-        if (!input) {
+        if (!query) {
             return;
         }
-        query = input;
     }
     // CSSコードが選択された場合、プロパティ名+関数名に変換（例: clip-path: inset(0 0 0 0) → clip-path inset）
     if (selectedText) {
@@ -2930,10 +3001,78 @@ ${explanation}
         }
         const selection = editor.selection;
         const code = editor.document.getText(selection).trim();
-        // Step 1: InputBoxで追加質問を入力
-        const userInput = await vscode.window.showInputBox({
-            prompt: '質問を入力（空欄でプリセット選択へ）',
-            placeHolder: '例: <div class="slide"></div>について'
+        // Step 1: CSS/JSプロパティサジェスト付きQuickPickで入力
+        // CSS辞書（description付き）
+        const cssItems = Object.keys(cssProperties_1.cssProperties).map(k => ({
+            label: k, description: cssProperties_1.cssProperties[k].description
+        }));
+        // 辞書にない追加CSSプロパティ
+        const extraCssProps = [
+            'border', 'border-top', 'border-bottom', 'border-left', 'border-right',
+            'border-style', 'border-color', 'border-width',
+            'font-family', 'font-weight', 'font-style',
+            'text-decoration', 'text-align', 'text-transform', 'text-indent',
+            'letter-spacing', 'word-spacing', 'white-space', 'word-break', 'text-overflow',
+            'list-style', 'list-style-type', 'list-style-image',
+            'cursor', 'visibility', 'pointer-events', 'user-select', 'resize',
+            'clip-path', 'filter', 'backdrop-filter', 'mix-blend-mode',
+            'animation', 'animation-name', 'animation-duration', 'animation-timing-function',
+            'animation-delay', 'animation-iteration-count', 'animation-fill-mode', 'animation-direction',
+            'flex', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
+            'grid', 'grid-template-rows', 'grid-template-areas', 'grid-column', 'grid-row',
+            'align-content', 'align-self', 'justify-self', 'justify-items', 'place-items', 'place-content',
+            'column-gap', 'row-gap',
+            'min-height', 'min-width', 'max-height',
+            'aspect-ratio',
+            'outline', 'outline-offset', 'outline-color', 'outline-style', 'outline-width',
+            'box-shadow', 'text-shadow',
+            'float', 'clear', 'vertical-align',
+            'counter-reset', 'counter-increment', 'content',
+            'scroll-behavior', 'scroll-snap-type', 'will-change',
+            'columns', 'column-count', 'column-width'
+        ].filter(p => !cssProperties_1.cssProperties[p]);
+        const extraCssItems = extraCssProps.map(p => ({ label: p, description: 'CSS' }));
+        // JS辞書（description付き）
+        const jsItems = Object.keys(jsProperties_1.jsMethods).map(k => ({
+            label: k, description: jsProperties_1.jsMethods[k].description
+        }));
+        const allSuggestItems = [...cssItems, ...extraCssItems, ...jsItems];
+        // QuickPick1本で完結：最後の単語で候補表示 → Enter で単語置き換え → 候補なし状態でEnter → 確定
+        const userInput = await new Promise((resolve) => {
+            const qp = vscode.window.createQuickPick();
+            qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で質問';
+            qp.items = [];
+            qp.onDidChangeValue(value => {
+                const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
+                if (!lastWord || lastWord.length < 1) {
+                    qp.items = [];
+                    return;
+                }
+                const starts = allSuggestItems.filter(i => i.label.toLowerCase().startsWith(lastWord));
+                const contains = allSuggestItems.filter(i => !i.label.toLowerCase().startsWith(lastWord) && i.label.toLowerCase().includes(lastWord));
+                qp.items = [...starts, ...contains];
+            });
+            let accepted = false;
+            qp.onDidAccept(() => {
+                const sel = qp.selectedItems[0];
+                if (sel && qp.items.length > 0) {
+                    // 候補あり → 最後の単語を選択テキストで置き換え
+                    const parts = qp.value.split(/[\s　]+/);
+                    parts[parts.length - 1] = sel.label;
+                    qp.value = parts.join(' ') + ' ';
+                    qp.items = [];
+                }
+                else {
+                    // 候補なし → 確定
+                    accepted = true;
+                    resolve(qp.value.trim() || '');
+                    qp.hide();
+                }
+            });
+            qp.onDidHide(() => { qp.dispose(); if (!accepted) {
+                resolve(undefined);
+            } });
+            qp.show();
         });
         if (userInput === undefined) {
             return; // キャンセル
