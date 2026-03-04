@@ -363,7 +363,7 @@ ${query}
 - typoや表記ゆれも考慮する
 - **最大3件のみ**抽出（関連度が最も高いものだけ、厳選すること）
 - **必ず異なるセクション（トピック）から選ぶ**（連続した行番号NG、離れた箇所から）
-- **具体的な答え・パス・数値・コードが書かれている行を優先**（見出し行より中身の行を選ぶ）
+- 見出し行（##で始まる）やコードブロックの開始行を優先（ジャンプ先として正確なため）
 - 類似内容・同じセクションの重複は絶対に避ける
 
 【出力形式】
@@ -387,10 +387,11 @@ JSON配列で返す。説明文は不要。必ず3件以内。
                     parts: [{ text: prompt }]
                 }],
             generationConfig: {
-                temperature: 0.3, // 精度重視で低めに
+                temperature: 0.3,
                 maxOutputTokens: 4096,
+                responseMimeType: 'application/json',
                 thinkingConfig: {
-                    thinkingLevel: 'MINIMAL' // 内部推論を最小化→高速化（精度はほぼ維持）
+                    thinkingLevel: 'MINIMAL'
                 }
             }
         });
@@ -471,6 +472,19 @@ async function handleMemoSearch() {
             return;
         }
         query = input;
+    }
+    // CSSコードが選択された場合、プロパティ名+関数名に変換（例: clip-path: inset(0 0 0 0) → clip-path inset）
+    if (selectedText) {
+        const cssMatch = query.match(/^([\w-]+)\s*:\s*([\w-]+)\s*\(/);
+        if (cssMatch) {
+            query = `${cssMatch[1]} ${cssMatch[2]}`;
+        }
+        else {
+            const propOnly = query.match(/^([\w-]+)\s*:/);
+            if (propOnly) {
+                query = propOnly[1];
+            }
+        }
     }
     // 前回の検索ワードを保持
     memoSearchHistory = [query];
