@@ -3,7 +3,8 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(netstat:*)",
-      "Read(//c/Users/sensh/.claude/skills/memo-format/**)"
+      "Read(//c/Users/sensh/.claude/skills/memo-format/**)",
+      "Bash(\"D:/50_knowledge/01_memo.md\":*)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format"
