@@ -63,6 +63,16 @@
         "category": "CSS to HTML"
       },
       {
+        "command": "cssToHtmlJumper.nextMemoResult",
+        "title": "📝 メモ検索結果: 次へ",
+        "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.prevMemoResult",
+        "title": "📝 メモ検索結果: 前へ",
+        "category": "CSS to HTML"
+      },
+      {
         "command": "cssToHtmlJumper.quiz",
         "title": "🎯 クイズ",
         "category": "CSS to HTML"
@@ -167,6 +177,16 @@
       {
         "command": "cssToHtmlJumper.insertSvgFromTemp",
         "key": "ctrl+alt+s",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.nextMemoResult",
+        "key": "ctrl+shift+down",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "cssToHtmlJumper.prevMemoResult",
+        "key": "ctrl+shift+up",
         "when": "editorTextFocus"
       }
     ],

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
@@ -12,6 +13,12 @@ import { registerOverviewGenerator } from './overviewGenerator';
 // メモ検索履歴（最新10件）
 // ========================================
 let memoSearchHistory: string[] = [];
+
+// ========================================
+// メモ検索結果（Ctrl+Shift+↓/↑で切り替え用）
+// ========================================
+let lastMemoResults: { line: number; keyword: string; preview: string; memoFilePath: string }[] = [];
+let lastMemoResultIndex = 0;
 
 // ========================================
 // クイズ履歴（間隔反復学習用）
@@ -435,11 +442,12 @@ ${query}
 
 【指示】
 - **意味理解を最優先**: 検索クエリの意図を理解し、その目的を達成するコードや説明を探す
+- **固有名詞・プラットフォームを最重視**: クエリに「WordPress」「React」「Python」等の固有名詞があれば、**その単語が実際に含まれるセクションのみ**を最優先で選ぶ。含まれないセクションは関連度が高くても下位にすること
 - **コードブロックを理解する**: \`\`\`で囲まれたコード例があれば、その機能・目的を解析する
   例: 「配列をソート」→ sort(), sorted() 等のメソッド使用例やソートアルゴリズムの説明を探す
   例: 「ループ処理」→ for文, while文, forEach等の実装例を探す
 - **コードと説明のペア**: コード例とその説明文が近い場合、両方を含むセクションを優先
-- **技術的な同義語・関連語を考慮**: 
+- **技術的な同義語・関連語を考慮**:
   例: 「関数」→「メソッド」「function」「def」も含む
   例: 「繰り返し」→「ループ」「for」「while」も含む
 - 単語の順序は問わない、離れていてもOK
@@ -539,16 +547,25 @@ async function handleMemoSearch() {
     return;
   }
 
-  // 検索クエリ入力（前回の値を初期表示）
-  const query = await vscode.window.showInputBox({
-    prompt: 'メモ内を検索',
-    placeHolder: '検索キーワードを入力...',
-    value: memoSearchHistory.length > 0 ? memoSearchHistory[0] : '',
-    valueSelection: memoSearchHistory.length > 0 ? [0, memoSearchHistory[0].length] : undefined
-  });
+  // 選択テキストがあれば即検索、なければ入力ボックス
+  const activeEditor = vscode.window.activeTextEditor;
+  const selection = activeEditor?.selection;
+  const selectedText = (selection && !selection.isEmpty)
+    ? activeEditor!.document.getText(selection).trim()
+    : '';
 
-  if (!query) {
-    return; // キャンセル
+  let query: string;
+  if (selectedText) {
+    query = selectedText;
+  } else {
+    const input = await vscode.window.showInputBox({
+      prompt: 'メモ内を検索',
+      placeHolder: '検索キーワードを入力...',
+      value: memoSearchHistory.length > 0 ? memoSearchHistory[0] : '',
+      valueSelection: memoSearchHistory.length > 0 ? [0, memoSearchHistory[0].length] : undefined
+    });
+    if (!input) { return; }
+    query = input;
   }
 
   // 前回の検索ワードを保持
@@ -570,23 +587,57 @@ async function handleMemoSearch() {
         const geminiResults = await searchWithGemini(query, memoContent);
 
         if (geminiResults.length > 0) {
-          const items = geminiResults.map(r => ({
-            label: `$(search) 行 ${r.line}: ${r.keyword}`,
-            description: r.preview,
-            detail: r.context ? `　→ ${r.context}` : '',
-            line: r.line
+          // Ctrl+Shift+↓/↑ 用に結果を保存
+          lastMemoResults = geminiResults.map(r => ({
+            line: r.line, keyword: r.keyword, preview: r.preview, memoFilePath
           }));
+          lastMemoResultIndex = 0;
 
-          const selected = await vscode.window.showQuickPick(items, {
-            placeHolder: `${geminiResults.length}件見つかりました`,
-            matchOnDetail: true
-          });
-
-          if (selected) {
+          const jumpToLine = async (lineNum: number) => {
             const editor = await vscode.window.showTextDocument(memoDoc);
-            const position = new vscode.Position(selected.line - 1, 0);
+            const position = new vscode.Position(lineNum - 1, 0);
             editor.selection = new vscode.Selection(position, position);
             editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+            const highlight = vscode.window.createTextEditorDecorationType({
+              backgroundColor: 'rgba(255, 255, 0, 0.35)',
+              isWholeLine: true
+            });
+            editor.setDecorations(highlight, [new vscode.Range(position, position)]);
+            setTimeout(() => highlight.dispose(), 3000);
+          };
+
+          if (selectedText) {
+            // 選択あり → 1件目に即ジャンプ（QuickPickなし）
+            await jumpToLine(geminiResults[0].line);
+          } else {
+            // 選択なし → QuickPickで選択
+            const memoLines = memoContent.split('\n');
+            const extractCodeNear = (lineNum: number): string => {
+              for (let i = lineNum - 1; i < Math.min(lineNum + 30, memoLines.length); i++) {
+                if (memoLines[i].startsWith('```')) {
+                  const codeLines: string[] = [];
+                  for (let j = i + 1; j < memoLines.length; j++) {
+                    if (memoLines[j].startsWith('```')) { break; }
+                    if (memoLines[j].trim()) { codeLines.push(memoLines[j].trim()); }
+                    if (codeLines.length >= 3) { break; }
+                  }
+                  return codeLines.join(' | ');
+                }
+              }
+              return '';
+            };
+            const items = geminiResults.map(r => {
+              const codePreview = extractCodeNear(r.line);
+              const detailParts: string[] = [];
+              if (r.context) { detailParts.push(`→ ${r.context}`); }
+              if (codePreview) { detailParts.push(`📝 ${codePreview}`); }
+              return { label: `$(search) 行 ${r.line}: ${r.keyword}`, description: r.preview, detail: detailParts.join('    '), line: r.line };
+            });
+            const selected = await vscode.window.showQuickPick(items, { placeHolder: `${geminiResults.length}件見つかりました`, matchOnDetail: true });
+            if (selected) {
+              lastMemoResultIndex = lastMemoResults.findIndex(r => r.line === selected.line);
+              await jumpToLine(selected.line);
+            }
           }
         } else {
           // 0件時はメッセージなし（静かに終了）
@@ -3044,7 +3095,7 @@ ${explanation}
 - コメント記号（/* */ や <!-- -->）は絶対に使わない
 - コード例を示す場合はバッククォート（\`code\`）を使う
 - 説明文のみ出力する
-- 見出しは ## で始める`, showBeside: false },
+- 見出しは ## で始める`, showBeside: false, model: 'gemini' },
     { label: '🎨 SVGで図解', prompt: `このコードの動作や構造をSVGで図解してください。
 
 【重要な制約】
@@ -3273,6 +3324,11 @@ ${explanation}
           } else if (userInput.trim() && isHtmlGeneration && !code) {
             // HTML生成 + 入力のみ（選択範囲なし）
             finalQuestion = `${selected.prompt}\n\n【追加指示】\n${userInput.trim()}`;
+          }
+          // 説明して + 選択あり → 選択部分を「注目箇所」として付加
+          const isExplainPreset = selected.label.includes('説明して');
+          if (isExplainPreset && code.trim() && !userInput.trim()) {
+            finalQuestion = `${selected.prompt}\n\n【注目箇所（ここを中心に説明）】\n\`\`\`\n${code}\n\`\`\``;
           }
           // スケルトン・構造改善は入力無視、元のプリセットプロンプトのみ使用
 
@@ -3721,8 +3777,39 @@ ${explanation}
   const searchMemoCommand = vscode.commands.registerCommand('cssToHtmlJumper.searchMemo', async () => {
     await handleMemoSearch();
   });
-
   context.subscriptions.push(searchMemoCommand);
+
+  // ========================================
+  // メモ検索結果 Ctrl+Shift+↓/↑ で切り替え
+  // ========================================
+  const jumpToMemoResult = async (delta: 1 | -1) => {
+    if (lastMemoResults.length === 0) {
+      vscode.window.showInformationMessage('メモ検索結果がありません（先にCtrl+Enterで検索してください）');
+      return;
+    }
+    lastMemoResultIndex = (lastMemoResultIndex + delta + lastMemoResults.length) % lastMemoResults.length;
+    const result = lastMemoResults[lastMemoResultIndex];
+    const memoUri = vscode.Uri.file(result.memoFilePath);
+    const memoDoc = await vscode.workspace.openTextDocument(memoUri);
+    const editor = await vscode.window.showTextDocument(memoDoc);
+    const position = new vscode.Position(result.line - 1, 0);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+    const highlight = vscode.window.createTextEditorDecorationType({
+      backgroundColor: 'rgba(255, 255, 0, 0.35)',
+      isWholeLine: true
+    });
+    editor.setDecorations(highlight, [new vscode.Range(position, position)]);
+    setTimeout(() => highlight.dispose(), 3000);
+    vscode.window.setStatusBarMessage(
+      `📝 検索結果 ${lastMemoResultIndex + 1}/${lastMemoResults.length}: ${result.keyword}`, 3000
+    );
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cssToHtmlJumper.nextMemoResult', () => jumpToMemoResult(1)),
+    vscode.commands.registerCommand('cssToHtmlJumper.prevMemoResult', () => jumpToMemoResult(-1))
+  );
 
   // ========================================
   // クイズコマンド
@@ -4794,6 +4881,51 @@ ${explanation}
     }
   });
   context.subscriptions.push(insertSvgCommand);
+
+  // ========================================
+  // 【関連】→「keyword」 → メモへのDocumentLink
+  // ========================================
+  const memoRelatedLinkProvider = vscode.languages.registerDocumentLinkProvider(
+    { scheme: 'file', language: 'markdown' },
+    {
+      provideDocumentLinks(document): vscode.DocumentLink[] {
+        const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+        const memoFilePath = config.get<string>('memoFilePath', '');
+        if (!memoFilePath || !fs.existsSync(memoFilePath)) { return []; }
+
+        const memoContent = fs.readFileSync(memoFilePath, 'utf8');
+        const memoLines = memoContent.split('\n');
+
+        const links: vscode.DocumentLink[] = [];
+        const text = document.getText();
+        const pattern = /【関連】[^「]*「([^」]+)」/g;
+
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+          const keyword = match[1];
+          const quoteStart = match.index + match[0].indexOf('「') + 1;
+          const range = new vscode.Range(
+            document.positionAt(quoteStart),
+            document.positionAt(quoteStart + keyword.length)
+          );
+
+          const lower = keyword.toLowerCase();
+          // 見出し行を優先、なければ全行
+          let foundLine = memoLines.findIndex((l: string) => l.startsWith('##') && l.toLowerCase().includes(lower));
+          if (foundLine === -1) {
+            foundLine = memoLines.findIndex((l: string) => l.toLowerCase().includes(lower));
+          }
+
+          if (foundLine >= 0) {
+            const uri = vscode.Uri.file(memoFilePath).with({ fragment: `L${foundLine + 1}` });
+            links.push(new vscode.DocumentLink(range, uri));
+          }
+        }
+        return links;
+      }
+    }
+  );
+  context.subscriptions.push(memoRelatedLinkProvider);
 
   // 定期保存（10秒ごと）
   const saveInterval = setInterval(saveQuizHistory, 10000);
