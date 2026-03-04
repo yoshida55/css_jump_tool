@@ -506,10 +506,21 @@ JSON配列で返す。説明文は不要。必ず3件以内。
           const parsed = JSON.parse(data);
           const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-          // JSON配列を抽出
-          const jsonMatch = text.match(/\[[\s\S]*\]/);
-          if (jsonMatch) {
-            const results = JSON.parse(jsonMatch[0]);
+          // JSON配列を抽出（responseMimeTypeで純粋なJSONが返ってくる想定だが念のため複数パターン対応）
+          let results: any[] | null = null;
+          try {
+            const parsed2 = JSON.parse(text.trim());
+            results = Array.isArray(parsed2) ? parsed2 : null;
+          } catch (_) {}
+          if (!results) {
+            // fallback: 先頭の[から末尾の]までを切り出す（貪欲マッチ回避）
+            const start = text.indexOf('[');
+            const end = text.lastIndexOf(']');
+            if (start !== -1 && end > start) {
+              results = JSON.parse(text.slice(start, end + 1));
+            }
+          }
+          if (results) {
             const formatted = results.map((r: any) => ({
               line: r.line,
               keyword: r.keyword || '',
