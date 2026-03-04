@@ -424,7 +424,7 @@ function fuzzySearch(query: string, lines: string[]): { line: number; text: stri
 /**
  * Gemini Flash API呼び出し
  */
-async function searchWithGemini(query: string, memoContent: string): Promise<{ line: number; keyword: string; text: string; preview: string; context: string }[]> {
+async function searchWithGemini(query: string, memoContent: string): Promise<{ line: number; keyword: string; text: string; preview: string; answer: string; context: string }[]> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('geminiApiKey', '');
 
@@ -454,23 +454,23 @@ ${query}
 - typoや表記ゆれも考慮する
 - **最大3件のみ**抽出（関連度が最も高いものだけ、厳選すること）
 - **必ず異なるセクション（トピック）から選ぶ**（連続した行番号NG、離れた箇所から）
-- 見出し行（##で始まる）やコードブロックの開始行を優先
+- **具体的な答え・パス・数値・コードが書かれている行を優先**（見出し行より中身の行を選ぶ）
 - 類似内容・同じセクションの重複は絶対に避ける
 
 【出力形式】
 JSON配列で返す。説明文は不要。必ず3件以内。
-各結果に**技術用語・キーワード**と**特徴的なコンテキスト**を必ず含める。
-- contextには、そのセクション内で検索クエリに最も関連する特徴的な1-2行を抜粋（見出し行とは別の、具体的なコード例や説明文）
+- answer: 検索クエリへの直接的な答え（パス・コマンド・値・コードなど、コピーしてすぐ使えるもの）。なければ空文字。
+- context: そのセクション内の補足説明（1行）
 
 [
-  {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容", "context": "セクション内の特徴的な行を抜粋"},
+  {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容", "answer": "直接的な答え", "context": "補足説明"},
   ...
 ]
 
 例:
 [
-  {"line": 1052, "keyword": "inline-block", "text": "## テキストなどの幅をサイズに丁度にボックスを調整する", "context": "display: inline-block; → 幅が文字幅に合う"},
-  {"line": 2536, "keyword": "fit-content", "text": "幅がひろいwidthを文字は文字幅にあわせる", "context": "width: fit-content; で中身に合わせた幅"}
+  {"line": 7624, "keyword": "Localテーマフォルダ", "text": "- 場所：wp-content/themes/", "answer": "C:\\Users\\guest04\\Local Sites\\local-test\\app\\public\\wp-content\\themes", "context": "LocalのWordPressテーマ配置場所"},
+  {"line": 1052, "keyword": "inline-block", "text": "## テキスト幅に合わせる", "answer": "display: inline-block;", "context": "幅が文字幅に合う"}
 ]`;
 
   return new Promise((resolve, reject) => {
@@ -514,6 +514,7 @@ JSON配列で返す。説明文は不要。必ず3件以内。
               keyword: r.keyword || '',
               text: r.text,
               preview: r.text.substring(0, 100),
+              answer: r.answer || '',
               context: r.context || ''
             }));
             resolve(formatted);
@@ -631,7 +632,8 @@ async function handleMemoSearch() {
               const detailParts: string[] = [];
               if (r.context) { detailParts.push(`→ ${r.context}`); }
               if (codePreview) { detailParts.push(`📝 ${codePreview}`); }
-              return { label: `$(search) 行 ${r.line}: ${r.keyword}`, description: r.preview, detail: detailParts.join('    '), line: r.line };
+              const bracketText = r.answer || r.preview;
+              return { label: `行 ${r.line}: 【${bracketText}】`, description: `🔑 ${r.keyword}`, detail: detailParts.join('    '), line: r.line };
             });
             const selected = await vscode.window.showQuickPick(items, { placeHolder: `${geminiResults.length}件見つかりました`, matchOnDetail: true });
             if (selected) {

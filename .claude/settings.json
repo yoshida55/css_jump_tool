@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(netstat:*)"
+      "Bash(netstat:*)",
+      "Read(//c/Users/sensh/.claude/skills/memo-format/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\sensh\\.claude\\skills\\memo-format"
     ]
   }
 }
