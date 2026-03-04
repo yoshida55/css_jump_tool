@@ -61,6 +61,12 @@ function saveDiskCache() {
 }
 
 export function registerAiHoverProvider(context: vscode.ExtensionContext) {
+    // AI Hover が無効な場合は何もしない
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    if (!config.get<boolean>('enableAiHover', false)) {
+        return;
+    }
+
     // 起動時にディスクキャッシュを読み込む
     loadDiskCache(context);
 

@@ -219,6 +219,11 @@
           "default": "",
           "description": "メモ検索機能で使用するメモファイルのフルパス。例: D:\\50_knowledge\\01_memo.md"
         },
+        "cssToHtmlJumper.enableAiHover": {
+          "type": "boolean",
+          "default": false,
+          "description": "AI Hover機能を有効にする（JS/TS/HTMLファイルを開くたびにGemini APIを呼び出します。デフォルト: 無効）"
+        },
         "cssToHtmlJumper.geminiApiKey": {
           "type": "string",
           "default": "",
