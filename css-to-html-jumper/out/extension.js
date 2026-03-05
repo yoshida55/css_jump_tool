@@ -336,64 +336,69 @@ function fuzzySearch(query, lines) {
  * Stage1: 見出し行（## ）に対してOR条件でFuzzy絞り込み
  * マッチしたセクションの生テキストを返す（0件なら空文字）
  */
-function fuzzyFilterSections(query, memoContent) {
+/**
+ * クエリに関連するセクションだけ抽出しサマリーを生成
+ * 見出し+本文でフィルタリング → 元ファイルの行番号を保持したまま圧縮
+ * 0件のときは全セクションのサマリーを返す（フォールバック）
+ */
+function buildFilteredSummary(query, memoContent) {
     const lines = memoContent.split('\n');
     const queryWords = query
         .toLowerCase()
         .split(/[\s　、。・]+/)
         .filter(w => w.length > 0);
-    if (queryWords.length === 0) { return ''; }
     const result = [];
-    let i = 0;
-    while (i < lines.length) {
-        if (lines[i].startsWith('## ')) {
-            const headingLower = lines[i].toLowerCase();
-            const anyMatch = queryWords.some(word => headingLower.includes(word));
-            if (anyMatch) {
-                result.push(lines[i]);
-                let j = i + 1;
-                while (j < lines.length && !lines[j].startsWith('## ')) {
-                    result.push(lines[j]);
-                    j++;
-                }
-                i = j;
-            } else {
-                i++;
+    const addSection = (start, end) => {
+        result.push(`${start + 1}: ${lines[start]}`);
+        let count = 0;
+        for (let k = start + 1; k < end && count < 3; k++) {
+            if (lines[k].trim() !== '') {
+                result.push(`${k + 1}: ${lines[k]}`);
+                count++;
             }
-        } else {
-            i++;
         }
-    }
-    return result.join('\n');
-}
-/**
- * メモのサマリーを生成（見出し行 + 各セクション冒頭3行）
- * 8000行→約1200行に圧縮してトークン削減
- */
-function buildMemoSummary(memoContent) {
-    const lines = memoContent.split('\n');
-    const result = [];
-    let i = 0;
-    while (i < lines.length) {
+        result.push('---');
+    };
+    // セクション分割 + フィルタリング（見出し + 本文で検索）
+    const matched = [];
+    for (let i = 0; i < lines.length; i++) {
         if (lines[i].startsWith('## ')) {
-            // 見出し行
-            result.push(`${i + 1}: ${lines[i]}`);
-            // 冒頭3行（空行はスキップして実質的な内容を取得）
-            let count = 0;
             let j = i + 1;
-            while (j < lines.length && count < 3 && !lines[j].startsWith('## ')) {
-                if (lines[j].trim() !== '') {
-                    result.push(`${j + 1}: ${lines[j]}`);
-                    count++;
-                }
+            while (j < lines.length && !lines[j].startsWith('## ')) {
                 j++;
             }
-            result.push('---');
-            i = j;
+            if (queryWords.length > 0) {
+                let sectionText = '';
+                for (let k = i; k < j; k++) {
+                    sectionText += lines[k].toLowerCase() + ' ';
+                }
+                if (queryWords.some(word => sectionText.includes(word))) {
+                    matched.push({ start: i, end: j });
+                }
+            }
+            else {
+                matched.push({ start: i, end: j });
+            }
+            i = j - 1;
         }
-        else {
-            i++;
+    }
+    // マッチあり → 該当セクションのみ / 0件 → 全セクション（フォールバック）
+    const targets = matched.length > 0 ? matched : (() => {
+        const all = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith('## ')) {
+                let j = i + 1;
+                while (j < lines.length && !lines[j].startsWith('## ')) {
+                    j++;
+                }
+                all.push({ start: i, end: j });
+                i = j - 1;
+            }
         }
+        return all;
+    })();
+    for (const sec of targets) {
+        addSection(sec.start, sec.end);
     }
     return result.join('\n');
 }
@@ -406,7 +411,7 @@ async function searchWithGemini(query, memoContent) {
     if (!apiKey) {
         throw new Error('Gemini API キーが設定されていません。設定 → cssToHtmlJumper.geminiApiKey を確認してください。');
     }
-    const summary = buildMemoSummary(memoContent);
+    const summary = buildFilteredSummary(query, memoContent);
     const prompt = `以下のメモファイルから「${query}」に関連する行を検索してください。
 
 【メモファイル】（各セクションの見出し＋冒頭3行のサマリー、行番号付き）
@@ -463,7 +468,7 @@ JSON配列で返す。説明文は不要。必ず3件以内。
         });
         const options = {
             hostname: 'generativelanguage.googleapis.com',
-            path: `/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
+            path: `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -642,16 +647,14 @@ async function handleMemoSearch() {
         const memoUri = vscode.Uri.file(memoFilePath);
         const memoDoc = await vscode.workspace.openTextDocument(memoUri);
         const memoContent = memoDoc.getText();
-        // Stage1: 見出しFuzzy絞り込み → Stage2: Gemini（絞り込み結果のみ送信）
-        const filteredContent = fuzzyFilterSections(query, memoContent);
-        const contentToSearch = filteredContent || memoContent; // 0件時はフルテキストにフォールバック
+        // buildFilteredSummaryで関連セクション絞り込み＋行番号保持サマリーを生成してGeminiへ送信
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: filteredContent ? '🔍→🤖 絞り込み済みをGeminiで検索中...' : '🤖 Gemini Flashで検索中（全文）...',
+            title: '🔍→🤖 Geminiで検索中...',
             cancellable: false
         }, async () => {
             try {
-                const geminiResults = await searchWithGemini(query, contentToSearch);
+                const geminiResults = await searchWithGemini(query, memoContent);
                 if (geminiResults.length > 0) {
                     // Ctrl+Shift+↓/↑ 用に結果を保存
                     lastMemoResults = geminiResults.map(r => ({
@@ -1536,7 +1539,7 @@ ${question}
         });
         const options = {
             hostname: 'generativelanguage.googleapis.com',
-            path: `/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
+            path: `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
