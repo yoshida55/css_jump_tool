@@ -406,10 +406,10 @@ function fuzzySearch(query: string, lines: string[]): { line: number; text: stri
   for (let i = 0; i < lines.length; i++) {
     const normalizedLine = lines[i].toLowerCase();
 
-    // 全単語が含まれているかチェック
-    const allWordsMatch = queryWords.every(word => normalizedLine.includes(word));
+    // いずれかの単語が含まれているかチェック（OR条件: 0件になりにくい）
+    const anyWordMatch = queryWords.some(word => normalizedLine.includes(word));
 
-    if (allWordsMatch) {
+    if (anyWordMatch) {
       results.push({
         line: i + 1,
         text: lines[i],
@@ -419,6 +419,76 @@ function fuzzySearch(query: string, lines: string[]): { line: number; text: stri
   }
 
   return results;
+}
+
+/**
+ * Stage1: 見出し行（## ）に対してOR条件でFuzzy絞り込み
+ * マッチしたセクションの生テキストを返す（0件なら空文字）
+ */
+function fuzzyFilterSections(query: string, memoContent: string): string {
+  const lines = memoContent.split('\n');
+  const queryWords = query
+    .toLowerCase()
+    .split(/[\s　、。・]+/)
+    .filter(w => w.length > 0);
+
+  if (queryWords.length === 0) { return ''; }
+
+  const result: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].startsWith('## ')) {
+      const headingLower = lines[i].toLowerCase();
+      const anyMatch = queryWords.some(word => headingLower.includes(word));
+      if (anyMatch) {
+        result.push(lines[i]);
+        let j = i + 1;
+        while (j < lines.length && !lines[j].startsWith('## ')) {
+          result.push(lines[j]);
+          j++;
+        }
+        i = j;
+      } else {
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+  return result.join('\n');
+}
+
+/**
+ * メモのサマリーを生成（見出し行 + 各セクション冒頭3行）
+ * 8000行→約1200行に圧縮してトークン削減
+ */
+function buildMemoSummary(memoContent: string): string {
+  const lines = memoContent.split('\n');
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    if (lines[i].startsWith('## ')) {
+      // 見出し行
+      result.push(`${i + 1}: ${lines[i]}`);
+      // 冒頭3行（空行はスキップして実質的な内容を取得）
+      let count = 0;
+      let j = i + 1;
+      while (j < lines.length && count < 3 && !lines[j].startsWith('## ')) {
+        if (lines[j].trim() !== '') {
+          result.push(`${j + 1}: ${lines[j]}`);
+          count++;
+        }
+        j++;
+      }
+      result.push('---');
+      i = j;
+    } else {
+      i++;
+    }
+  }
+
+  return result.join('\n');
 }
 
 /**
@@ -432,10 +502,12 @@ async function searchWithGemini(query: string, memoContent: string): Promise<{ l
     throw new Error('Gemini API キーが設定されていません。設定 → cssToHtmlJumper.geminiApiKey を確認してください。');
   }
 
+  const summary = buildMemoSummary(memoContent);
+
   const prompt = `以下のメモファイルから「${query}」に関連する行を検索してください。
 
-【メモファイル】（各行に行番号付き）
-${memoContent.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
+【メモファイル】（各セクションの見出し＋冒頭3行のサマリー、行番号付き）
+${summary}
 
 【検索クエリ】
 ${query}
@@ -668,14 +740,17 @@ async function handleMemoSearch() {
     const memoDoc = await vscode.workspace.openTextDocument(memoUri);
     const memoContent = memoDoc.getText();
 
-    // Gemini Flash検索（Fuzzyスキップ）
+    // Stage1: 見出しFuzzy絞り込み → Stage2: Gemini（絞り込み結果のみ送信）
+    const filteredContent = fuzzyFilterSections(query, memoContent);
+    const contentToSearch = filteredContent || memoContent; // 0件時はフルテキストにフォールバック
+
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
-      title: '🤖 Gemini Flashで検索中...',
+      title: filteredContent ? '🔍→🤖 絞り込み済みをGeminiで検索中...' : '🤖 Gemini Flashで検索中（全文）...',
       cancellable: false
     }, async () => {
       try {
-        const geminiResults = await searchWithGemini(query, memoContent);
+        const geminiResults = await searchWithGemini(query, contentToSearch);
 
         if (geminiResults.length > 0) {
           // Ctrl+Shift+↓/↑ 用に結果を保存
