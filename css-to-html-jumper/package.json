@@ -17,6 +17,7 @@
     "onLanguage:css",
     "onLanguage:html",
     "onLanguage:javascript",
+    "onLanguage:php",
     "onUri:vscode"
   ],
   "main": "./out/extension.js",
@@ -96,6 +97,11 @@
         "command": "cssToHtmlJumper.generateOverview",
         "title": "🎇 JS Overview を自動生成",
         "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.showPhpDoc",
+        "title": "📖 PHP/WP関数を調べる",
+        "category": "CSS to HTML"
       }
     ],
     "menus": {
@@ -130,6 +136,11 @@
       ]
     },
     "keybindings": [
+      {
+        "command": "cssToHtmlJumper.showPhpDoc",
+        "key": "ctrl+shift+j",
+        "when": "editorLangId == php"
+      },
       {
         "command": "cssToHtmlJumper.findUsage",
         "key": "ctrl+shift+h",

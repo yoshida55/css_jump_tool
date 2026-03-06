@@ -11,6 +11,7 @@ const cssProperties_1 = require("./cssProperties");
 const jsProperties_1 = require("./jsProperties");
 const aiHoverProvider_1 = require("./aiHoverProvider");
 const overviewGenerator_1 = require("./overviewGenerator");
+const phpProperties_1 = require("./phpProperties");
 // ========================================
 // メモ検索履歴（最新10件）
 // ========================================
@@ -4795,6 +4796,277 @@ ${explanation}
     // 定期保存（10秒ごと）
     const saveInterval = setInterval(saveQuizHistory, 10000);
     context.subscriptions.push({ dispose: () => clearInterval(saveInterval) });
+    // ========================================
+    // PHP ステータスバー連動（カーソルが関数名の上にある間だけ表示）
+    // ========================================
+    const phpStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 200);
+    context.subscriptions.push(phpStatusBar);
+    const updatePhpStatusBar = (editor) => {
+        if (!editor || editor.document.languageId !== 'php') {
+            phpStatusBar.hide();
+            return;
+        }
+        const position = editor.selection.active;
+        const wordRange = editor.document.getWordRangeAtPosition(position, /[a-zA-Z_][a-zA-Z0-9_]*/);
+        if (!wordRange) {
+            phpStatusBar.hide();
+            return;
+        }
+        const word = editor.document.getText(wordRange);
+        const info = phpProperties_1.phpFunctions[word];
+        if (!info) {
+            phpStatusBar.hide();
+            return;
+        }
+        phpStatusBar.text = `$(info) [${info.category ?? 'PHP'}] ${info.name} — ${info.description}`;
+        phpStatusBar.tooltip = [
+            info.params && info.params.length > 0 ? '引数:\n' + info.params.map(p => '  ' + p).join('\n') : '',
+            info.returns ? '戻り値: ' + info.returns : '',
+            info.tips && info.tips.length > 0 ? 'Tips:\n' + info.tips.map(t => '  ' + t).join('\n') : ''
+        ].filter(Boolean).join('\n\n');
+        phpStatusBar.show();
+    };
+    context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(e => updatePhpStatusBar(e.textEditor)), vscode.window.onDidChangeActiveTextEditor(e => updatePhpStatusBar(e)));
+    // ========================================
+    // PHP 日本語ホバー
+    // ========================================
+    const phpHoverProvider = vscode.languages.registerHoverProvider({ language: 'php' }, {
+        provideHover(document, position) {
+            const wordRange = document.getWordRangeAtPosition(position, /[a-zA-Z_][a-zA-Z0-9_]*/);
+            if (!wordRange) {
+                return null;
+            }
+            const word = document.getText(wordRange);
+            const info = phpProperties_1.phpFunctions[word];
+            if (!info) {
+                return null;
+            }
+            const md = new vscode.MarkdownString();
+            md.isTrusted = true;
+            md.appendMarkdown(`**[${info.category ?? 'PHP'}]** \`${info.name}\`\n\n`);
+            md.appendMarkdown(`${info.description}\n\n`);
+            if (info.params && info.params.length > 0) {
+                md.appendMarkdown(`**引数**\n`);
+                for (const p of info.params) {
+                    md.appendMarkdown(`- \`${p}\`\n`);
+                }
+                md.appendMarkdown('\n');
+            }
+            if (info.returns) {
+                md.appendMarkdown(`**戻り値**: ${info.returns}\n\n`);
+            }
+            if (info.tips && info.tips.length > 0) {
+                md.appendMarkdown(`**Tips**\n`);
+                for (const t of info.tips) {
+                    md.appendMarkdown(`- ${t}\n`);
+                }
+            }
+            return new vscode.Hover(md, wordRange);
+        }
+    });
+    context.subscriptions.push(phpHoverProvider);
+    // ========================================
+    // Ctrl+Shift+J → PHP/WP解説をソースコードにコメント挿入（Ctrl+Zで取り消し可）
+    // ========================================
+    const phpDocCache = new Map();
+    // 1行を約30文字で区切りよく折り返す
+    const wrapLine = (line, maxLen = 30) => {
+        if (line.length <= maxLen) {
+            return [line];
+        }
+        const result = [];
+        let remaining = line;
+        while (remaining.length > maxLen) {
+            // maxLen付近で区切りのよい位置を探す（スペース・句読点・記号の後）
+            let breakPos = maxLen;
+            for (let i = maxLen; i >= Math.max(maxLen - 10, 1); i--) {
+                const ch = remaining[i];
+                if (' 　、。・）】」』'.includes(ch) || (i < remaining.length - 1 && /[a-zA-Z0-9]/.test(remaining[i]) && !/[a-zA-Z0-9]/.test(remaining[i + 1]))) {
+                    breakPos = i + 1;
+                    break;
+                }
+            }
+            result.push(remaining.slice(0, breakPos).trimEnd());
+            remaining = remaining.slice(breakPos).trimStart();
+        }
+        if (remaining.length > 0) {
+            result.push(remaining);
+        }
+        return result;
+    };
+    // テキストをPHP DocBlock形式に変換（30文字折り返し付き）
+    const toPhpComment = (text) => {
+        const wrapped = text.split('\n').flatMap(l => l.trim() === '' ? [''] : wrapLine(l));
+        const lines = wrapped.map(l => ` * ${l}`);
+        return '/**\n' + lines.join('\n') + '\n */';
+    };
+    // 現在行のインデントを取得
+    const getIndent = (line) => {
+        const m = line.match(/^(\s*)/);
+        return m ? m[1] : '';
+    };
+    const showPhpDoc = vscode.commands.registerCommand('cssToHtmlJumper.showPhpDoc', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            return;
+        }
+        const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+        const apiKey = config.get('geminiApiKey', '');
+        // ── 選択あり → 選択コードの直後に解説コメントを挿入 ──
+        const selectedText = editor.document.getText(editor.selection).trim();
+        if (selectedText.length > 0) {
+            if (!apiKey) {
+                vscode.window.showWarningMessage('コード解説にはgeminiApiKeyの設定が必要です。');
+                return;
+            }
+            const statusMsg = vscode.window.setStatusBarMessage('🔍 選択コードを解説しています...');
+            const prompt = `以下のPHP/WordPressコードを中学生でもわかるように日本語で解説してください。コードブロックや見出し記号(#)は使わず、プレーンテキストで出力してください。
+
+${selectedText}
+
+【何をしているコードか】
+（全体の目的を2〜3文で）
+
+【処理の流れ】
+（手順を箇条書きで）
+
+【注意点・よくあるミス】
+（あれば記載）`;
+            try {
+                const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+                const raw = await callGeminiApi(apiKey, 'gemini-3.1-flash-lite-preview', postData);
+                const parsed = JSON.parse(raw);
+                const result = (parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '解説を取得できませんでした').trim();
+                const insertLine = editor.selection.end.line;
+                const indent = getIndent(editor.document.lineAt(editor.selection.start.line).text);
+                const comment = toPhpComment(result).split('\n').map(l => indent + l).join('\n');
+                await editor.edit(eb => {
+                    eb.insert(new vscode.Position(insertLine + 1, 0), comment + '\n');
+                });
+            }
+            catch (e) {
+                vscode.window.showErrorMessage(`エラー: ${e.message}`);
+            }
+            finally {
+                statusMsg.dispose();
+            }
+            return;
+        }
+        // ── 選択なし → カーソル下の関数名を解説して次の行に挿入 ──
+        const position = editor.selection.active;
+        const wordRange = editor.document.getWordRangeAtPosition(position, /[a-zA-Z_][a-zA-Z0-9_]*/);
+        if (!wordRange) {
+            vscode.window.showInformationMessage('カーソルを関数名の上に置いてください');
+            return;
+        }
+        const word = editor.document.getText(wordRange);
+        const indent = getIndent(editor.document.lineAt(position.line).text);
+        // キャッシュヒット → 即挿入
+        if (phpDocCache.has(word)) {
+            const comment = toPhpComment(phpDocCache.get(word)).split('\n').map(l => indent + l).join('\n');
+            await editor.edit(eb => {
+                eb.insert(new vscode.Position(position.line + 1, 0), comment + '\n');
+            });
+            return;
+        }
+        if (!apiKey) {
+            // APIキーなし → 辞書にフォールバック
+            const info = phpProperties_1.phpFunctions[word];
+            if (info) {
+                const lines = [
+                    `[${info.category ?? 'PHP'}] ${info.name}`,
+                    info.description,
+                    '',
+                    ...(info.params && info.params.length > 0 ? ['【引数】', ...info.params.map(p => `  ${p}`)] : []),
+                    ...(info.returns ? ['', `【戻り値】 ${info.returns}`] : []),
+                    ...(info.tips && info.tips.length > 0 ? ['', '【Tips】', ...info.tips.map(t => `  • ${t}`)] : [])
+                ];
+                const comment = toPhpComment(lines.join('\n')).split('\n').map(l => indent + l).join('\n');
+                await editor.edit(eb => {
+                    eb.insert(new vscode.Position(position.line + 1, 0), comment + '\n');
+                });
+            }
+            else {
+                vscode.window.showInformationMessage(`「${word}」は辞書に未登録です。geminiApiKey を設定するとAI解説が使えます。`);
+            }
+            return;
+        }
+        // Gemini 3.1 Flash-Lite で解説生成 → 挿入
+        const statusMsg = vscode.window.setStatusBarMessage(`🔍 「${word}」を調べています...`);
+        const prompt = 'PHP または WordPress の関数「' + word + '」を日本語で解説してください。\n'
+            + 'コードブロック・マークダウン記号（#, **, ` 等）は使わないでください。\n'
+            + '以下の形式でそのまま出力してください。\n\n'
+            + '📌 何をする？ メインの説明を1文で。補足があれば（）でその後につける。例: テーマのURLを取得する（子テーマがある場合は子テーマを優先）\n\n'
+            + '📤 戻り値: 実際に返ってくる値の例を文字列で示す（例: "https://example.com/wp-content/themes/mytheme/"）\n\n'
+            + '❌ 使わないと → 問題を一言で\n'
+            + '✅ 使うと    → メリットを一言で\n'
+            + '（❌と✅の間に空行を入れないこと）\n\n'
+            + '💡 いつ使う？ 具体的な場面を1〜2つ\n\n'
+            + '関数が存在しない場合は「不明な関数です」とだけ答えてください。';
+        try {
+            const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+            const raw = await callGeminiApi(apiKey, 'gemini-3.1-flash-lite-preview', postData);
+            const parsed = JSON.parse(raw);
+            const result = (parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '解説を取得できませんでした').trim();
+            phpDocCache.set(word, result);
+            const comment = toPhpComment(result).split('\n').map(l => indent + l).join('\n');
+            await editor.edit(eb => {
+                eb.insert(new vscode.Position(position.line + 1, 0), comment + '\n');
+            });
+        }
+        catch (e) {
+            vscode.window.showErrorMessage(`エラー: ${e.message}`);
+        }
+        finally {
+            statusMsg.dispose();
+        }
+    });
+    context.subscriptions.push(showPhpDoc);
+    // ========================================
+    // WP フック双方向ジャンプ（Ctrl+Click / F12）
+    // ========================================
+    const wpHookDefinitionProvider = vscode.languages.registerDefinitionProvider({ language: 'php' }, {
+        async provideDefinition(document, position) {
+            const line = document.lineAt(position.line).text;
+            // do_action / apply_filters → add_action / add_filter を検索
+            // add_action / add_filter → do_action / apply_filters を検索
+            const callMatch = line.match(/(?:do_action|apply_filters)\s*\(\s*['"]([^'"]+)['"]/);
+            const regMatch = line.match(/(?:add_action|add_filter)\s*\(\s*['"]([^'"]+)['"]/);
+            const hookName = callMatch ? callMatch[1] : regMatch ? regMatch[1] : null;
+            if (!hookName) {
+                return null;
+            }
+            const searchPatterns = callMatch
+                ? [`add_action('${hookName}'`, `add_action("${hookName}"`, `add_filter('${hookName}'`, `add_filter("${hookName}"`]
+                : [`do_action('${hookName}'`, `do_action("${hookName}"`, `apply_filters('${hookName}'`, `apply_filters("${hookName}"`];
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders) {
+                return null;
+            }
+            const results = [];
+            for (const folder of workspaceFolders) {
+                const phpFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*.php'), '{**/node_modules/**,**/vendor/**}');
+                for (const fileUri of phpFiles) {
+                    let content;
+                    try {
+                        const bytes = await vscode.workspace.fs.readFile(fileUri);
+                        content = new TextDecoder('utf-8').decode(bytes);
+                    }
+                    catch {
+                        continue;
+                    }
+                    const lines = content.split('\n');
+                    for (let i = 0; i < lines.length; i++) {
+                        if (searchPatterns.some(p => lines[i].includes(p))) {
+                            results.push(new vscode.Location(fileUri, new vscode.Position(i, 0)));
+                        }
+                    }
+                }
+            }
+            return results.length > 0 ? results : null;
+        }
+    });
+    context.subscriptions.push(wpHookDefinitionProvider);
 }
 async function deactivate() {
     // クイズ回答は自動保存されるため、特に処理なし
