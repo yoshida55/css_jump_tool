@@ -430,69 +430,97 @@ function fuzzySearch(query: string, lines: string[]): { line: number; text: stri
  * 見出し+本文でフィルタリング → 元ファイルの行番号を保持したまま圧縮
  * 0件のときは全セクションのサマリーを返す（フォールバック）
  */
-function buildFilteredSummary(query: string, memoContent: string): string {
+/**
+ * ## 区切りでセクション分割
+ */
+function parseSections(memoContent: string): Array<{ heading: string; lineStart: number; lineEnd: number }> {
   const lines = memoContent.split('\n');
-  const queryWords = query
-    .toLowerCase()
-    .split(/[\s　、。・]+/)
-    .filter(w => w.length > 0);
-
-  const result: string[] = [];
-
-  const addSection = (start: number, end: number) => {
-    result.push(`${start + 1}: ${lines[start]}`);
-    let count = 0;
-    for (let k = start + 1; k < end && count < 3; k++) {
-      if (lines[k].trim() !== '') {
-        result.push(`${k + 1}: ${lines[k]}`);
-        count++;
-      }
-    }
-    result.push('---');
-  };
-
-  // セクション分割 + フィルタリング（見出し + 本文で検索）
-  const matched: { start: number; end: number }[] = [];
+  const sections: Array<{ heading: string; lineStart: number; lineEnd: number }> = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith('## ')) {
       let j = i + 1;
       while (j < lines.length && !lines[j].startsWith('## ')) { j++; }
-
-      if (queryWords.length > 0) {
-        let sectionText = '';
-        for (let k = i; k < j; k++) { sectionText += lines[k].toLowerCase() + ' '; }
-        if (queryWords.some(word => sectionText.includes(word))) {
-          matched.push({ start: i, end: j });
-        }
-      } else {
-        matched.push({ start: i, end: j });
-      }
+      sections.push({ heading: lines[i], lineStart: i, lineEnd: j });
       i = j - 1;
     }
   }
+  return sections;
+}
 
-  // マッチあり → 該当セクションのみ / 0件 → 全セクション（フォールバック）
-  const targets = matched.length > 0 ? matched : (() => {
-    const all: { start: number; end: number }[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith('## ')) {
-        let j = i + 1;
-        while (j < lines.length && !lines[j].startsWith('## ')) { j++; }
-        all.push({ start: i, end: j });
-        i = j - 1;
+/**
+ * Gemini API 生呼び出し（共通ヘルパー）
+ */
+function callGeminiApi(apiKey: string, modelPath: string, postData: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/${modelPath}:generateContent?key=${apiKey}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
       }
-    }
-    return all;
-  })();
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', (e) => reject(new Error(`Gemini API接続エラー: ${e.message}`)));
+    req.write(postData);
+    req.end();
+  });
+}
 
-  for (const sec of targets) { addSection(sec.start, sec.end); }
-  return result.join('\n');
+/**
+ * Stage1: 見出し一覧をGeminiに送り、関連セクションのインデックスを返す
+ */
+async function selectRelevantSections(
+  query: string,
+  sections: Array<{ heading: string; lineStart: number; lineEnd: number }>,
+  apiKey: string,
+  modelPath: string
+): Promise<number[]> {
+  const headingList = sections.map((s, i) => `${i}: ${s.heading}`).join('\n');
+  const prompt = `以下の見出し一覧から「${query}」に意味的に関連する見出しのインデックスを選んでください。
+
+【見出し一覧】
+${headingList}
+
+【指示】
+- 単語の一致だけでなく、意味・目的・同義語・関連語でも判断する
+- 最大5件、関連度の高いものだけ選ぶ
+- インデックス番号の配列のみ返す（例: [0, 3, 7]）`;
+
+  const postData = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 256,
+      responseMimeType: 'application/json',
+      thinkingConfig: { thinkingLevel: 'MINIMAL' }
+    }
+  });
+
+  const raw = await callGeminiApi(apiKey, modelPath, postData);
+  const parsed = JSON.parse(raw);
+  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+  try {
+    const arr = JSON.parse(text.trim());
+    if (Array.isArray(arr)) { return arr.filter((n: any) => typeof n === 'number'); }
+  } catch (_) {}
+  const start = text.indexOf('['); const end = text.lastIndexOf(']');
+  if (start !== -1 && end > start) {
+    const arr = JSON.parse(text.slice(start, end + 1));
+    return Array.isArray(arr) ? arr.filter((n: any) => typeof n === 'number') : [];
+  }
+  return [];
 }
 
 /**
  * Gemini Flash API呼び出し
  */
-async function searchWithGemini(query: string, memoContent: string): Promise<{ line: number; keyword: string; text: string; preview: string; answer: string; context: string }[]> {
+async function searchWithGemini(query: string, memoContent: string): Promise<{ aiAnswer: string; results: { line: number; keyword: string; text: string; preview: string; answer: string; context: string }[] }> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('geminiApiKey', '');
 
@@ -500,11 +528,31 @@ async function searchWithGemini(query: string, memoContent: string): Promise<{ l
     throw new Error('Gemini API キーが設定されていません。設定 → cssToHtmlJumper.geminiApiKey を確認してください。');
   }
 
-  const summary = buildFilteredSummary(query, memoContent);
+  const modelPath = 'gemini-3.1-flash-lite-preview';
+  const lines = memoContent.split('\n');
+
+  // Stage1: 見出し一覧をGeminiに送ってセマンティックに絞り込む
+  const sections = parseSections(memoContent);
+  const selectedIndices = await selectRelevantSections(query, sections, apiKey, modelPath);
+
+  // マッチあり → 該当セクション全行 / 0件 → 全セクション（フォールバック）
+  const targets = selectedIndices.length > 0
+    ? selectedIndices.filter(i => i >= 0 && i < sections.length).map(i => sections[i])
+    : sections;
+
+  // Stage2用: 絞り込んだセクションの全行を行番号付きで構築
+  const summaryLines: string[] = [];
+  for (const sec of targets) {
+    for (let k = sec.lineStart; k < sec.lineEnd; k++) {
+      summaryLines.push(`${k + 1}: ${lines[k]}`);
+    }
+    summaryLines.push('---');
+  }
+  const summary = summaryLines.join('\n');
 
   const prompt = `以下のメモファイルから「${query}」に関連する行を検索してください。
 
-【メモファイル】（各セクションの見出し＋冒頭3行のサマリー、行番号付き）
+【メモファイル】（関連セクションの全行、行番号付き）
 ${summary}
 
 【検索クエリ】
@@ -528,94 +576,71 @@ ${query}
 - 類似内容・同じセクションの重複は絶対に避ける
 
 【出力形式】
-JSON配列で返す。説明文は不要。必ず3件以内。
-- answer: 検索クエリへの直接的な答え（パス・コマンド・値・コードなど、コピーしてすぐ使えるもの）。なければ空文字。
-- context: そのセクション内の補足説明（1行）
+JSONオブジェクトで返す。説明文は不要。
+- aiAnswer: 検索クエリへの直接的な答え（コード・コマンド・値など、コピーしてすぐ使えるもの）。メモに書いていなくてもGemini自身の知識で回答する。答えられない場合のみ空文字。
+- results: 関連行のリスト（最大3件）
+  - answer: メモ内から抽出した直接的な答え。なければ空文字。
+  - context: そのセクション内の補足説明（1行）
 
-[
-  {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容", "answer": "直接的な答え", "context": "補足説明"},
-  ...
-]
+{
+  "aiAnswer": "直接的な答え（メモになくてもGeminiの知識で回答）",
+  "results": [
+    {"line": 行番号, "keyword": "主要な技術用語", "text": "該当行の内容", "answer": "直接的な答え", "context": "補足説明"},
+    ...
+  ]
+}
 
 例:
-[
-  {"line": 7624, "keyword": "Localテーマフォルダ", "text": "- 場所：wp-content/themes/", "answer": "C:\\Users\\guest04\\Local Sites\\local-test\\app\\public\\wp-content\\themes", "context": "LocalのWordPressテーマ配置場所"},
-  {"line": 1052, "keyword": "inline-block", "text": "## テキスト幅に合わせる", "answer": "display: inline-block;", "context": "幅が文字幅に合う"}
-]`;
+{
+  "aiAnswer": "display: flex; justify-content: center; align-items: center;",
+  "results": [
+    {"line": 7624, "keyword": "Localテーマフォルダ", "text": "- 場所：wp-content/themes/", "answer": "C:\\Users\\guest04\\Local Sites\\local-test\\app\\public\\wp-content\\themes", "context": "LocalのWordPressテーマ配置場所"},
+    {"line": 1052, "keyword": "inline-block", "text": "## テキスト幅に合わせる", "answer": "display: inline-block;", "context": "幅が文字幅に合う"}
+  ]
+}`;
 
-  return new Promise((resolve, reject) => {
-    const postData = JSON.stringify({
-      contents: [{
-        parts: [{ text: prompt }]
-      }],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 4096,
-        responseMimeType: 'application/json',
-        thinkingConfig: {
-          thinkingLevel: 'MINIMAL'
-        }
-      }
-    });
-
-    const options = {
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-          // JSON配列を抽出（responseMimeTypeで純粋なJSONが返ってくる想定だが念のため複数パターン対応）
-          let results: any[] | null = null;
-          try {
-            const parsed2 = JSON.parse(text.trim());
-            results = Array.isArray(parsed2) ? parsed2 : null;
-          } catch (_) {}
-          if (!results) {
-            // fallback: 先頭の[から末尾の]までを切り出す（貪欲マッチ回避）
-            const start = text.indexOf('[');
-            const end = text.lastIndexOf(']');
-            if (start !== -1 && end > start) {
-              results = JSON.parse(text.slice(start, end + 1));
-            }
-          }
-          if (results) {
-            const formatted = results.map((r: any) => ({
-              line: r.line,
-              keyword: r.keyword || '',
-              text: r.text,
-              preview: r.text.substring(0, 100),
-              answer: r.answer || '',
-              context: r.context || ''
-            }));
-            resolve(formatted);
-          } else {
-            resolve([]);
-          }
-        } catch (e: any) {
-          reject(new Error(`Gemini APIレスポンス解析エラー: ${e.message}\n\n生レスポンス:\n${data.substring(0, 500)}`));
-        }
-      });
-    });
-
-    req.on('error', (e) => {
-      reject(new Error(`Gemini API接続エラー: ${e.message}`));
-    });
-
-    req.write(postData);
-    req.end();
+  const postData = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 4096,
+      responseMimeType: 'application/json'
+    }
   });
+
+  const data = await callGeminiApi(apiKey, modelPath, postData);
+  try {
+    const parsed = JSON.parse(data);
+    const parts: any[] = parsed.candidates?.[0]?.content?.parts || [];
+    const text = (parts.find((p: any) => !p.thought && p.text) || parts[0])?.text || '';
+
+    let obj: any = null;
+    try {
+      obj = JSON.parse(text.trim());
+    } catch (_) {}
+    if (!obj) {
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start !== -1 && end > start) {
+        obj = JSON.parse(text.slice(start, end + 1));
+      }
+    }
+    const aiAnswer: string = obj?.aiAnswer || '';
+    const rawResults: any[] = Array.isArray(obj?.results) ? obj.results : [];
+    return {
+      aiAnswer,
+      results: rawResults.map((r: any) => ({
+        line: r.line,
+        keyword: r.keyword || '',
+        text: r.text,
+        preview: r.text.substring(0, 100),
+        answer: r.answer || '',
+        context: r.context || ''
+      }))
+    };
+  } catch (e: any) {
+    throw new Error(`Gemini APIレスポンス解析エラー: ${e.message}\n\n生レスポンス:\n${data.substring(0, 500)}`);
+  }
 }
 
 /**
@@ -687,12 +712,28 @@ async function handleMemoSearch() {
       qp.items = [];
 
       qp.onDidChangeValue(value => {
-        // 最後の単語を取り出してフィルタ
         const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
         if (!lastWord || lastWord.length < 1) { qp.items = []; return; }
-        const starts = memoAllItems.filter(i => i.label.toLowerCase().startsWith(lastWord));
-        const contains = memoAllItems.filter(i => !i.label.toLowerCase().startsWith(lastWord) && i.label.toLowerCase().includes(lastWord));
-        qp.items = [...starts, ...contains];
+        // ひらがな→カタカナ変換
+        const toKatakana = (s: string) => s.replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+        const kata = toKatakana(lastWord);
+        // fuzzy match（文字が順番に含まれるか）
+        const fuzzyMatch = (target: string, q: string): boolean => {
+          let idx = 0;
+          for (const ch of q) { idx = target.indexOf(ch, idx); if (idx === -1) { return false; } idx++; }
+          return true;
+        };
+        const score = (item: vscode.QuickPickItem): number => {
+          const lbl = item.label.toLowerCase();
+          const desc = (item.description || '').toLowerCase();
+          const katLbl = toKatakana(lbl);
+          if (lbl.startsWith(lastWord) || katLbl.startsWith(kata)) { return 4; }
+          if (lbl.includes(lastWord) || katLbl.includes(kata)) { return 3; }
+          if (desc.includes(lastWord) || toKatakana(desc).includes(kata)) { return 2; }
+          if (fuzzyMatch(lbl, lastWord) || fuzzyMatch(katLbl, kata)) { return 1; }
+          return 0;
+        };
+        qp.items = memoAllItems.map(i => ({ item: i, s: score(i) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).map(x => ({ ...x.item, filterText: value }));
       });
 
       let accepted = false;
@@ -738,76 +779,129 @@ async function handleMemoSearch() {
     const memoDoc = await vscode.workspace.openTextDocument(memoUri);
     const memoContent = memoDoc.getText();
 
-    // buildFilteredSummaryで関連セクション絞り込み＋行番号保持サマリーを生成してGeminiへ送信
-    await vscode.window.withProgress({
-      location: vscode.ProgressLocation.Notification,
-      title: '🔍→🤖 Geminiで検索中...',
-      cancellable: false
-    }, async () => {
-      try {
-        const geminiResults = await searchWithGemini(query, memoContent);
+    // withProgress は searchWithGemini だけ（QuickPick以降は外で実行）
+    let geminiResults: { line: number; keyword: string; text: string; preview: string; answer: string; context: string }[] = [];
+    let aiAnswer = '';
+    try {
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: '🔍→🤖 Geminiで検索中...',
+        cancellable: false
+      }, async () => {
+        const geminiResponse = await searchWithGemini(query, memoContent);
+        geminiResults = geminiResponse.results;
+        aiAnswer = geminiResponse.aiAnswer;
+      });
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Gemini検索エラー: ${e.message}`);
+      return;
+    }
 
-        if (geminiResults.length > 0) {
-          // Ctrl+Shift+↓/↑ 用に結果を保存
-          lastMemoResults = geminiResults.map(r => ({
-            line: r.line, keyword: r.keyword, preview: r.preview, memoFilePath
-          }));
-          lastMemoResultIndex = 0;
+    if (geminiResults.length === 0) { return; }
 
-          const jumpToLine = async (lineNum: number) => {
-            const editor = await vscode.window.showTextDocument(memoDoc);
-            const position = new vscode.Position(lineNum - 1, 0);
-            editor.selection = new vscode.Selection(position, position);
-            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-            const highlight = vscode.window.createTextEditorDecorationType({
-              backgroundColor: 'rgba(255, 255, 0, 0.35)',
-              isWholeLine: true
-            });
-            editor.setDecorations(highlight, [new vscode.Range(position, position)]);
-            setTimeout(() => highlight.dispose(), 3000);
-          };
+    // Ctrl+Shift+↓/↑ 用に結果を保存
+    lastMemoResults = geminiResults.map(r => ({
+      line: r.line, keyword: r.keyword, preview: r.preview, memoFilePath
+    }));
+    lastMemoResultIndex = 0;
 
-          if (selectedText) {
-            // 選択あり → 1件目に即ジャンプ（QuickPickなし）
-            await jumpToLine(geminiResults[0].line);
-          } else {
-            // 選択なし → QuickPickで選択
-            const memoLines = memoContent.split('\n');
-            const extractCodeNear = (lineNum: number): string => {
-              for (let i = lineNum - 1; i < Math.min(lineNum + 30, memoLines.length); i++) {
-                if (memoLines[i].startsWith('```')) {
-                  const codeLines: string[] = [];
-                  for (let j = i + 1; j < memoLines.length; j++) {
-                    if (memoLines[j].startsWith('```')) { break; }
-                    if (memoLines[j].trim()) { codeLines.push(memoLines[j].trim()); }
-                    if (codeLines.length >= 3) { break; }
-                  }
-                  return codeLines.join(' | ');
-                }
-              }
-              return '';
-            };
-            const items = geminiResults.map(r => {
-              const codePreview = extractCodeNear(r.line);
-              const detailParts: string[] = [];
-              if (r.context) { detailParts.push(`→ ${r.context}`); }
-              if (codePreview) { detailParts.push(`📝 ${codePreview}`); }
-              const bracketText = r.answer || r.preview;
-              return { label: `行 ${r.line}: 【${bracketText}】`, description: `🔑 ${r.keyword}`, detail: detailParts.join('    '), line: r.line };
-            });
-            const selected = await vscode.window.showQuickPick(items, { placeHolder: `${geminiResults.length}件見つかりました`, matchOnDetail: true });
-            if (selected) {
-              lastMemoResultIndex = lastMemoResults.findIndex(r => r.line === selected.line);
-              await jumpToLine(selected.line);
+    const jumpToLine = async (lineNum: number) => {
+      const editor = await vscode.window.showTextDocument(memoDoc);
+      const position = new vscode.Position(lineNum - 1, 0);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+      const highlight = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(255, 255, 0, 0.35)',
+        isWholeLine: true
+      });
+      editor.setDecorations(highlight, [new vscode.Range(position, position)]);
+      setTimeout(() => highlight.dispose(), 3000);
+    };
+
+    if (selectedText) {
+      await jumpToLine(geminiResults[0].line);
+      return;
+    }
+
+    // QuickPickで選択
+    const memoLines = memoContent.split('\n');
+    const extractCodeNear = (lineNum: number): string => {
+      for (let i = lineNum - 1; i < Math.min(lineNum + 30, memoLines.length); i++) {
+        if (memoLines[i].startsWith('```')) {
+          const codeLines: string[] = [];
+          for (let j = i + 1; j < memoLines.length; j++) {
+            if (memoLines[j].startsWith('```')) { break; }
+            if (memoLines[j].trim()) { codeLines.push(memoLines[j].trim()); }
+            if (codeLines.length >= 3) { break; }
+          }
+          return codeLines.join(' | ');
+        }
+      }
+      return '';
+    };
+    const items: { label: string; description?: string; detail?: string; line: number; answer?: string }[] = geminiResults.map(r => {
+      const codePreview = extractCodeNear(r.line);
+      const detailParts: string[] = [];
+      if (r.context) { detailParts.push(`→ ${r.context}`); }
+      if (codePreview) { detailParts.push(`📝 ${codePreview}`); }
+      const bracketText = r.answer || r.preview;
+      return { label: `行 ${r.line}: 【${bracketText}】`, description: `🔑 ${r.keyword}`, detail: detailParts.join('    '), line: r.line, answer: r.answer };
+    });
+    if (aiAnswer) {
+      const line1 = aiAnswer.length > 80 ? aiAnswer.slice(0, 80) + '…' : aiAnswer;
+      const line2 = aiAnswer.length > 80 ? aiAnswer.slice(80) : '';
+      items.splice(2, 0, { label: `🤖 ${line1}`, description: '', detail: line2 || undefined, line: -1 });
+    }
+    const selected = await vscode.window.showQuickPick(items, { placeHolder: `${geminiResults.length}件見つかりました`, matchOnDetail: true });
+    if (!selected) { return; }
+
+    // セクション境界取得ヘルパー（## 単位）
+    const getSectionBounds = (refLineIdx: number) => {
+      let start = refLineIdx;
+      for (let i = refLineIdx; i >= 0; i--) { if (/^##?\s/.test(memoLines[i])) { start = i; break; } }
+      let end = memoLines.length;
+      for (let i = start + 1; i < memoLines.length; i++) { if (/^##?\s/.test(memoLines[i])) { end = i; break; } }
+      return { start, end };
+    };
+
+    if (selected.line !== -1) {
+      lastMemoResultIndex = lastMemoResults.findIndex(r => r.line === selected.line);
+      await jumpToLine(selected.line);
+      // セクション抽出 → Geminiが質問に答えてメモ追記
+      const { start: sectionStart, end: sectionEnd } = getSectionBounds(selected.line - 1);
+      const sectionContent = memoLines.slice(sectionStart, Math.min(sectionStart + 60, sectionEnd)).join('\n');
+      const geminiCfg = vscode.workspace.getConfiguration('cssToHtmlJumper');
+      const apiKey2 = geminiCfg.get<string>('geminiApiKey', '');
+      if (apiKey2) {
+        const prompt = `以下のメモを参考に「${query}」に答えてください。\nルール：挨拶・締め言葉なし。箇条書き・コードで簡潔に。中学生でもわかる言葉で。メモにない情報は自分の知識で補う。\n\n## 参考メモ\n${sectionContent}`;
+        try {
+          const raw2 = await callGeminiApi(apiKey2, 'gemini-3.1-flash-lite-preview', JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }));
+          const parsed2 = JSON.parse(raw2);
+          const parts2: any[] = parsed2?.candidates?.[0]?.content?.parts || [];
+          const answerText = (parts2.find((p: any) => !p.thought && p.text) || parts2[0])?.text || '';
+          if (answerText) {
+            const fullSection = memoLines.slice(sectionStart, sectionEnd).join('\n');
+            if (!fullSection.includes(`### ${query}`)) {
+              const edit = new vscode.WorkspaceEdit();
+              edit.insert(memoDoc.uri, new vscode.Position(sectionEnd, 0), `\n### ${query}\n${answerText}\n`);
+              await vscode.workspace.applyEdit(edit);
+              await memoDoc.save();
             }
           }
-        } else {
-          // 0件時はメッセージなし（静かに終了）
-        }
-      } catch (e: any) {
-        vscode.window.showErrorMessage(`Gemini検索エラー: ${e.message}`);
+        } catch (e2) { /* API失敗時はスキップ */ }
       }
-    });
+    } else if (aiAnswer) {
+      // AI回答アイテム選択 → 関連セクションに追記
+      const { start: secStart, end: secEnd } = getSectionBounds(geminiResults[0].line - 1);
+      const fullSec = memoLines.slice(secStart, secEnd).join('\n');
+      if (!fullSec.includes(`### ${query}`)) {
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(memoDoc.uri, new vscode.Position(secEnd, 0), `\n### ${query}\n${aiAnswer}\n`);
+        await vscode.workspace.applyEdit(edit);
+        await memoDoc.save();
+        await jumpToLine(secEnd + 1);
+      }
+    }
   } catch (e: any) {
     vscode.window.showErrorMessage(`メモファイル読み込みエラー: ${e.message}`);
   }
