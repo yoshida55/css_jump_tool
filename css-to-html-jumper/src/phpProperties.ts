@@ -281,6 +281,62 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
     returns: "void",
     tips: ["setup_postdata()を使ったら必ず呼ぶ（忘れるとバグの原因）"]
   },
+  "have_posts": {
+    name: "have_posts",
+    category: "WordPress投稿",
+    description: "ループに次の投稿があるかチェックする。while(have_posts()) で使用。",
+    params: [],
+    returns: "bool — 次の投稿があれば true",
+    tips: ["while(have_posts()) : the_post(); ... endwhile; の形で使う", "サブループではWP_Queryのhave_posts()を使う"]
+  },
+  "the_post": {
+    name: "the_post",
+    category: "WordPress投稿",
+    description: "次の投稿データをグローバル変数$postにセットし、テンプレートタグを使えるようにする。",
+    params: [],
+    returns: "void",
+    tips: ["have_posts()とセットで使う", "呼び出すだけでthe_title()等が使えるようになる"]
+  },
+  "the_permalink": {
+    name: "the_permalink",
+    category: "WordPress投稿",
+    description: "現在の投稿のパーマリンク（URL）を直接出力する。",
+    params: [],
+    returns: "void",
+    tips: ["href属性に使うならget_the_permalink()で文字列を取得する方が安全"]
+  },
+  "the_ID": {
+    name: "the_ID",
+    category: "WordPress投稿",
+    description: "現在の投稿IDを直接出力する。",
+    params: [],
+    returns: "void",
+    tips: ["取得したい場合はget_the_ID()を使う"]
+  },
+  "the_author": {
+    name: "the_author",
+    category: "WordPress投稿",
+    description: "現在の投稿の著者名を出力する。",
+    params: [],
+    returns: "void",
+    tips: ["著者ページのリンクはthe_author_posts_link()を使う"]
+  },
+  "the_date": {
+    name: "the_date",
+    category: "WordPress投稿",
+    description: "投稿の公開日を出力する（同日複数投稿時は最初の1件のみ）。",
+    params: ["string $format — 日付フォーマット（デフォルトはWordPress設定に従う）"],
+    returns: "void",
+    tips: ["毎回表示するにはthe_time()を使う", "フォーマット例: 'Y年m月d日'"]
+  },
+  "the_time": {
+    name: "the_time",
+    category: "WordPress投稿",
+    description: "投稿の公開日時を出力する（同日複数投稿でも毎回表示）。",
+    params: ["string $format — 日付フォーマット（例: 'Y/m/d'）"],
+    returns: "void",
+    tips: ["the_date()と違い同日複数投稿でも毎回出力される"]
+  },
 
   // ==================== WordPress WP_Query ====================
   "WP_Query": {

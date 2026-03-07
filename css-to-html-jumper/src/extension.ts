@@ -9,6 +9,7 @@ import { jsMethods } from './jsProperties';
 import { registerAiHoverProvider } from './aiHoverProvider';
 import { registerOverviewGenerator } from './overviewGenerator';
 import { phpFunctions } from './phpProperties';
+import { registerPhpCompletionProvider, extractPhpFunctionsFromMemo, getCachedPhpFunctions, PhpFunction } from './phpCompletionProvider';
 
 // ========================================
 // メモ検索履歴（最新10件）
@@ -536,17 +537,20 @@ async function searchWithGemini(query: string, memoContent: string): Promise<{ a
   const sections = parseSections(memoContent);
   const selectedIndices = await selectRelevantSections(query, sections, apiKey, modelPath);
 
-  // マッチあり → 該当セクション全行 / 0件 → 全セクション（フォールバック）
-  const targets = selectedIndices.length > 0
-    ? selectedIndices.filter(i => i >= 0 && i < sections.length).map(i => sections[i])
-    : sections;
+  // マッチなし → 終了（全件フォールバック禁止・料金節約）
+  if (selectedIndices.length === 0) {
+    return { aiAnswer: '', results: [] };
+  }
+  const targets = selectedIndices.filter(i => i >= 0 && i < sections.length).map(i => sections[i]);
 
-  // Stage2用: 絞り込んだセクションの全行を行番号付きで構築
+  // Stage2用: 絞り込んだセクションの全行を行番号付きで構築（最大500行）
   const summaryLines: string[] = [];
   for (const sec of targets) {
     for (let k = sec.lineStart; k < sec.lineEnd; k++) {
+      if (summaryLines.length >= 500) break;
       summaryLines.push(`${k + 1}: ${lines[k]}`);
     }
+    if (summaryLines.length >= 500) break;
     summaryLines.push('---');
   }
   const summary = summaryLines.join('\n');
@@ -640,7 +644,9 @@ JSONオブジェクトで返す。説明文は不要。
       }))
     };
   } catch (e: any) {
-    throw new Error(`Gemini APIレスポンス解析エラー: ${e.message}\n\n生レスポンス:\n${data.substring(0, 500)}`);
+    // レスポンスが途中で切れた場合も空結果で続行（エラーで止まらないように）
+    vscode.window.showWarningMessage(`Gemini応答が不完全でした（再検索してください）`);
+    return { aiAnswer: '', results: [] };
   }
 }
 
@@ -665,7 +671,62 @@ async function handleMemoSearch() {
 
   let query: string;
   if (selectedText) {
-    query = selectedText;
+    // 選択テキストあり → Geminiにコメント形式で説明させてコードに挿入
+    const geminiCfg = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const geminiKey = geminiCfg.get<string>('geminiApiKey', '');
+    if (!geminiKey) {
+      vscode.window.showErrorMessage('Gemini APIキーが設定されていません。');
+      return;
+    }
+    const lang = activeEditor!.document.languageId;
+    const prompt = `「${selectedText}」について、プログラミング初心者向けに以下のフォーマットで説明してください。
+
+フォーマット（コードブロックなし、このテキストをそのまま出力）:
+🔍 ${selectedText}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 何をする  [1行で説明]
+📥 引数      [引数の型と意味。なければ「なし」]
+📤 戻り値    [型 → 具体的な値の例（例: "https://example.com/wp-content/themes/mytheme" や HTMLElement など）]
+            └ 取得後: [戻り値を使った操作例]
+            └ [nullや失敗時の注意があれば]
+💡 使い方    [実際のコード例1行]
+            [戻り値を使った次の一手の例]
+⚠️  注意      [30文字以内で簡潔に]
+            └ [補足や代替手段があれば]
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+引数・戻り値がない場合はその行を省略してください。`;
+    const postData = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 512 }
+    });
+    let rawAnswer = '';
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: `✨ 「${selectedText}」を調査中...`,
+      cancellable: false
+    }, async () => {
+      const raw = await callGeminiApi(geminiKey, 'gemini-2.0-flash', postData);
+      const parsed = JSON.parse(raw);
+      rawAnswer = parsed.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    });
+    if (!rawAnswer) { vscode.window.showErrorMessage('Geminiから回答を取得できませんでした。'); return; }
+    const endLine = activeEditor!.selection.end.line;
+    const endChar = activeEditor!.document.lineAt(endLine).text.length;
+    const insertPos = new vscode.Position(endLine, endChar);
+    const commentText = lang === 'html'
+      ? `\n<!-- \n${rawAnswer}\n-->\n`
+      : `\n/*\n${rawAnswer}\n*/\n`;
+    await activeEditor!.edit(eb => eb.insert(insertPos, commentText));
+    // 挿入したコメントを選択状態にする（Ctrl+Iで追い質問できるように）
+    const insertedLines = commentText.split('\n');
+    const selEndLine = insertPos.line + insertedLines.length - 1;
+    const selEndChar = insertedLines[insertedLines.length - 1].length;
+    activeEditor!.selection = new vscode.Selection(
+      new vscode.Position(insertPos.line + 1, 0),
+      new vscode.Position(selEndLine, selEndChar)
+    );
+    return;
   } else {
     // メモファイルから見出し行を抽出（サジェスト用）
     let headingItems: vscode.QuickPickItem[] = [];
@@ -674,9 +735,11 @@ async function handleMemoSearch() {
     }));
     try {
       const tmpDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(memoFilePath));
-      headingItems = tmpDoc.getText().split('\n')
-        .filter(line => /^#{1,3}\s/.test(line))
-        .map(line => ({ label: line.replace(/^#+\s*/, '').trim(), description: '見出し' }));
+      const tmpLines = tmpDoc.getText().split('\n');
+      headingItems = tmpLines
+        .map((line, idx) => ({ line, idx }))
+        .filter(x => /^#{1,3}\s/.test(x.line))
+        .map(x => ({ label: x.line.replace(/^#+\s*/, '').trim(), description: '見出し', _lineNum: x.idx } as vscode.QuickPickItem & { _lineNum: number }));
     } catch { /* 見出し取得失敗時は候補なし */ }
     // CSS辞書 + 追加CSS + JS辞書をサジェスト候補に追加
     const cssQpItems: vscode.QuickPickItem[] = Object.keys(cssProperties).map(k => ({
@@ -703,14 +766,48 @@ async function handleMemoSearch() {
     const jsQpItems: vscode.QuickPickItem[] = Object.keys(jsMethods).map(k => ({
       label: k, description: jsMethods[k].description
     }));
-    const memoAllItems = [...historyItems, ...headingItems, ...cssQpItems, ...extraCssQpItems, ...jsQpItems];
+    // PHP関数サジェスト（PHPファイルのとき）
+    const phpFunctionInsertMap = new Map<string, string>(); // label → 挿入テキスト
+    let phpFunctionItems: vscode.QuickPickItem[] = [];
+    let currentWordForPhp = '';
+    if (activeEditor && activeEditor.document.languageId === 'php') {
+      const wordRange = activeEditor.document.getWordRangeAtPosition(
+        activeEditor.selection.active, /[\w_]+/
+      );
+      currentWordForPhp = wordRange ? activeEditor.document.getText(wordRange).toLowerCase() : '';
+      let phpFuncs: PhpFunction[] | null = getCachedPhpFunctions();
+      if (!phpFuncs) {
+        try {
+          const memoContent = fs.readFileSync(memoFilePath, 'utf-8');
+          phpFuncs = extractPhpFunctionsFromMemo(memoContent);
+        } catch { phpFuncs = []; }
+      }
+      phpFunctionItems = phpFuncs
+        .filter(f => !f.insertText) // エイリアスは除外（QuickPickでは部分一致で十分）
+        .filter(f => currentWordForPhp.length < 2 || f.name.toLowerCase().includes(currentWordForPhp))
+        .map(f => {
+          const insertText = f.name;
+          const label = f.name;
+          phpFunctionInsertMap.set(label, insertText);
+          // 辞書優先 → なければメモ文脈
+          const dictInfo = phpFunctions[insertText];
+          const meaning = dictInfo
+            ? dictInfo.description
+            : (f.description?.split('\n')[0] || '');
+          // description=ラベル横（短め）、detail=2行目（フル）
+          return { label, description: '📖 PHP関数', detail: meaning || undefined, _isPhp: true } as vscode.QuickPickItem & { _isPhp: boolean };
+        });
+    }
+
+    const memoAllItems = [...phpFunctionItems, ...historyItems, ...headingItems, ...cssQpItems, ...extraCssQpItems, ...jsQpItems];
 
     // QuickPick1本で完結：最後の単語で候補表示 → Enter で単語置き換え → 候補なし状態でEnter → 検索
     query = await new Promise<string>((resolve) => {
       const qp = vscode.window.createQuickPick();
+      (qp as any).sortByLabel = false; // カスタムソートを維持（VSCodeの自動ソートを無効化）
+      qp.matchOnDetail = true; // detail行を表示＆検索対象に
       qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で検索';
-      qp.value = memoSearchHistory[0] || '';
-      qp.items = [];
+      qp.items = phpFunctionItems.length > 0 ? phpFunctionItems : [];
 
       qp.onDidChangeValue(value => {
         const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
@@ -728,25 +825,80 @@ async function handleMemoSearch() {
           const lbl = item.label.toLowerCase();
           const desc = (item.description || '').toLowerCase();
           const katLbl = toKatakana(lbl);
-          if (lbl.startsWith(lastWord) || katLbl.startsWith(kata)) { return 4; }
-          if (lbl.includes(lastWord) || katLbl.includes(kata)) { return 3; }
-          if (desc.includes(lastWord) || toKatakana(desc).includes(kata)) { return 2; }
-          if (fuzzyMatch(lbl, lastWord) || fuzzyMatch(katLbl, kata)) { return 1; }
-          return 0;
+          let s = 0;
+          if (lbl.startsWith(lastWord) || katLbl.startsWith(kata)) { s = 4; }
+          else if (lbl.includes(lastWord) || katLbl.includes(kata)) { s = 3; }
+          else if (desc.includes(lastWord) || toKatakana(desc).includes(kata)) { s = 2; }
+          else if (fuzzyMatch(lbl, lastWord) || fuzzyMatch(katLbl, kata)) { s = 1; }
+          return s;
         };
-        qp.items = memoAllItems.map(i => ({ item: i, s: score(i) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).map(x => ({ ...x.item, filterText: value }));
+        const allScored = memoAllItems.map(i => ({ item: i, s: score(i) })).filter(x => x.s > 0);
+        if (phpFunctionItems.length > 0) {
+          // PHPファイル：PHP関数を先頭に、ラベル重複は完全除去
+          const phpItems = allScored.filter(x => (x.item as any)._isPhp).sort((a, b) => b.s - a.s);
+          const otherItems = allScored.filter(x => !(x.item as any)._isPhp).sort((a, b) => b.s - a.s);
+          const seenLabels = new Set<string>();
+          const deduped: vscode.QuickPickItem[] = [];
+          for (const x of [...phpItems, ...otherItems]) {
+            if (!seenLabels.has(x.item.label)) {
+              seenLabels.add(x.item.label);
+              deduped.push({ ...x.item, filterText: value } as any);
+            }
+          }
+          qp.items = deduped;
+        } else {
+          qp.items = allScored.sort((a, b) => b.s - a.s).map(x => ({ ...x.item, filterText: value } as any));
+        }
       });
 
       let accepted = false;
-      qp.onDidAccept(() => {
+      qp.onDidAccept(async () => {
         const sel = qp.selectedItems[0];
-        if (sel && qp.items.length > 0) {
-          // 候補あり → 最後の単語を選択テキストで置き換え（続けて入力可能）
-          const raw = sel.label.replace(/^🕐\s*/, '');
-          const parts = qp.value.split(/[\s　]+/);
-          parts[parts.length - 1] = raw;
-          qp.value = parts.join(' ') + ' ';
-          qp.items = [];
+        // PHP関数が選択された場合 → カーソル位置に挿入してQuickPickを閉じる
+        if (sel && phpFunctionInsertMap.has(sel.label)) {
+          const insertText = phpFunctionInsertMap.get(sel.label)!;
+          const editor = vscode.window.activeTextEditor;
+          if (editor) {
+            const wordRange = editor.document.getWordRangeAtPosition(
+              editor.selection.active, /[\w_]+/
+            );
+            editor.edit(editBuilder => {
+              if (wordRange) {
+                editBuilder.replace(wordRange, insertText);
+              } else {
+                editBuilder.insert(editor.selection.active, insertText);
+              }
+            });
+          }
+          accepted = true;
+          resolve('');
+          qp.hide();
+        } else if (sel && qp.items.length > 0) {
+          // 見出しが選択された場合 → Gemini検索せずメモファイルの該当行にジャンプ
+          if (sel.description === '見出し' && (sel as any)._lineNum !== undefined) {
+            const lineNum = (sel as any)._lineNum as number;
+            const memoUri = vscode.Uri.file(memoFilePath);
+            const doc = await vscode.workspace.openTextDocument(memoUri);
+            const editor = await vscode.window.showTextDocument(doc, { preview: false });
+            const pos = new vscode.Position(lineNum, 0);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+            accepted = true;
+            resolve('');
+            qp.hide();
+          } else if (sel.description === '検索履歴') {
+            const raw = sel.label.replace(/^🕐\s*/, '');
+            accepted = true;
+            resolve(raw);
+            qp.hide();
+          } else {
+            // CSS/JSプロパティ → 最後の単語を選択テキストで置き換え（続けて入力可能）
+            const raw = sel.label.replace(/^🕐\s*/, '');
+            const parts = qp.value.split(/[\s　]+/);
+            parts[parts.length - 1] = raw;
+            qp.value = parts.join(' ') + ' ';
+            qp.items = [];
+          }
         } else {
           // 候補なし or 空 → 確定して検索
           accepted = true;
@@ -755,7 +907,16 @@ async function handleMemoSearch() {
         }
       });
       qp.onDidHide(() => { qp.dispose(); if (!accepted) { resolve(''); } });
-      qp.show();
+      // PHP補完用（カーソル末尾） → show()後にvalue設定
+      // メモ検索用（全選択） → show()前にvalue設定
+      if (currentWordForPhp) {
+        qp.show();
+        qp.value = currentWordForPhp;
+      } else {
+        const initVal = memoSearchHistory[0] || '';
+        if (initVal) { qp.value = initVal; }
+        qp.show();
+      }
     });
     if (!query) { return; }
   }
@@ -1075,7 +1236,7 @@ ${contentPreview}
 ○ "Flexコンテナ内の子要素同士の間隔を一括設定するプロパティは？"（主語明確）
 ○ "要素を中央配置するFlexboxプロパティは？"（シンプルで明確）`;
 
-        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=' + geminiApiKey, {
+        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=' + geminiApiKey, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2195,6 +2356,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // JS Overview Generator の有効化
   registerOverviewGenerator(context);
+
+  // PHP補完プロバイダーの有効化（メモから途中一致補完）
+  registerPhpCompletionProvider(context);
 
   // クイズ履歴をファイルから復元
   loadQuizHistory();
@@ -3471,6 +3635,12 @@ ${explanation}
     const selection = editor.selection;
     const code = editor.document.getText(selection).trim();
 
+    // カーソル下の単語（選択なし時）
+    const cursorWord = code ? '' : (() => {
+      const wr = editor.document.getWordRangeAtPosition(selection.active, /[a-zA-Z_][a-zA-Z0-9_]*/);
+      return wr ? editor.document.getText(wr) : '';
+    })();
+
     // Step 1: CSS/JSプロパティサジェスト付きQuickPickで入力
     // CSS辞書（description付き）
     const cssItems: vscode.QuickPickItem[] = Object.keys(cssProperties).map(k => ({
@@ -3512,6 +3682,7 @@ ${explanation}
     const userInput = await new Promise<string | undefined>((resolve) => {
       const qp = vscode.window.createQuickPick();
       qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で質問';
+      qp.value = code ? code : (cursorWord ? cursorWord + ' って何？' : '');
       qp.items = [];
 
       qp.onDidChangeValue(value => {
@@ -3578,7 +3749,7 @@ ${explanation}
             isFreeQuestion: true,
             isSectionQuestion: false,
             showBeside: false,
-            useGemini: false
+            useGemini: true
           });
         } else if (selected && selected.label.includes('セクション質問')) {
           // セクション質問: プリセットプロンプト + ユーザー質問
@@ -3711,7 +3882,7 @@ ${explanation}
     // プログレス表示
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
-      title: '✨ Claude AIに質問中...',
+      title: useGemini ? '✨ Geminiに質問中...' : '✨ Claude AIに質問中...',
       cancellable: false
     }, async () => {
       try {
@@ -5352,8 +5523,19 @@ ${explanation}
   };
 
   // テキストをPHP DocBlock形式に変換（30文字折り返し付き）
+  const stripMarkdown = (text: string): string => {
+    return text
+      .replace(/^#{1,6}\s+/gm, '')        // ## 見出し
+      .replace(/\*\*(.+?)\*\*/g, '$1')    // **太字**
+      .replace(/\*(.+?)\*/g, '$1')        // *斜体*
+      .replace(/`{1,3}[^`]*`{1,3}/g, (m) => m.replace(/`/g, ''))  // `コード`
+      .replace(/^[\*\-]\s+/gm, '・')     // * リスト → ・
+      .replace(/_{2}(.+?)_{2}/g, '$1');   // __太字__
+  };
+
   const toPhpComment = (text: string): string => {
-    const wrapped = text.split('\n').flatMap(l => l.trim() === '' ? [''] : wrapLine(l));
+    const cleaned = stripMarkdown(text);
+    const wrapped = cleaned.split('\n').flatMap(l => l.trim() === '' ? [''] : wrapLine(l));
     const lines = wrapped.map(l => ` * ${l}`);
     return '/**\n' + lines.join('\n') + '\n */';
   };
@@ -5396,12 +5578,17 @@ ${selectedText}
         const raw = await callGeminiApi(apiKey, 'gemini-3.1-flash-lite-preview', postData);
         const parsed = JSON.parse(raw);
         const result = (parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '解説を取得できませんでした').trim();
+        const selStartLine = editor.selection.start.line;
         const insertLine = editor.selection.end.line;
-        const indent = getIndent(editor.document.lineAt(editor.selection.start.line).text);
+        const indent = getIndent(editor.document.lineAt(selStartLine).text);
         const comment = toPhpComment(result).split('\n').map(l => indent + l).join('\n');
         await editor.edit(eb => {
           eb.insert(new vscode.Position(insertLine + 1, 0), comment + '\n');
         });
+        editor.selection = new vscode.Selection(
+          new vscode.Position(selStartLine, 0),
+          new vscode.Position(insertLine + 1 + comment.split('\n').length, 0)
+        );
       } catch (e: any) {
         vscode.window.showErrorMessage(`エラー: ${e.message}`);
       } finally {
@@ -5426,6 +5613,10 @@ ${selectedText}
       await editor.edit(eb => {
         eb.insert(new vscode.Position(position.line + 1, 0), comment + '\n');
       });
+      editor.selection = new vscode.Selection(
+        new vscode.Position(position.line, 0),
+        new vscode.Position(position.line + 1 + comment.split('\n').length, 0)
+      );
       return;
     }
 
@@ -5445,6 +5636,10 @@ ${selectedText}
         await editor.edit(eb => {
           eb.insert(new vscode.Position(position.line + 1, 0), comment + '\n');
         });
+        editor.selection = new vscode.Selection(
+          new vscode.Position(position.line, 0),
+          new vscode.Position(position.line + 1 + comment.split('\n').length, 0)
+        );
       } else {
         vscode.window.showInformationMessage(`「${word}」は辞書に未登録です。geminiApiKey を設定するとAI解説が使えます。`);
       }
@@ -5454,14 +5649,17 @@ ${selectedText}
     // Gemini 3.1 Flash-Lite で解説生成 → 挿入
     const statusMsg = vscode.window.setStatusBarMessage(`🔍 「${word}」を調べています...`);
     const prompt = 'PHP または WordPress の関数「' + word + '」を日本語で解説してください。\n'
-      + 'コードブロック・マークダウン記号（#, **, ` 等）は使わないでください。\n'
-      + '以下の形式でそのまま出力してください。\n\n'
-      + '📌 何をする？ メインの説明を1文で。補足があれば（）でその後につける。例: テーマのURLを取得する（子テーマがある場合は子テーマを優先）\n\n'
-      + '📤 戻り値: 実際に返ってくる値の例を文字列で示す（例: "https://example.com/wp-content/themes/mytheme/"）\n\n'
-      + '❌ 使わないと → 問題を一言で\n'
-      + '✅ 使うと    → メリットを一言で\n'
-      + '（❌と✅の間に空行を入れないこと）\n\n'
-      + '💡 いつ使う？ 具体的な場面を1〜2つ\n\n'
+      + '【厳守ルール】\n'
+      + '・マークダウン記号（#, ##, **, *, `, ``` 等）は一切使わない\n'
+      + '・関数名で文章を始めない（「' + word + ' は」のような書き方禁止）\n'
+      + '・各項目は短く、1文以内に収める\n'
+      + '・空行は各絵文字項目の間にのみ入れる\n\n'
+      + '以下の形式で出力してください。\n\n'
+      + '📌 何をする？ 1文で（補足は括弧で）\n\n'
+      + '📤 戻り値: 実際の値の例（例: "https://example.com/wp-content/themes/mytheme/"）\n\n'
+      + '❌ 使わないと → 問題を一言\n'
+      + '✅ 使うと    → メリットを一言\n\n'
+      + '💡 いつ使う？ 場面を1〜2つ、各1文で\n\n'
       + '関数が存在しない場合は「不明な関数です」とだけ答えてください。';
     try {
       const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
@@ -5473,6 +5671,10 @@ ${selectedText}
       await editor.edit(eb => {
         eb.insert(new vscode.Position(position.line + 1, 0), comment + '\n');
       });
+      editor.selection = new vscode.Selection(
+        new vscode.Position(position.line, 0),
+        new vscode.Position(position.line + 1 + comment.split('\n').length, 0)
+      );
     } catch (e: any) {
       vscode.window.showErrorMessage(`エラー: ${e.message}`);
     } finally {
