@@ -1101,7 +1101,7 @@ async function handleBatchCategorize() {
     // 未分類の見出しを抽出
     const uncategorized: { index: number; title: string }[] = [];
     for (let i = 0; i < lines.length; i++) {
-      const match = lines[i].match(/^##\s+(.+)/);
+      const match = lines[i].match(/^#{2,3}\s+(.+)/);
       if (!match) { continue; }
       const fullTitle = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
       const title = fullTitle.replace(/【日付】\d{4}-\d{2}-\d{2}\s*/g, '').trim()
@@ -1206,13 +1206,22 @@ async function handleQuiz(showFilterPick = false) {
     const memoContent = memoDoc.getText();
     const lines = memoContent.split('\n');
 
-    // 見出し（## xxx）を抽出
+    // 見出し（## / ### xxx）を抽出
     const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
     const defaultCategory = categoryList.length > 0 ? categoryList[0] : 'その他';
     const headings: { line: number; title: string; content: string[]; category: string; date: string | null }[] = [];
+    let parentH2Title = ''; // ### 見出しの親テーマ（直前の ## タイトル）を追跡
     for (let i = 0; i < lines.length; i++) {
-      const match = lines[i].match(/^##\s+(.+)/);
+      const match = lines[i].match(/^#{2,3}\s+(.+)/);
       if (match) {
+        const isH3 = lines[i].startsWith('### ');
+
+        // ## 見出しなら親テーマとして記録（### には引き継ぐだけ）
+        if (!isH3) {
+          // ## の生タイトルを parentH2Title として保持（カテゴリ除去・日付除去前）
+          parentH2Title = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+        }
+
         // 見えない文字や制御文字を除去
         const fullTitle = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
 
@@ -1224,7 +1233,7 @@ async function handleQuiz(showFilterPick = false) {
         } else {
           // 見出し直後5行以内を検索
           for (let k = i + 1; k < Math.min(i + 6, lines.length); k++) {
-            if (lines[k].match(/^##\s+/)) { break; }
+            if (lines[k].match(/^#{2,3}\s+/)) { break; }
             const nearDateMatch = lines[k].match(/【日付】(\d{4}-\d{2}-\d{2})/);
             if (nearDateMatch) { headingDate = nearDateMatch[1]; break; }
           }
@@ -1255,9 +1264,23 @@ async function handleQuiz(showFilterPick = false) {
 
         const content: string[] = [];
 
+        // ### 見出しの場合：親の ## タイトルをテーマとして冒頭に付与（主語補完）
+        if (isH3 && parentH2Title) {
+          // 親タイトルからカテゴリ語・日付を除去してシンプル化
+          const cleanParentTitle = parentH2Title
+            .replace(/【日付】\d{4}-\d{2}-\d{2}\s*/g, '')
+            .split(/[\s　]+/)
+            .filter(p => p.trim() && !categoryList.some(cat => cat.toLowerCase() === p.toLowerCase()))
+            .join(' ')
+            .trim();
+          if (cleanParentTitle) {
+            content.push(`【テーマ: ${cleanParentTitle}】`);
+          }
+        }
+
         // 内容: 見出しの下（次の見出しまで）
         for (let j = i + 1; j < lines.length; j++) {
-          if (lines[j].match(/^##\s+/)) {
+          if (lines[j].match(/^#{2,3}\s+/)) {
             break;
           }
           if (lines[j].trim()) {
@@ -1272,7 +1295,7 @@ async function handleQuiz(showFilterPick = false) {
     }
 
     if (headings.length === 0) {
-      vscode.window.showInformationMessage('メモに見出し（##）が見つかりませんでした');
+      vscode.window.showInformationMessage('メモに見出し（##/###）が見つかりませんでした');
       return;
     }
 
@@ -4648,7 +4671,7 @@ ${explanation}
       const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
 
       for (const line of lines) {
-        const match = line.match(/^##\s+(.+)/);
+        const match = line.match(/^#{2,3}\s+(.+)/);
         if (match) {
           const fullTitle = match[1].trim();
           const titleParts = fullTitle.split(/[\s　]+/); // 半角\sと全角
