@@ -17,7 +17,8 @@
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",
-      "c:\\Users\\sensh\\AppData\\Roaming\\Code\\User"
+      "c:\\Users\\sensh\\AppData\\Roaming\\Code\\User",
+      "C:\\Users\\sensh\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
     ]
   }
 }

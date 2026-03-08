@@ -23,6 +23,7 @@ let memoSearchHistory = [];
 let lastMemoResults = [];
 let lastMemoResultIndex = 0;
 let quizHistoryMap = new Map();
+let lastQuizFilter = { date: '全期間', category: '全カテゴリ' };
 // ========================================
 // クイズ回答ドキュメント（セッション通して累積）
 // ========================================
@@ -60,6 +61,7 @@ function saveQuizHistory() {
     quizHistoryMap.forEach((value, key) => {
         historyObj[key] = value;
     });
+    historyObj['_meta'] = { lastFilter: lastQuizFilter };
     fs.writeFileSync(historyPath, JSON.stringify(historyObj, null, 2), 'utf8');
     console.log('[Quiz] 履歴をファイルに保存:', historyPath);
 }
@@ -76,7 +78,11 @@ function loadQuizHistory() {
     try {
         const content = fs.readFileSync(historyPath, 'utf8');
         const historyObj = JSON.parse(content);
-        quizHistoryMap = new Map(Object.entries(historyObj));
+        if (historyObj['_meta']?.lastFilter) {
+            lastQuizFilter = historyObj['_meta'].lastFilter;
+        }
+        const entries = Object.entries(historyObj).filter(([k]) => k !== '_meta');
+        quizHistoryMap = new Map(entries);
         console.log('[Quiz] 履歴をファイルから読込:', quizHistoryMap.size, '件');
     }
     catch (e) {
@@ -196,7 +202,7 @@ async function processEvaluation(evaluation) {
     // ステータスバーを非表示
     hideEvaluationStatusBar();
     // 次の問題へ
-    await handleQuiz();
+    await handleQuiz(false);
 }
 // ========================================
 // メモ自動修正関数
@@ -1014,9 +1020,115 @@ async function handleMemoSearch() {
     }
 }
 /**
- * クイズのメイン処理
+ * 一括カテゴリ判定（未分類の見出しをGeminiで一括分類してjsonに保存）
  */
-async function handleQuiz() {
+async function handleBatchCategorize() {
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const memoFilePath = config.get('memoFilePath', '');
+    const geminiApiKey = config.get('geminiApiKey', '');
+    const categoryList = config.get('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+    if (!memoFilePath) {
+        vscode.window.showErrorMessage('メモファイルパスが設定されていません。');
+        return;
+    }
+    if (!geminiApiKey) {
+        vscode.window.showErrorMessage('Gemini APIキーが設定されていません。');
+        return;
+    }
+    try {
+        const memoContent = fs.readFileSync(memoFilePath, 'utf-8');
+        const lines = memoContent.split('\n');
+        // 未分類の見出しを抽出
+        const uncategorized = [];
+        for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/^##\s+(.+)/);
+            if (!match) {
+                continue;
+            }
+            const fullTitle = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+            const title = fullTitle.replace(/【日付】\d{4}-\d{2}-\d{2}\s*/g, '').trim()
+                .split(/[\s　]+/).filter(p => p.trim())
+                .reduce((acc, word, idx, arr) => {
+                const isCat = categoryList.find(c => c.toLowerCase() === word.toLowerCase());
+                return (isCat && idx === arr.length - 1) ? arr.slice(0, -1).join(' ') : acc + (acc ? ' ' : '') + word;
+            }, '');
+            if (!quizHistoryMap.get(title)?.aiCategory) {
+                uncategorized.push({ index: uncategorized.length, title });
+            }
+        }
+        if (uncategorized.length === 0) {
+            vscode.window.showInformationMessage('✅ 全ての見出しは既にカテゴリ判定済みです');
+            return;
+        }
+        // 100件ずつバッチ処理
+        const BATCH_SIZE = 100;
+        let processed = 0;
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `🔍 カテゴリ一括判定中... 未分類 ${uncategorized.length} 件`,
+            cancellable: false
+        }, async () => {
+            for (let i = 0; i < uncategorized.length; i += BATCH_SIZE) {
+                const batch = uncategorized.slice(i, i + BATCH_SIZE);
+                // ローカルインデックス（0始まり）でプロンプトを作成
+                const titleList = batch.map((h, localIdx) => `${localIdx}: ${h.title}`).join('\n');
+                const prompt = `以下の見出し一覧を、カテゴリ候補に従って分類してください。
+
+【カテゴリ候補】
+${categoryList.join(' / ')}
+
+【見出し一覧】
+${titleList}
+
+【指示】
+- 各見出しを最も近いカテゴリに分類する
+- 候補に合わない場合は先頭のカテゴリ（${categoryList[0]}）にする
+- JSON配列のみ返す（他のテキスト禁止）
+
+出力形式: [{"i":0,"c":"その他"},{"i":1,"c":"wordpress/php"}]`;
+                const postData = JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }],
+                    generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: 'application/json' }
+                });
+                const raw = await callGeminiApi(geminiApiKey, 'gemini-3.1-flash-lite-preview', postData);
+                const parsed = JSON.parse(raw);
+                const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+                try {
+                    const results = JSON.parse(text);
+                    for (const r of results) {
+                        const heading = batch[r.i]; // ローカルインデックスで参照
+                        if (!heading) {
+                            continue;
+                        }
+                        const existing = quizHistoryMap.get(heading.title);
+                        if (existing) {
+                            existing.aiCategory = r.c;
+                        }
+                        else {
+                            quizHistoryMap.set(heading.title, {
+                                title: heading.title, line: 0, lastReviewed: 0, reviewCount: 0, aiCategory: r.c
+                            });
+                        }
+                        processed++;
+                    }
+                }
+                catch (e) {
+                    console.error('[BatchCategorize] JSON解析エラー:', e);
+                }
+            }
+            saveQuizHistory();
+        });
+        vscode.window.showInformationMessage(`✅ ${processed} 件のカテゴリを判定・保存しました`);
+    }
+    catch (e) {
+        vscode.window.showErrorMessage(`一括カテゴリ判定エラー: ${e.message}`);
+    }
+}
+/**
+ * クイズのメイン処理
+ * @param showFilterPick trueのときフィルタQuickPickを表示（デフォルトfalse）
+ */
+async function handleQuiz(showFilterPick = false) {
     const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
     const memoFilePath = config.get('memoFilePath', '');
     if (!memoFilePath) {
@@ -1030,29 +1142,52 @@ async function handleQuiz() {
         const memoContent = memoDoc.getText();
         const lines = memoContent.split('\n');
         // 見出し（## xxx）を抽出
+        const categoryList = config.get('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+        const defaultCategory = categoryList.length > 0 ? categoryList[0] : 'その他';
         const headings = [];
         for (let i = 0; i < lines.length; i++) {
             const match = lines[i].match(/^##\s+(.+)/);
             if (match) {
                 // 見えない文字や制御文字を除去
                 const fullTitle = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-                let title = fullTitle;
+                // 【日付】yyyy-MM-dd を抽出（見出し行 OR 直後5行以内）
+                let headingDate = null;
+                const inlineDateMatch = fullTitle.match(/【日付】(\d{4}-\d{2}-\d{2})/);
+                if (inlineDateMatch) {
+                    headingDate = inlineDateMatch[1];
+                }
+                else {
+                    // 見出し直後5行以内を検索
+                    for (let k = i + 1; k < Math.min(i + 6, lines.length); k++) {
+                        if (lines[k].match(/^##\s+/)) {
+                            break;
+                        }
+                        const nearDateMatch = lines[k].match(/【日付】(\d{4}-\d{2}-\d{2})/);
+                        if (nearDateMatch) {
+                            headingDate = nearDateMatch[1];
+                            break;
+                        }
+                    }
+                }
+                const titleWithoutDate = fullTitle.replace(/【日付】\d{4}-\d{2}-\d{2}\s*/g, '').trim();
+                let title = titleWithoutDate;
                 let category = '';
-                // 登録カテゴリリスト取得
-                const categoryList = config.get('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
-                const defaultCategory = categoryList.length > 0 ? categoryList[0] : 'その他';
                 // カテゴリ: 見出し末尾が登録カテゴリに一致（大小文字・全半角空白無視）
-                const titleParts = fullTitle.split(/[\s　]+/).filter(p => p.trim()); // 半角\sと全角、空文字列除去
+                const titleParts = titleWithoutDate.split(/[\s　]+/).filter(p => p.trim());
                 if (titleParts.length >= 2) {
                     const lastWord = titleParts[titleParts.length - 1];
                     const matchedCategory = categoryList.find(cat => cat.toLowerCase() === lastWord.toLowerCase());
                     if (matchedCategory) {
-                        category = lastWord; // 元の表記を保持
+                        category = lastWord;
                         title = titleParts.slice(0, -1).join(' ');
                     }
                 }
-                // カテゴリなし → デフォルトカテゴリ（リスト1番目）
-                if (!category) {
+                // Gemini判定カテゴリがあれば優先
+                const savedAiCat = quizHistoryMap.get(title)?.aiCategory;
+                if (savedAiCat) {
+                    category = savedAiCat;
+                }
+                else if (!category) {
                     category = defaultCategory;
                 }
                 const content = [];
@@ -1066,7 +1201,7 @@ async function handleQuiz() {
                     }
                 }
                 if (content.length > 0) {
-                    headings.push({ line: i + 1, title, content, category });
+                    headings.push({ line: i + 1, title, content, category, date: headingDate });
                 }
             }
         }
@@ -1074,15 +1209,106 @@ async function handleQuiz() {
             vscode.window.showInformationMessage('メモに見出し（##）が見つかりませんでした');
             return;
         }
-        // カテゴリフィルタ（大小文字無視）
-        const quizCategory = config.get('quizCategory', '全て');
-        let filteredHeadings = headings;
-        if (quizCategory !== '全て') {
-            filteredHeadings = headings.filter(h => h.category.toLowerCase() === quizCategory.toLowerCase());
-            if (filteredHeadings.length === 0) {
-                vscode.window.showInformationMessage(`カテゴリ「${quizCategory}」の問題が見つかりませんでした`);
-                return;
+        // フィルタQuickPick（showFilterPickがtrueのときのみ表示）
+        const allCategories = ['全カテゴリ', ...categoryList];
+        const dateOptions = ['全期間', '今日', '昨日', '今週'];
+        const filterItems = [];
+        if (!showFilterPick) {
+            // フィルタQuickPickをスキップ → lastQuizFilterをそのまま使用
+        }
+        else {
+            // 前回の選択を一番上に
+            const isDefaultFilter = lastQuizFilter.date === '全期間' && lastQuizFilter.category === '全カテゴリ';
+            if (!isDefaultFilter) {
+                filterItems.push({ label: `⭐ 前回: ${lastQuizFilter.date} × ${lastQuizFilter.category}`, description: '前回の絞り込み' });
+                filterItems.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
             }
+            // カテゴリのみ
+            for (const cat of allCategories) {
+                filterItems.push({ label: `📂 ${cat}`, description: 'カテゴリのみ（日付絞り込みなし）' });
+            }
+            filterItems.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+            // 日付 × カテゴリ
+            for (const date of dateOptions) {
+                for (const cat of allCategories) {
+                    filterItems.push({ label: `${date} × ${cat}`, description: '' });
+                }
+            }
+            // 一括判定は一番下
+            filterItems.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+            filterItems.push({ label: '🗂 カテゴリ一括判定を実行', description: '未分類の見出しをGeminiで一括分類' });
+            const selectedFilter = await vscode.window.showQuickPick(filterItems, {
+                placeHolder: '絞り込みを選択（Escで全期間 × 全カテゴリ）',
+                matchOnDescription: true
+            });
+            let filterDate = '全期間';
+            let filterCategory = '全カテゴリ';
+            if (selectedFilter) {
+                if (selectedFilter.label.startsWith('🗂')) {
+                    await handleBatchCategorize();
+                    return;
+                }
+                else if (selectedFilter.label.startsWith('⭐')) {
+                    filterDate = lastQuizFilter.date;
+                    filterCategory = lastQuizFilter.category;
+                }
+                else if (selectedFilter.description === 'カテゴリのみ（日付絞り込みなし）') {
+                    filterCategory = selectedFilter.label.replace('📂 ', '');
+                    filterDate = '全期間';
+                }
+                else {
+                    const parts = selectedFilter.label.split(' × ');
+                    if (parts.length === 2) {
+                        filterDate = parts[0].trim();
+                        filterCategory = parts[1].trim();
+                    }
+                }
+                lastQuizFilter = { date: filterDate, category: filterCategory };
+                saveQuizHistory();
+            }
+        } // end showFilterPick
+        const filterDate = lastQuizFilter.date;
+        const filterCategory = lastQuizFilter.category;
+        // 日付フィルタ用ヘルパー
+        // ローカル時間で日付を生成（toISOStringはUTCなのでズレる）
+        const now2 = new Date();
+        const pad2 = (n) => String(n).padStart(2, '0');
+        const todayStr = `${now2.getFullYear()}-${pad2(now2.getMonth() + 1)}-${pad2(now2.getDate())}`;
+        const yesterday = new Date(now2);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = `${yesterday.getFullYear()}-${pad2(yesterday.getMonth() + 1)}-${pad2(yesterday.getDate())}`;
+        const weekAgo = new Date(now2);
+        weekAgo.setDate(weekAgo.getDate() - 6);
+        function isInDateRange(dateStr, filter) {
+            if (filter === '全期間') {
+                return true;
+            }
+            if (!dateStr) {
+                return false;
+            } // 日付なしは全期間のみ対象（今日/昨日/今週では除外）
+            if (filter === '今日') {
+                return dateStr === todayStr;
+            }
+            if (filter === '昨日') {
+                return dateStr === yesterdayStr;
+            }
+            if (filter === '今週') {
+                return dateStr >= `${weekAgo.getFullYear()}-${pad2(weekAgo.getMonth() + 1)}-${pad2(weekAgo.getDate())}`;
+            }
+            return true;
+        }
+        let filteredHeadings = headings;
+        // カテゴリフィルタ
+        if (filterCategory !== '全カテゴリ') {
+            filteredHeadings = filteredHeadings.filter(h => h.category.toLowerCase() === filterCategory.toLowerCase());
+        }
+        // 日付フィルタ
+        if (filterDate !== '全期間') {
+            filteredHeadings = filteredHeadings.filter(h => isInDateRange(h.date, filterDate));
+        }
+        if (filteredHeadings.length === 0) {
+            vscode.window.showInformationMessage(`「${filterDate} × ${filterCategory}」に一致する問題がまだありません。全問題から出題します（出題後にカテゴリが保存されます）`);
+            filteredHeadings = headings;
         }
         // 復習優先ロジック
         const now = Date.now();
@@ -1113,15 +1339,37 @@ async function handleQuiz() {
             quiz = reviewCandidates[0];
         }
         else {
+            // スキップ済み（10日以内）＆最近回答済みを除外した候補
+            const available = filteredHeadings.filter(h => {
+                const hist = quizHistoryMap.get(h.title);
+                if (!hist) {
+                    return true;
+                }
+                // スキップ済み（10日以内）除外
+                if (hist.reviewCount === -1) {
+                    return (now - hist.lastReviewed) / ONE_DAY >= 10;
+                }
+                // 復習間隔が来ていない問題は除外（さっき答えた問題が再出題されない）
+                const daysSince = (now - hist.lastReviewed) / ONE_DAY;
+                const requiredInterval = getNextInterval(hist.reviewCount);
+                if (hist.lastReviewed > 0 && daysSince < requiredInterval) {
+                    return false;
+                }
+                return true;
+            });
+            if (available.length === 0) {
+                vscode.window.showInformationMessage('この絞り込みで出題できる問題がありません');
+                return;
+            }
             // 70%: 新規（未出題）を優先、なければ全体からランダム
-            const unreviewed = filteredHeadings.filter(h => !quizHistoryMap.has(h.title));
+            const unreviewed = available.filter(h => !quizHistoryMap.has(h.title));
             if (unreviewed.length > 0) {
                 const randomIndex = Math.floor(Math.random() * unreviewed.length);
                 quiz = unreviewed[randomIndex];
             }
             else {
-                const randomIndex = Math.floor(Math.random() * filteredHeadings.length);
-                quiz = filteredHeadings[randomIndex];
+                const randomIndex = Math.floor(Math.random() * available.length);
+                quiz = available[randomIndex];
             }
         }
         // 問題文の決定（初回のみGeminiで生成→JSON保存、2回目以降は保存済みを再利用）
@@ -1137,7 +1385,7 @@ async function handleQuiz() {
             // 初回：Geminiで問題文を新規生成
             try {
                 const contentPreview = quiz.content.slice(0, 10).join('\n');
-                const prompt = `以下のメモの見出しと内容から、簡潔なクイズ問題を1つ生成してください。
+                const prompt = `以下のメモの見出しと内容から、クイズ問題とカテゴリをJSON形式で返してください。
 
 【見出し】
 ${quiz.title}
@@ -1145,36 +1393,57 @@ ${quiz.title}
 【内容】
 ${contentPreview}
 
+【カテゴリ候補】
+${categoryList.join(' / ')}
+
 【要件】
-- 50文字以内の質問（明確さを優先、短さは二の次）
-- 必ず「？」で終わる
-- 前置き・説明文は一切禁止、質問のみ出力
-- 主語・述語を明確にする
-- 専門用語を使う場合は文脈を含める
-- 質問文に答えやキーワードを含めない
+- questionは50文字以内の質問（明確さを優先、短さは二の次）
+- questionは必ず「？」で終わる
+- questionは前置き・説明文は一切禁止、質問のみ
+- categoryはカテゴリ候補から最も近いものを1つ選ぶ（候補に合わなければ「その他」）
 
 悪い例:
 × "inline-blockで中身の幅だけの箱を作るには？"（答えが含まれている）
 × "display:inline-flexで横並びになる要素の間隔調整は？"（主語不明確）
-× "[!INFORMATION]という文字を視覚的に中央に配置するには..."（長すぎ・説明的）
 
 良い例:
-○ "中身の幅だけの箱を作るdisplayの値は？"（答えを伏せている）
-○ "Flexコンテナ内の子要素同士の間隔を一括設定するプロパティは？"（主語明確）
-○ "要素を中央配置するFlexboxプロパティは？"（シンプルで明確）`;
+○ "中身の幅だけの箱を作るdisplayの値は？"
+○ "Flexコンテナ内の子要素同士の間隔を一括設定するプロパティは？"
+
+出力形式（JSONのみ、他のテキスト禁止）:
+{"question": "質問文？", "category": "CSS"}`;
                 const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=' + geminiApiKey, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        contents: [{ parts: [{ text: prompt }] }]
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: { responseMimeType: 'application/json' }
                     })
                 });
                 if (response.ok) {
                     const data = await response.json();
-                    const generatedQuestion = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                    if (generatedQuestion) {
-                        questionText = generatedQuestion;
-                        console.log('[Quiz] Gemini新規問題文を生成:', questionText.substring(0, 50));
+                    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                    if (rawText) {
+                        try {
+                            const parsed = JSON.parse(rawText);
+                            if (parsed.question) {
+                                questionText = parsed.question;
+                                console.log('[Quiz] Gemini新規問題文を生成:', questionText.substring(0, 50));
+                            }
+                            if (parsed.category && !quizHistoryMap.get(quiz.title)?.aiCategory) {
+                                // aiCategoryを履歴に保存
+                                const existing = quizHistoryMap.get(quiz.title);
+                                if (existing) {
+                                    existing.aiCategory = parsed.category;
+                                }
+                                quiz.category = parsed.category;
+                                console.log('[Quiz] Geminiカテゴリ判定:', parsed.category);
+                            }
+                        }
+                        catch {
+                            // JSON解析失敗時はテキストをそのまま問題文に
+                            questionText = rawText;
+                        }
                     }
                 }
             }
@@ -1574,7 +1843,7 @@ z-index
                 });
             }
             saveQuizHistory();
-            await handleQuiz();
+            await handleQuiz(false);
         }
     }
     catch (e) {
@@ -3964,7 +4233,7 @@ ${explanation}
             await handleMemoSearch();
         }
         if (isQuiz) {
-            await handleQuiz();
+            await handleQuiz(false);
         }
     });
     context.subscriptions.push(claudeCommand);
@@ -4004,9 +4273,12 @@ ${explanation}
     // クイズコマンド
     // ========================================
     const quizCommand = vscode.commands.registerCommand('cssToHtmlJumper.quiz', async () => {
-        await handleQuiz();
+        await handleQuiz(true); // Ctrl+Shift+7からはフィルタQuickPickを表示
     });
-    context.subscriptions.push(quizCommand);
+    const batchCategorizeCommand = vscode.commands.registerCommand('cssToHtmlJumper.batchCategorize', async () => {
+        await handleBatchCategorize();
+    });
+    context.subscriptions.push(quizCommand, batchCategorizeCommand);
     // ========================================
     // クイズ評価コマンド（ステータスバーから呼び出し）
     // ========================================

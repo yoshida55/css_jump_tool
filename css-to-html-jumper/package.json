@@ -79,6 +79,11 @@
         "category": "CSS to HTML"
       },
       {
+        "command": "cssToHtmlJumper.batchCategorize",
+        "title": "🗂 クイズ: カテゴリ一括判定",
+        "category": "CSS to HTML"
+      },
+      {
         "command": "cssToHtmlJumper.evaluateLastQuiz",
         "title": "📝 最後のクイズを評価",
         "category": "CSS to HTML"
@@ -258,7 +263,7 @@
         },
         "cssToHtmlJumper.quizCategories": {
           "type": "array",
-          "default": ["CSS", "JavaScript", "Python", "HTML"],
+          "default": ["CSS", "JavaScript", "Python", "HTML", "WordPress", "PHP"],
           "description": "カテゴリ判定に使用する単語リスト。見出し末尾がこのリストの単語ならカテゴリ扱い"
         }
       }
