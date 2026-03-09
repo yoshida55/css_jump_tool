@@ -4137,8 +4137,8 @@ ${explanation}
                     return; // 一旦プログレスを終了してメモ検索処理へ
                 }
                 else if (isFreeQuestion) {
-                    // 自由質問: JS/TS/PHPはファイルコンテキストを維持、それ以外はクリア
-                    if (langId !== 'javascript' && langId !== 'typescript' && langId !== 'php') {
+                    // 自由質問: JS/TS/PHP/HTML/CSS はファイルコンテキストを維持、それ以外（MDなど）はクリア
+                    if (langId !== 'javascript' && langId !== 'typescript' && langId !== 'php' && langId !== 'html' && langId !== 'css') {
                         codeToSend = '';
                         htmlContext = '';
                     }
