@@ -4031,6 +4031,17 @@ ${explanation}
                         // エラー時は選択行のみで続行
                     }
                 }
+                // JS/TS/PHP: ファイル全体 + 選択箇所を送信（MD等は選択範囲のみ）
+                if ((langId === 'javascript' || langId === 'typescript' || langId === 'php') && !skipSectionEnrich) {
+                    const fullFileContent = editor.document.getText();
+                    const fileName = path.basename(editor.document.fileName);
+                    if (code) {
+                        codeToSend = `【ファイル全体（${fileName}）】\n${fullFileContent}\n\n【選択箇所（ここを中心に質問）】\n${code}`;
+                    }
+                    else {
+                        codeToSend = `【ファイル全体（${fileName}）】\n${fullFileContent}`;
+                    }
+                }
                 if (isSectionQuestion) {
                     // セクション質問: カーソル位置のセクション全体を送信
                     const sectionRange = getCurrentSectionRange(editor);
@@ -4126,9 +4137,11 @@ ${explanation}
                     return; // 一旦プログレスを終了してメモ検索処理へ
                 }
                 else if (isFreeQuestion) {
-                    // 自由質問: コンテキスト収集不要
-                    codeToSend = '';
-                    htmlContext = '';
+                    // 自由質問: JS/TS/PHPはファイルコンテキストを維持、それ以外はクリア
+                    if (langId !== 'javascript' && langId !== 'typescript' && langId !== 'php') {
+                        codeToSend = '';
+                        htmlContext = '';
+                    }
                 }
                 else if (editor.document.languageId === 'css') {
                     // まず選択範囲からセレクタを探す

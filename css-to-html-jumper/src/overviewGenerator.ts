@@ -130,7 +130,7 @@ async function generateOverview(doc: vscode.TextDocument) {
     const codeContext = doc.getText();
     const lineCount = doc.lineCount;
 
-    vscode.window.showInformationMessage(`⏳ ${fileName} の Overview を生成中... (Gemini 2.5 Flash)`);
+    vscode.window.showInformationMessage(`⏳ ${fileName} の Overview を生成中... (Gemini 3.1 Flash Lite)`);
     const loadingMsg = vscode.window.setStatusBarMessage(`$(sync~spin) Overview 生成中: ${fileName}...`);
 
     try {
@@ -189,7 +189,7 @@ ${codeContext.split('\n').map((line, i) => `${i + 1}: ${line}`).join('\n')}
 
         const options = {
             hostname: 'generativelanguage.googleapis.com',
-            path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+            path: `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

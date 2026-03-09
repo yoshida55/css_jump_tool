@@ -229,7 +229,7 @@ ${codeContext}
 
         const options = {
             hostname: 'generativelanguage.googleapis.com',
-            path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+            path: `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
