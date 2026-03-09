@@ -3684,7 +3684,35 @@ ${explanation}
         const jsItems = Object.keys(jsProperties_1.jsMethods).map(k => ({
             label: k, description: jsProperties_1.jsMethods[k].description
         }));
-        const allSuggestItems = [...cssItems, ...extraCssItems, ...jsItems];
+        // PHP/WordPress辞書（PHPファイルの場合のみ）
+        let phpFunctionItems = [];
+        if (editor.document.languageId === 'php') {
+            let phpFuncs = (0, phpCompletionProvider_1.getCachedPhpFunctions)();
+            if (!phpFuncs) {
+                const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+                const memoFilePath = config.get('memoFilePath', '');
+                if (memoFilePath) {
+                    try {
+                        const memoContent = fs.readFileSync(memoFilePath, 'utf-8');
+                        phpFuncs = (0, phpCompletionProvider_1.extractPhpFunctionsFromMemo)(memoContent);
+                    }
+                    catch {
+                        phpFuncs = [];
+                    }
+                }
+                else {
+                    phpFuncs = [];
+                }
+            }
+            phpFunctionItems = phpFuncs
+                .filter(f => !f.insertText) // エイリアスは除外
+                .map(f => {
+                const dictInfo = phpProperties_1.phpFunctions[f.name];
+                const meaning = dictInfo ? dictInfo.description : (f.description?.split('\n')[0] || '');
+                return { label: f.name, description: '📖 PHP/WP関数', detail: meaning || undefined };
+            });
+        }
+        const allSuggestItems = [...cssItems, ...extraCssItems, ...jsItems, ...phpFunctionItems];
         // QuickPick1本で完結：最後の単語で候補表示 → Enter で単語置き換え → 候補なし状態でEnter → 確定
         const userInput = await new Promise((resolve) => {
             const qp = vscode.window.createQuickPick();
@@ -3697,9 +3725,15 @@ ${explanation}
                     qp.items = [];
                     return;
                 }
+                // 前方一致
                 const starts = allSuggestItems.filter(i => i.label.toLowerCase().startsWith(lastWord));
+                // 部分一致（前方一致を含まない）
                 const contains = allSuggestItems.filter(i => !i.label.toLowerCase().startsWith(lastWord) && i.label.toLowerCase().includes(lastWord));
-                qp.items = [...starts, ...contains];
+                // 説明文（detail/description）での部分一致（ラベルでの一致を含まない）
+                const descMatch = allSuggestItems.filter(i => !i.label.toLowerCase().includes(lastWord) &&
+                    ((i.description && i.description.toLowerCase().includes(lastWord)) ||
+                        (i.detail && i.detail.toLowerCase().includes(lastWord))));
+                qp.items = [...starts, ...contains, ...descMatch];
             });
             let accepted = false;
             qp.onDidAccept(() => {
