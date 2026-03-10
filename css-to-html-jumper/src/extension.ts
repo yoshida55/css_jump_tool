@@ -1393,8 +1393,10 @@ async function handleQuiz(showFilterPick = false) {
     }
 
     if (filteredHeadings.length === 0) {
-      vscode.window.showInformationMessage(`「${filterDate} × ${filterCategory}」に一致する問題がまだありません。全問題から出題します（出題後にカテゴリが保存されます）`);
-      filteredHeadings = headings;
+      vscode.window.showWarningMessage(`「${filterDate} × ${filterCategory}」に一致する問題がまだありません。別の条件を選択してください。`);
+      // 該当する問題がない場合は、再度フィルタ選択画面を表示する
+      await handleQuiz(true);
+      return;
     }
 
     // 復習優先ロジック
@@ -1447,7 +1449,8 @@ async function handleQuiz(showFilterPick = false) {
       });
 
       if (available.length === 0) {
-        vscode.window.showInformationMessage('この絞り込みで出題できる問題がありません');
+        vscode.window.showWarningMessage('現在の絞り込み条件で、いま出題できる問題がありません（復習待ちなど）。別の条件を選択してください。');
+        await handleQuiz(true);
         return;
       }
 
@@ -1465,6 +1468,14 @@ async function handleQuiz(showFilterPick = false) {
     // 問題文の決定（初回のみGeminiで生成→JSON保存、2回目以降は保存済みを再利用）
     const geminiApiKey = config.get<string>('geminiApiKey', '');
     const savedHistory = quizHistoryMap.get(quiz.title);
+    
+    // 初回かどうかの判定を、回答による状態変更前に確定しておく
+    // 確実に「クイズ回答.md」にAIの回答が書き込まれている（＝questionTextが保存されている）かどうかで判定する
+    const wasAnsweredBefore = savedHistory ? !!savedHistory.questionText : false;
+    console.log('[Quiz][DEBUG] quiz.title:', quiz.title);
+    console.log('[Quiz][DEBUG] savedHistory:', savedHistory ? JSON.stringify({lastReviewed: savedHistory.lastReviewed, reviewCount: savedHistory.reviewCount, questionText: savedHistory.questionText?.substring(0, 30), aiCategory: savedHistory.aiCategory}) : 'undefined');
+    console.log('[Quiz][DEBUG] wasAnsweredBefore:', wasAnsweredBefore);
+
     let questionText = quiz.title; // フォールバック
 
     if (savedHistory?.questionText) {
@@ -1606,18 +1617,31 @@ ${categoryList.join(' / ')}
       const memoDir = path.dirname(memoFilePath);
       const answerFilePath = path.join(memoDir, 'クイズ回答.md');
 
-      // 初回判定：savedHistory が存在しない場合のみ初回扱い（questionText未保存でも既回答は既回答）
-      const isFirstTime = !savedHistory;
+      // 初回判定：以前に回答したことがあるか（questionText未保存でも既回答は既回答）
+      const isFirstTime = !wasAnsweredBefore;
+      console.log('[Quiz][DEBUG] isFirstTime:', isFirstTime, '| wasAnsweredBefore:', wasAnsweredBefore);
+      console.log('[Quiz][DEBUG] claudeApiKey存在:', !!claudeApiKey);
 
       if (!isFirstTime) {
         // ===== 2回目以降：既存エントリにジャンプするだけ（Claude呼び出し・md書き込みなし）=====
-        console.log('[Quiz] 既回答 → 既存エントリにジャンプ（書き込みなし）');
+        console.log('[Quiz][DEBUG] ★★★ 2回目以降ブランチに入りました → ジャンプのみ ★★★');
 
         if (fs.existsSync(answerFilePath)) {
           quizAnswerDoc = await vscode.workspace.openTextDocument(answerFilePath);
           const existingContent = quizAnswerDoc.getText();
-          const jumpMarker = `**Q: ${questionText}**`;
-          const jumpIdx = existingContent.indexOf(jumpMarker);
+          const lines = existingContent.split('\n');
+          
+          // 1. まずは完全一致検索（前後の余白だけ取り除く）
+          const jumpMarker = `**Q: ${questionText.trim()}**`;
+          let jumpLine = lines.findIndex(line => line.trim() === jumpMarker);
+          
+          // 2. 完全一致がダメなら、部分一致（questionTextが含まれているか）
+          if (jumpLine === -1) {
+            jumpLine = lines.findIndex(line => line.includes(questionText.trim()));
+          }
+          
+          console.log('[Quiz][DEBUG] ジャンプ検索:', { questionText, jumpLine });
+
 
           const existingTab = vscode.window.tabGroups.all
             .flatMap(group => group.tabs)
@@ -1633,27 +1657,86 @@ ${categoryList.join(' / ')}
             preserveFocus: false
           });
 
-          if (jumpIdx !== -1) {
+          if (jumpLine !== -1) {
             // questionText でヒット → 直接ジャンプ
-            const jumpLine = existingContent.slice(0, jumpIdx).split('\n').length - 1;
             const jumpPosition = new vscode.Position(jumpLine, 0);
             answerEditor.selection = new vscode.Selection(jumpPosition, jumpPosition);
-            answerEditor.revealRange(new vscode.Range(jumpPosition, jumpPosition), vscode.TextEditorRevealType.InCenter);
+            
+            // 少し上に余裕を持たせてスクロール（見出しが見えるように）
+            const revealPos = new vscode.Position(Math.max(0, jumpLine - 2), 0);
+            answerEditor.revealRange(new vscode.Range(revealPos, revealPos), vscode.TextEditorRevealType.AtTop);
+            
             const jumpDecorationType = vscode.window.createTextEditorDecorationType({
-              backgroundColor: 'rgba(255, 255, 0, 0.3)'
+              backgroundColor: 'rgba(255, 255, 0, 0.4)'
             });
-            answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, jumpLine + 5, 0)]);
-            setTimeout(() => jumpDecorationType.dispose(), 1500);
+            // 当該行から5行を下をハイライト
+            const endLine = Math.min(quizAnswerDoc.lineCount - 1, jumpLine + 5);
+            answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, endLine, 0)]);
+            setTimeout(() => jumpDecorationType.dispose(), 3000); // 3秒間に延長
+            console.log(`[Quiz][DEBUG] 既存回答にジャンプしました: L${jumpLine}`);
           } else {
-            // 古いエントリで特定できない → quiz.title でCtrl+F自動検索
-            console.log('[Quiz] jumpIdx=-1 → findWithArgs で自動検索:', quiz.title);
-            // 検索しやすいようにquiz.titleの最初の20文字を使う
-            const searchKeyword = quiz.title.substring(0, 20);
-            await vscode.commands.executeCommand('editor.actions.findWithArgs', {
-              searchString: searchKeyword,
-              isRegex: false,
-              isCaseSensitive: false
-            });
+            // questionTextの完全一致で見つからなかった場合のフォールバック検索
+            console.log('[Quiz] jumpLine=-1 → title等のキーワードでファイル内を検索します');
+            let foundLine = -1;
+            
+            // 検索用のキーワードを作成（短い単語や記号を除去したクエリ）
+            // questionTextがある場合はそれをベースに、ない場合はtitleをベースにする
+            const baseText = questionText || quiz.title;
+            const searchWords = baseText.split(/[\s　、。！？\?()（）]/).filter(w => w.length > 2);
+            if (searchWords.length === 0) searchWords.push(baseText); // 短い単語しかない場合のフォールバック
+            
+            // "**Q:" で始まる行の中から、キーワードを最も多く含む行を探す
+            let bestMatchScore = 0;
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].startsWith('**Q:')) {
+                const qText = lines[i].toLowerCase();
+                let score = 0;
+                // キーワードの一致数でスコア化
+                for (const word of searchWords) {
+                  if (qText.includes(word.toLowerCase())) {
+                    score += 10;
+                  }
+                }
+                
+                if (score > bestMatchScore && score > 0) {
+                  bestMatchScore = score;
+                  foundLine = i;
+                }
+              }
+            }
+
+            if (foundLine !== -1) {
+              console.log(`[Quiz] キーワード検索でマッチしました: L${foundLine} (スコア: ${bestMatchScore})`);
+              const jumpPosition = new vscode.Position(foundLine, 0);
+              answerEditor.selection = new vscode.Selection(jumpPosition, jumpPosition);
+              answerEditor.revealRange(new vscode.Range(jumpPosition, jumpPosition), vscode.TextEditorRevealType.InCenter);
+              const jumpDecorationType = vscode.window.createTextEditorDecorationType({
+                backgroundColor: 'rgba(255, 255, 0, 0.3)'
+              });
+              answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(foundLine, 0, foundLine + 5, 0)]);
+              setTimeout(() => jumpDecorationType.dispose(), 1500);
+
+              // 検索して見つかった実際の問題文で履歴を更新しておく（次回から即座にヒットさせるため）
+              const matchQ = lines[foundLine].match(/^\*\*Q:\s*(.*?)\s*\*\*$/);
+              if (matchQ && matchQ[1]) {
+                const historyForQ = quizHistoryMap.get(quiz.title);
+                if (historyForQ) {
+                  historyForQ.questionText = matchQ[1];
+                  saveQuizHistory();
+                  console.log(`[Quiz] 履歴のquestionTextを補完・更新しました: ${matchQ[1]}`);
+                }
+              }
+
+            } else {
+              // それでも見つからない場合の最終手段 (VS Codeの検索機能)
+              console.log('[Quiz] キーワード検索でも見つからず → findWithArgs で自動検索:', quiz.title);
+              const searchKeyword = searchWords[0] || quiz.title.substring(0, 15);
+              await vscode.commands.executeCommand('editor.actions.findWithArgs', {
+                searchString: searchKeyword,
+                isRegex: false,
+                isCaseSensitive: false
+              });
+            }
           }
 
           pendingQuizEvaluation = {
@@ -1683,9 +1766,11 @@ ${categoryList.join(' / ')}
       }
 
       // ===== 初回：Claude呼び出し → md書き込み =====
+      console.log('[Quiz][DEBUG] ★★★ 初回ブランチに入りました → Claude呼び出し・書き込み処理へ ★★★');
       let claudeAnswer = '';
 
       if (claudeApiKey) {
+        console.log('[Quiz][DEBUG] Claude API呼び出し開始...');
         // Claude API で質問に対する回答生成
         const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。また、メモ内容に技術的な誤りがあればファクトチェックとして指摘してください。
 
@@ -1843,34 +1928,21 @@ z-index
         }
         newContent = currentContent.slice(0, existingIdx) + newEntryContent + currentContent.slice(endIdx);
         newAnswerStartLine = currentContent.slice(0, existingIdx).split('\n').length - 1;
-      } else if (categoryExists && insertPosition !== -1) {
-        // 既存カテゴリセクション末尾に追記
-        const before = lines.slice(0, insertPosition).join('\n');
-        const after = insertPosition < lines.length ? '\n' + lines.slice(insertPosition).join('\n') : '';
-
-        // セクション内に既にQ&Aがあるか確認（見出しの次の行以降）
-        let hasContent = false;
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (lines[i].trim() === categoryHeading) {
-            for (let j = i + 1; j < insertPosition; j++) {
-              if (lines[j].includes('**Q:')) {
-                hasContent = true;
-                break;
-              }
-            }
-            break;
-          }
-        }
-
-        const separator = hasContent ? SEP : '';
-        newContent = before + separator + newEntryContent + after;
-        newAnswerStartLine = insertPosition + (hasContent ? 3 : 0);
       } else {
-        // 新規カテゴリ見出し作成
-        const separator = currentContent.trim() ? '\n\n' : '';
-        const newSection = separator + categoryHeading + '\n\n' + newEntryContent;
+        // 【変更】カテゴリ途中への挿入をやめ、常にファイルの一番最後に追記する
+        let separator = SEP;
+        if (!currentContent.trim()) {
+          separator = ''; // ファイルが空の場合はセパレータなし
+        } else if (!currentContent.endsWith('\n\n')) {
+          separator = currentContent.endsWith('\n') ? '\n' + SEP : '\n\n' + SEP;
+        }
+        
+        // （任意）なんのカテゴリの問題だったか見出しを付ける
+        const categoryHeader = `# ${quiz.category || 'その他'}\n\n`;
+        const newSection = separator + categoryHeader + newEntryContent;
+        
         newContent = currentContent + newSection;
-        newAnswerStartLine = quizAnswerDoc.lineCount + (currentContent.trim() ? 4 : 2);
+        newAnswerStartLine = quizAnswerDoc.lineCount + (separator.split('\n').length - 1) + 2; // おおよその開始行
       }
 
       const edit = new vscode.WorkspaceEdit();
