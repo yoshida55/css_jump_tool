@@ -13,12 +13,16 @@
       "Bash(\"C:/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension \"d:/01_AI/10_Python/00_Python_src/99_commit/62_HTMLからCSSへジャンプ/css-to-html-jumper/css-to-html-jumper-1.10.0.vsix\" --force)",
       "Read(//d/01_AI/10_Python/00_Python_src/99_commit/64_ループビジュアル拡張機能_anti/**)",
       "Read(//c/Users/sensh/AppData/Roaming/Code/User/**)",
-      "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)"
+      "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)",
+      "Read(//c/Users/sensh/.claude/**)",
+      "Bash(\"d:/50_knowledge/01_memo.md\":*)",
+      "Bash(\"C:/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",
       "c:\\Users\\sensh\\AppData\\Roaming\\Code\\User",
-      "C:\\Users\\sensh\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+      "C:\\Users\\sensh\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+      "C:\\Users\\sensh\\.claude"
     ]
   }
 }
