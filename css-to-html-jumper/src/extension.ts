@@ -4117,8 +4117,9 @@ ${explanation}
     if (userInput.trim()) {
       presetItems.unshift({ label: '💬 直接質問', prompt: '', showBeside: false });
     }
+    presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
 
-    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean } | undefined>((resolve) => {
+    const result = await new Promise<{ question: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
       quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
@@ -4144,6 +4145,21 @@ ${explanation}
             isSectionQuestion: false,
             showBeside: false,
             useGemini: true
+          });
+        } else if (selected && selected.label.includes('複数ファイルを選択')) {
+          resolve({
+            question: '',
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isHtmlGeneration: false,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: true, // 自由質問として扱う
+            isSectionQuestion: false,
+            showBeside: false,
+            useGemini: false,
+            isMultiFile: true // 複数ファイルフラグ
           });
         } else if (selected && selected.label.includes('セクション質問')) {
           // セクション質問: プリセットプロンプト + ユーザー質問
@@ -4250,7 +4266,69 @@ ${explanation}
       return; // キャンセル
     }
 
-    let { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
+    let { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile } = result;
+
+    let codeToSend = code;
+    let htmlContext = '';
+
+    // 複数ファイル選択モードの場合の特別処理
+    if (isMultiFile) {
+      // プロジェクト内のテキストベースのファイルを検索 (一部バイナリ等は除外)
+      const allFiles = await vscode.workspace.findFiles('**/*.{html,css,js,ts,jsx,tsx,php,py,json,md,txt}', '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**}');
+      
+      const validFiles: vscode.Uri[] = [];
+      for (const f of allFiles) {
+        try {
+          const stat = fs.lstatSync(f.fsPath);
+          if (!stat.isSymbolicLink()) {
+            validFiles.push(f);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const fileItems = validFiles.map(f => ({
+        label: vscode.workspace.asRelativePath(f),
+        description: f.fsPath,
+        uri: f
+      }));
+      fileItems.sort((a, b) => a.label.localeCompare(b.label));
+
+      const selectedFiles = await vscode.window.showQuickPick(fileItems, {
+        canPickMany: true,
+        placeHolder: 'AIにコンテキストとして送信するファイルを選択してください（複数可）'
+      });
+
+      if (!selectedFiles || selectedFiles.length === 0) {
+        return; // キャンセル
+      }
+
+      let finalQuestionText = userInput.trim();
+      if (!finalQuestionText) {
+        const q = await vscode.window.showInputBox({
+          prompt: '質問を入力してください',
+          placeHolder: '例: これらのファイルの関係性は？'
+        });
+        if (!q) return;
+        finalQuestionText = q.trim();
+      }
+
+      question = `【質問】\n${finalQuestionText}`;
+      codeToSend = "";
+      
+      for (const item of selectedFiles) {
+        try {
+          const content = fs.readFileSync(item.uri.fsPath, 'utf8');
+          codeToSend += `\n\n【ファイル：${item.label}】\n\`\`\`\n${content}\n\`\`\`\n`;
+        } catch(e) {
+          // ignore
+        }
+      }
+      
+      // 以降のファイルコンテキスト自動追加をスキップするため、拡張子偽装のような形で対応
+      // または以下のフラグでガード
+    }
 
     // HTML生成系プリセット + HTMLファイルで選択 → 関連CSSを自動添付
     if (isHtmlGeneration && code && editor.document.languageId === 'html') {
@@ -4280,15 +4358,13 @@ ${explanation}
       cancellable: false
     }, async () => {
       try {
-        // コンテキスト収集
-        let htmlContext = '';
-        let codeToSend = code;
-
-        // CSS/HTMLファイル: セクション全体を自動添付（3段階フォールバック）
-        // 特殊プリセット（セクション質問・構造改善・スケルトン・クイズ等）は除外
-        const langId = editor.document.languageId;
-        const skipSectionEnrich = isSectionQuestion || isStructural || isSkeleton || isMemoSearch || isQuiz || isHtmlGeneration;
-        if ((langId === 'css' || langId === 'html') && !skipSectionEnrich) {
+        // コンテキスト収集 (複数ファイル選択モードでない時のみ)
+        if (!isMultiFile) {
+          // CSS/HTMLファイル: セクション全体を自動添付（3段階フォールバック）
+          // 特殊プリセット（セクション質問・構造改善・スケルトン・クイズ等）は除外
+          const langId = editor.document.languageId;
+          const skipSectionEnrich = isSectionQuestion || isStructural || isSkeleton || isMemoSearch || isQuiz || isHtmlGeneration;
+          if ((langId === 'css' || langId === 'html') && !skipSectionEnrich) {
           try {
             if (langId === 'css') {
               const sectionRange = getCurrentSectionRange(editor);
@@ -4558,6 +4634,7 @@ ${explanation}
             htmlContext = await findHtmlUsage(selectors);
           }
         }
+      } // isMultiFile分岐の終了
 
         // デバッグ: 送信プロンプト確認
         console.log('=== 📤 送信プロンプト ===');

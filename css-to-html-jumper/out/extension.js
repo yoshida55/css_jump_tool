@@ -3827,6 +3827,7 @@ ${explanation}
         if (userInput.trim()) {
             presetItems.unshift({ label: '💬 直接質問', prompt: '', showBeside: false });
         }
+        presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
         const result = await new Promise((resolve) => {
             const quickPick = vscode.window.createQuickPick();
             quickPick.items = presetItems;
@@ -3850,6 +3851,22 @@ ${explanation}
                         isSectionQuestion: false,
                         showBeside: false,
                         useGemini: true
+                    });
+                }
+                else if (selected && selected.label.includes('複数ファイルを選択')) {
+                    resolve({
+                        question: '',
+                        isSvg: false,
+                        isSkeleton: false,
+                        isStructural: false,
+                        isHtmlGeneration: false,
+                        isMemoSearch: false,
+                        isQuiz: false,
+                        isFreeQuestion: true, // 自由質問として扱う
+                        isSectionQuestion: false,
+                        showBeside: false,
+                        useGemini: false,
+                        isMultiFile: true // 複数ファイルフラグ
                     });
                 }
                 else if (selected && selected.label.includes('セクション質問')) {
@@ -3956,7 +3973,62 @@ ${explanation}
         if (!result) {
             return; // キャンセル
         }
-        let { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini } = result;
+        let { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile } = result;
+        let codeToSend = code;
+        let htmlContext = '';
+        // 複数ファイル選択モードの場合の特別処理
+        if (isMultiFile) {
+            // プロジェクト内のテキストベースのファイルを検索 (一部バイナリ等は除外)
+            const allFiles = await vscode.workspace.findFiles('**/*.{html,css,js,ts,jsx,tsx,php,py,json,md,txt}', '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**}');
+            const validFiles = [];
+            for (const f of allFiles) {
+                try {
+                    const stat = fs.lstatSync(f.fsPath);
+                    if (!stat.isSymbolicLink()) {
+                        validFiles.push(f);
+                    }
+                }
+                catch (e) {
+                    // ignore
+                }
+            }
+            const fileItems = validFiles.map(f => ({
+                label: vscode.workspace.asRelativePath(f),
+                description: f.fsPath,
+                uri: f
+            }));
+            fileItems.sort((a, b) => a.label.localeCompare(b.label));
+            const selectedFiles = await vscode.window.showQuickPick(fileItems, {
+                canPickMany: true,
+                placeHolder: 'AIにコンテキストとして送信するファイルを選択してください（複数可）'
+            });
+            if (!selectedFiles || selectedFiles.length === 0) {
+                return; // キャンセル
+            }
+            let finalQuestionText = userInput.trim();
+            if (!finalQuestionText) {
+                const q = await vscode.window.showInputBox({
+                    prompt: '質問を入力してください',
+                    placeHolder: '例: これらのファイルの関係性は？'
+                });
+                if (!q)
+                    return;
+                finalQuestionText = q.trim();
+            }
+            question = `【質問】\n${finalQuestionText}`;
+            codeToSend = "";
+            for (const item of selectedFiles) {
+                try {
+                    const content = fs.readFileSync(item.uri.fsPath, 'utf8');
+                    codeToSend += `\n\n【ファイル：${item.label}】\n\`\`\`\n${content}\n\`\`\`\n`;
+                }
+                catch (e) {
+                    // ignore
+                }
+            }
+            // 以降のファイルコンテキスト自動追加をスキップするため、拡張子偽装のような形で対応
+            // または以下のフラグでガード
+        }
         // HTML生成系プリセット + HTMLファイルで選択 → 関連CSSを自動添付
         if (isHtmlGeneration && code && editor.document.languageId === 'html') {
             try {
@@ -3986,125 +4058,106 @@ ${explanation}
             cancellable: false
         }, async () => {
             try {
-                // コンテキスト収集
-                let htmlContext = '';
-                let codeToSend = code;
-                // CSS/HTMLファイル: セクション全体を自動添付（3段階フォールバック）
-                // 特殊プリセット（セクション質問・構造改善・スケルトン・クイズ等）は除外
-                const langId = editor.document.languageId;
-                const skipSectionEnrich = isSectionQuestion || isStructural || isSkeleton || isMemoSearch || isQuiz || isHtmlGeneration;
-                if ((langId === 'css' || langId === 'html') && !skipSectionEnrich) {
-                    try {
-                        if (langId === 'css') {
-                            const sectionRange = getCurrentSectionRange(editor);
-                            if (sectionRange) {
-                                const cssSection = editor.document.getText(new vscode.Range(new vscode.Position(sectionRange.start, 0), new vscode.Position(sectionRange.end + 1, 0)));
-                                let htmlSection = '';
-                                const htmlDocs = await findLinkedHtmlFiles(editor.document);
-                                // Stage 1: セクション名一致
-                                for (const htmlDoc of htmlDocs) {
-                                    const match = findHtmlBoxSectionByName(htmlDoc.getText().split('\n'), sectionRange.sectionName);
-                                    if (match) {
-                                        htmlSection = match;
-                                        break;
-                                    }
-                                }
-                                // Stage 2: セレクタでHTML内セクションを検索
-                                if (!htmlSection) {
-                                    const selectors = extractSelectorsFromCss(cssSection);
+                // コンテキスト収集 (複数ファイル選択モードでない時のみ)
+                if (!isMultiFile) {
+                    // CSS/HTMLファイル: セクション全体を自動添付（3段階フォールバック）
+                    // 特殊プリセット（セクション質問・構造改善・スケルトン・クイズ等）は除外
+                    const langId = editor.document.languageId;
+                    const skipSectionEnrich = isSectionQuestion || isStructural || isSkeleton || isMemoSearch || isQuiz || isHtmlGeneration;
+                    if ((langId === 'css' || langId === 'html') && !skipSectionEnrich) {
+                        try {
+                            if (langId === 'css') {
+                                const sectionRange = getCurrentSectionRange(editor);
+                                if (sectionRange) {
+                                    const cssSection = editor.document.getText(new vscode.Range(new vscode.Position(sectionRange.start, 0), new vscode.Position(sectionRange.end + 1, 0)));
+                                    let htmlSection = '';
+                                    const htmlDocs = await findLinkedHtmlFiles(editor.document);
+                                    // Stage 1: セクション名一致
                                     for (const htmlDoc of htmlDocs) {
-                                        const htmlLines = htmlDoc.getText().split('\n');
-                                        outer: for (const sel of selectors) {
-                                            const searchStr = sel.startsWith('.') ? sel.slice(1) : sel.slice(1);
-                                            for (let li = 0; li < htmlLines.length; li++) {
-                                                if (!htmlLines[li].includes(searchStr)) {
-                                                    continue;
-                                                }
-                                                for (let j = li; j >= 0; j--) {
-                                                    if (htmlLines[j].search(/[┌]/) >= 0) {
-                                                        let end = htmlLines.length - 1;
-                                                        for (let k = j + 1; k < htmlLines.length; k++) {
-                                                            if (htmlLines[k].search(/[┌]/) >= 0) {
-                                                                end = k - 1;
-                                                                break;
-                                                            }
-                                                        }
-                                                        htmlSection = htmlLines.slice(j, end + 1).join('\n');
-                                                        break outer;
+                                        const match = findHtmlBoxSectionByName(htmlDoc.getText().split('\n'), sectionRange.sectionName);
+                                        if (match) {
+                                            htmlSection = match;
+                                            break;
+                                        }
+                                    }
+                                    // Stage 2: セレクタでHTML内セクションを検索
+                                    if (!htmlSection) {
+                                        const selectors = extractSelectorsFromCss(cssSection);
+                                        for (const htmlDoc of htmlDocs) {
+                                            const htmlLines = htmlDoc.getText().split('\n');
+                                            outer: for (const sel of selectors) {
+                                                const searchStr = sel.startsWith('.') ? sel.slice(1) : sel.slice(1);
+                                                for (let li = 0; li < htmlLines.length; li++) {
+                                                    if (!htmlLines[li].includes(searchStr)) {
+                                                        continue;
                                                     }
-                                                    const tagMatch = htmlLines[j].match(/^\s*<(header|section|footer)\b/);
-                                                    if (tagMatch) {
-                                                        const endLine = findSectionEnd(htmlLines, j);
-                                                        htmlSection = htmlLines.slice(j, endLine + 1).join('\n');
-                                                        break outer;
+                                                    for (let j = li; j >= 0; j--) {
+                                                        if (htmlLines[j].search(/[┌]/) >= 0) {
+                                                            let end = htmlLines.length - 1;
+                                                            for (let k = j + 1; k < htmlLines.length; k++) {
+                                                                if (htmlLines[k].search(/[┌]/) >= 0) {
+                                                                    end = k - 1;
+                                                                    break;
+                                                                }
+                                                            }
+                                                            htmlSection = htmlLines.slice(j, end + 1).join('\n');
+                                                            break outer;
+                                                        }
+                                                        const tagMatch = htmlLines[j].match(/^\s*<(header|section|footer)\b/);
+                                                        if (tagMatch) {
+                                                            const endLine = findSectionEnd(htmlLines, j);
+                                                            htmlSection = htmlLines.slice(j, endLine + 1).join('\n');
+                                                            break outer;
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                        if (htmlSection) {
-                                            break;
+                                            if (htmlSection) {
+                                                break;
+                                            }
                                         }
                                     }
-                                }
-                                // Stage 3: CSSセクションのみ
-                                codeToSend = `【CSSセクション: ${sectionRange.sectionName}】\n${cssSection}`;
-                                if (htmlSection) {
-                                    codeToSend += `\n\n【対応HTMLセクション】\n${htmlSection}`;
-                                }
-                            }
-                        }
-                        else if (langId === 'html') {
-                            let htmlSectionText = '';
-                            let htmlSectionName = '';
-                            // 罫線ボックス形式のセクション優先
-                            const boxRange = getCurrentSectionRange(editor);
-                            if (boxRange) {
-                                const lines = editor.document.getText().split('\n');
-                                htmlSectionText = lines.slice(boxRange.start, boxRange.end + 1).join('\n');
-                                htmlSectionName = boxRange.sectionName;
-                            }
-                            else {
-                                // <header>/<section>/<footer> タグでフォールバック
-                                const cursorLine = editor.selection.active.line;
-                                const htmlLines = editor.document.getText().split('\n');
-                                const sections = detectHtmlSections(editor.document);
-                                for (let i = sections.length - 1; i >= 0; i--) {
-                                    if (sections[i].line <= cursorLine) {
-                                        const endLine = findSectionEnd(htmlLines, sections[i].line);
-                                        if (cursorLine <= endLine) {
-                                            htmlSectionText = htmlLines.slice(sections[i].line, endLine + 1).join('\n');
-                                            htmlSectionName = sections[i].label.replace(/^[🔝📦🔚]\s*/, '');
-                                            break;
-                                        }
+                                    // Stage 3: CSSセクションのみ
+                                    codeToSend = `【CSSセクション: ${sectionRange.sectionName}】\n${cssSection}`;
+                                    if (htmlSection) {
+                                        codeToSend += `\n\n【対応HTMLセクション】\n${htmlSection}`;
                                     }
                                 }
                             }
-                            if (htmlSectionText) {
-                                let cssSection = '';
-                                const cssFilePaths = await findLinkedCssFiles(editor.document);
-                                for (const cssPath of cssFilePaths) {
-                                    try {
-                                        const cssDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(cssPath));
-                                        // Stage 1: セクション名一致
-                                        const match = findCssSectionByName(cssDoc, htmlSectionName);
-                                        if (match) {
-                                            cssSection = match;
-                                            break;
+                            else if (langId === 'html') {
+                                let htmlSectionText = '';
+                                let htmlSectionName = '';
+                                // 罫線ボックス形式のセクション優先
+                                const boxRange = getCurrentSectionRange(editor);
+                                if (boxRange) {
+                                    const lines = editor.document.getText().split('\n');
+                                    htmlSectionText = lines.slice(boxRange.start, boxRange.end + 1).join('\n');
+                                    htmlSectionName = boxRange.sectionName;
+                                }
+                                else {
+                                    // <header>/<section>/<footer> タグでフォールバック
+                                    const cursorLine = editor.selection.active.line;
+                                    const htmlLines = editor.document.getText().split('\n');
+                                    const sections = detectHtmlSections(editor.document);
+                                    for (let i = sections.length - 1; i >= 0; i--) {
+                                        if (sections[i].line <= cursorLine) {
+                                            const endLine = findSectionEnd(htmlLines, sections[i].line);
+                                            if (cursorLine <= endLine) {
+                                                htmlSectionText = htmlLines.slice(sections[i].line, endLine + 1).join('\n');
+                                                htmlSectionName = sections[i].label.replace(/^[🔝📦🔚]\s*/, '');
+                                                break;
+                                            }
                                         }
                                     }
-                                    catch (e) { /* 無視 */ }
                                 }
-                                // Stage 2: HTMLのクラス/IDでCSS検索
-                                if (!cssSection) {
-                                    const classSelectors = [...htmlSectionText.matchAll(/class="([^"]+)"/g)]
-                                        .flatMap(m => m[1].split(/\s+/).map(c => '.' + c));
-                                    const idSelectors = [...htmlSectionText.matchAll(/id="([^"]+)"/g)]
-                                        .map(m => '#' + m[1]);
-                                    const selectors = [...classSelectors, ...idSelectors];
+                                if (htmlSectionText) {
+                                    let cssSection = '';
+                                    const cssFilePaths = await findLinkedCssFiles(editor.document);
                                     for (const cssPath of cssFilePaths) {
                                         try {
                                             const cssDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(cssPath));
-                                            const match = findCssSectionBySelectors(cssDoc, selectors);
+                                            // Stage 1: セクション名一致
+                                            const match = findCssSectionByName(cssDoc, htmlSectionName);
                                             if (match) {
                                                 cssSection = match;
                                                 break;
@@ -4112,152 +4165,171 @@ ${explanation}
                                         }
                                         catch (e) { /* 無視 */ }
                                     }
+                                    // Stage 2: HTMLのクラス/IDでCSS検索
+                                    if (!cssSection) {
+                                        const classSelectors = [...htmlSectionText.matchAll(/class="([^"]+)"/g)]
+                                            .flatMap(m => m[1].split(/\s+/).map(c => '.' + c));
+                                        const idSelectors = [...htmlSectionText.matchAll(/id="([^"]+)"/g)]
+                                            .map(m => '#' + m[1]);
+                                        const selectors = [...classSelectors, ...idSelectors];
+                                        for (const cssPath of cssFilePaths) {
+                                            try {
+                                                const cssDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(cssPath));
+                                                const match = findCssSectionBySelectors(cssDoc, selectors);
+                                                if (match) {
+                                                    cssSection = match;
+                                                    break;
+                                                }
+                                            }
+                                            catch (e) { /* 無視 */ }
+                                        }
+                                    }
+                                    codeToSend = `【HTMLセクション: ${htmlSectionName}】\n${htmlSectionText}`;
+                                    if (cssSection) {
+                                        codeToSend += `\n\n【対応CSSセクション】\n${cssSection}`;
+                                    }
                                 }
-                                codeToSend = `【HTMLセクション: ${htmlSectionName}】\n${htmlSectionText}`;
-                                if (cssSection) {
-                                    codeToSend += `\n\n【対応CSSセクション】\n${cssSection}`;
-                                }
                             }
+                            // その他（md等）: codeToSend = code のまま（選択行のみ）
                         }
-                        // その他（md等）: codeToSend = code のまま（選択行のみ）
-                    }
-                    catch (e) {
-                        console.error('[SectionContext] エラー:', e);
-                        // エラー時は選択行のみで続行
-                    }
-                }
-                // JS/TS/PHP: ファイル全体 + 選択箇所を送信（MD等は選択範囲のみ）
-                if ((langId === 'javascript' || langId === 'typescript' || langId === 'php') && !skipSectionEnrich) {
-                    const fullFileContent = editor.document.getText();
-                    const fileName = path.basename(editor.document.fileName);
-                    if (code) {
-                        codeToSend = `【ファイル全体（${fileName}）】\n${fullFileContent}\n\n【選択箇所（ここを中心に質問）】\n${code}`;
-                    }
-                    else {
-                        codeToSend = `【ファイル全体（${fileName}）】\n${fullFileContent}`;
-                    }
-                }
-                if (isSectionQuestion) {
-                    // セクション質問: カーソル位置のセクション全体を送信
-                    const sectionRange = getCurrentSectionRange(editor);
-                    if (!sectionRange) {
-                        vscode.window.showWarningMessage('セクションが見つかりません。カーソルを罫線ボックスコメント内に配置してください。');
-                        return;
-                    }
-                    // セクション範囲のテキストを取得
-                    const sectionText = editor.document.getText(new vscode.Range(new vscode.Position(sectionRange.start, 0), new vscode.Position(sectionRange.end + 1, 0)));
-                    codeToSend = `【セクション名】: ${sectionRange.sectionName}\n\n${sectionText}`;
-                    // HTMLファイルの場合、リンクされたCSSファイル全体を取得
-                    if (editor.document.languageId === 'html') {
-                        const cssFilePaths = await findLinkedCssFiles(editor.document);
-                        const cssContents = [];
-                        for (const cssPath of cssFilePaths) {
-                            try {
-                                const cssUri = vscode.Uri.file(cssPath);
-                                const cssDoc = await vscode.workspace.openTextDocument(cssUri);
-                                const fileName = path.basename(cssPath);
-                                cssContents.push(`/* ${fileName} */\n${cssDoc.getText()}`);
-                            }
-                            catch (e) {
-                                console.error(`CSS読み込みエラー: ${cssPath}`, e);
-                            }
-                        }
-                        if (cssContents.length > 0) {
-                            htmlContext = cssContents.join('\n\n');
+                        catch (e) {
+                            console.error('[SectionContext] エラー:', e);
+                            // エラー時は選択行のみで続行
                         }
                     }
-                }
-                else if (isQuiz) {
-                    // クイズ処理
-                    return; // 一旦プログレスを終了してクイズ処理へ
-                }
-                else if (isStructural) {
-                    // HTML構造改善: 選択範囲 or セクション選択 + 全体送信 + CSS
-                    if (editor.document.languageId !== 'html') {
-                        vscode.window.showWarningMessage('HTML構造改善はHTMLファイルで使用してください');
-                        return;
-                    }
-                    const fullHtml = editor.document.getText();
-                    // 選択範囲があればそのまま使用、なければセクション選択QuickPick
-                    if (code) {
-                        // 選択範囲あり → QuickPickスキップ、選択範囲に★マーカー
-                        const beforeSelection = editor.document.getText(new vscode.Range(new vscode.Position(0, 0), selection.start));
-                        const afterSelection = editor.document.getText(new vscode.Range(selection.end, new vscode.Position(editor.document.lineCount, 0)));
-                        codeToSend = beforeSelection
-                            + '<!-- ★改善対象ここから -->\n'
-                            + code
-                            + '\n<!-- ★改善対象ここまで -->'
-                            + afterSelection;
-                    }
-                    else {
-                        // 選択範囲なし → セクション選択QuickPick
-                        const detectedSections = detectHtmlSections(editor.document);
-                        const sectionItems = [
-                            { label: '📄 ファイル全体', description: '', line: -1 },
-                            ...detectedSections.map(s => ({
-                                label: s.label,
-                                description: `行 ${s.line + 1}`,
-                                line: s.line
-                            }))
-                        ];
-                        const selectedSection = await vscode.window.showQuickPick(sectionItems, {
-                            placeHolder: '改善対象のセクションを選択'
-                        });
-                        if (!selectedSection) {
-                            return;
-                        }
-                        if (selectedSection.line === -1) {
-                            codeToSend = fullHtml;
+                    // JS/TS/PHP: ファイル全体 + 選択箇所を送信（MD等は選択範囲のみ）
+                    if ((langId === 'javascript' || langId === 'typescript' || langId === 'php') && !skipSectionEnrich) {
+                        const fullFileContent = editor.document.getText();
+                        const fileName = path.basename(editor.document.fileName);
+                        if (code) {
+                            codeToSend = `【ファイル全体（${fileName}）】\n${fullFileContent}\n\n【選択箇所（ここを中心に質問）】\n${code}`;
                         }
                         else {
-                            const lines = fullHtml.split('\n');
-                            const sectionLine = selectedSection.line;
-                            const before = lines.slice(0, sectionLine).join('\n');
-                            const endLine = findSectionEnd(lines, sectionLine);
-                            const sectionContent = lines.slice(sectionLine, endLine + 1).join('\n');
-                            const after = lines.slice(endLine + 1).join('\n');
-                            codeToSend = before + '\n<!-- ★改善対象ここから -->\n'
-                                + sectionContent
-                                + '\n<!-- ★改善対象ここまで -->\n' + after;
+                            codeToSend = `【ファイル全体（${fileName}）】\n${fullFileContent}`;
                         }
                     }
-                    // リンクされたCSSファイルから、選択範囲のクラス/IDに関連するルールのみ抽出
-                    const cssFiles = await findLinkedCssFiles(editor.document);
-                    const targetHtml = code || codeToSend; // 選択範囲 or ★マーカー付き全体
-                    const cssContent = await extractRelatedCssRules(targetHtml, cssFiles);
-                    htmlContext = cssContent;
-                }
-                else if (isMemoSearch) {
-                    // メモ検索処理
-                    return; // 一旦プログレスを終了してメモ検索処理へ
-                }
-                else if (isFreeQuestion) {
-                    // 自由質問: JS/TS/PHP/HTML/CSS はファイルコンテキストを維持、それ以外（MDなど）はクリア
-                    if (langId !== 'javascript' && langId !== 'typescript' && langId !== 'php' && langId !== 'html' && langId !== 'css') {
-                        codeToSend = '';
-                        htmlContext = '';
-                    }
-                }
-                else if (editor.document.languageId === 'css') {
-                    // まず選択範囲からセレクタを探す
-                    let selectors = code ? extractSelectorsFromCSS(code) : [];
-                    // 選択範囲にセレクタがない場合、親のCSSルールからセレクタを検出
-                    if (selectors.length === 0) {
-                        const parentInfo = findParentSelector(editor.document, selection.start);
-                        selectors = parentInfo.selectors;
-                        // 選択範囲が空または親ルール全体を含まない場合、親ルール全体を使用
-                        if (!code && parentInfo.fullRule) {
-                            codeToSend = parentInfo.fullRule;
+                    if (isSectionQuestion) {
+                        // セクション質問: カーソル位置のセクション全体を送信
+                        const sectionRange = getCurrentSectionRange(editor);
+                        if (!sectionRange) {
+                            vscode.window.showWarningMessage('セクションが見つかりません。カーソルを罫線ボックスコメント内に配置してください。');
+                            return;
                         }
-                        else if (code && parentInfo.selectorText) {
-                            // セレクタ情報を追加
-                            codeToSend = `/* セレクタ: ${parentInfo.selectorText} */\n${code}`;
+                        // セクション範囲のテキストを取得
+                        const sectionText = editor.document.getText(new vscode.Range(new vscode.Position(sectionRange.start, 0), new vscode.Position(sectionRange.end + 1, 0)));
+                        codeToSend = `【セクション名】: ${sectionRange.sectionName}\n\n${sectionText}`;
+                        // HTMLファイルの場合、リンクされたCSSファイル全体を取得
+                        if (editor.document.languageId === 'html') {
+                            const cssFilePaths = await findLinkedCssFiles(editor.document);
+                            const cssContents = [];
+                            for (const cssPath of cssFilePaths) {
+                                try {
+                                    const cssUri = vscode.Uri.file(cssPath);
+                                    const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+                                    const fileName = path.basename(cssPath);
+                                    cssContents.push(`/* ${fileName} */\n${cssDoc.getText()}`);
+                                }
+                                catch (e) {
+                                    console.error(`CSS読み込みエラー: ${cssPath}`, e);
+                                }
+                            }
+                            if (cssContents.length > 0) {
+                                htmlContext = cssContents.join('\n\n');
+                            }
                         }
                     }
-                    if (selectors.length > 0) {
-                        htmlContext = await findHtmlUsage(selectors);
+                    else if (isQuiz) {
+                        // クイズ処理
+                        return; // 一旦プログレスを終了してクイズ処理へ
                     }
-                }
+                    else if (isStructural) {
+                        // HTML構造改善: 選択範囲 or セクション選択 + 全体送信 + CSS
+                        if (editor.document.languageId !== 'html') {
+                            vscode.window.showWarningMessage('HTML構造改善はHTMLファイルで使用してください');
+                            return;
+                        }
+                        const fullHtml = editor.document.getText();
+                        // 選択範囲があればそのまま使用、なければセクション選択QuickPick
+                        if (code) {
+                            // 選択範囲あり → QuickPickスキップ、選択範囲に★マーカー
+                            const beforeSelection = editor.document.getText(new vscode.Range(new vscode.Position(0, 0), selection.start));
+                            const afterSelection = editor.document.getText(new vscode.Range(selection.end, new vscode.Position(editor.document.lineCount, 0)));
+                            codeToSend = beforeSelection
+                                + '<!-- ★改善対象ここから -->\n'
+                                + code
+                                + '\n<!-- ★改善対象ここまで -->'
+                                + afterSelection;
+                        }
+                        else {
+                            // 選択範囲なし → セクション選択QuickPick
+                            const detectedSections = detectHtmlSections(editor.document);
+                            const sectionItems = [
+                                { label: '📄 ファイル全体', description: '', line: -1 },
+                                ...detectedSections.map(s => ({
+                                    label: s.label,
+                                    description: `行 ${s.line + 1}`,
+                                    line: s.line
+                                }))
+                            ];
+                            const selectedSection = await vscode.window.showQuickPick(sectionItems, {
+                                placeHolder: '改善対象のセクションを選択'
+                            });
+                            if (!selectedSection) {
+                                return;
+                            }
+                            if (selectedSection.line === -1) {
+                                codeToSend = fullHtml;
+                            }
+                            else {
+                                const lines = fullHtml.split('\n');
+                                const sectionLine = selectedSection.line;
+                                const before = lines.slice(0, sectionLine).join('\n');
+                                const endLine = findSectionEnd(lines, sectionLine);
+                                const sectionContent = lines.slice(sectionLine, endLine + 1).join('\n');
+                                const after = lines.slice(endLine + 1).join('\n');
+                                codeToSend = before + '\n<!-- ★改善対象ここから -->\n'
+                                    + sectionContent
+                                    + '\n<!-- ★改善対象ここまで -->\n' + after;
+                            }
+                        }
+                        // リンクされたCSSファイルから、選択範囲のクラス/IDに関連するルールのみ抽出
+                        const cssFiles = await findLinkedCssFiles(editor.document);
+                        const targetHtml = code || codeToSend; // 選択範囲 or ★マーカー付き全体
+                        const cssContent = await extractRelatedCssRules(targetHtml, cssFiles);
+                        htmlContext = cssContent;
+                    }
+                    else if (isMemoSearch) {
+                        // メモ検索処理
+                        return; // 一旦プログレスを終了してメモ検索処理へ
+                    }
+                    else if (isFreeQuestion) {
+                        // 自由質問: JS/TS/PHP/HTML/CSS はファイルコンテキストを維持、それ以外（MDなど）はクリア
+                        if (langId !== 'javascript' && langId !== 'typescript' && langId !== 'php' && langId !== 'html' && langId !== 'css') {
+                            codeToSend = '';
+                            htmlContext = '';
+                        }
+                    }
+                    else if (editor.document.languageId === 'css') {
+                        // まず選択範囲からセレクタを探す
+                        let selectors = code ? extractSelectorsFromCSS(code) : [];
+                        // 選択範囲にセレクタがない場合、親のCSSルールからセレクタを検出
+                        if (selectors.length === 0) {
+                            const parentInfo = findParentSelector(editor.document, selection.start);
+                            selectors = parentInfo.selectors;
+                            // 選択範囲が空または親ルール全体を含まない場合、親ルール全体を使用
+                            if (!code && parentInfo.fullRule) {
+                                codeToSend = parentInfo.fullRule;
+                            }
+                            else if (code && parentInfo.selectorText) {
+                                // セレクタ情報を追加
+                                codeToSend = `/* セレクタ: ${parentInfo.selectorText} */\n${code}`;
+                            }
+                        }
+                        if (selectors.length > 0) {
+                            htmlContext = await findHtmlUsage(selectors);
+                        }
+                    }
+                } // isMultiFile分岐の終了
                 // デバッグ: 送信プロンプト確認
                 console.log('=== 📤 送信プロンプト ===');
                 console.log(question);
