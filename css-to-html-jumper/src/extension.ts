@@ -33,10 +33,13 @@ interface QuizHistory {
   evaluations?: number[];  // 評価履歴（3=簡単, 2=普通, 1=難しい）
   questionText?: string;   // 最後に出題した問題文（重複防止用）
   aiCategory?: string;     // Geminiが判定したカテゴリ
+  hiddenFromList?: boolean; // リスト一覧から非表示（ランダム出題には影響しない）
+  lastAnsweredDate?: string; // 最後に回答した日付（YYYY-MM-DD）✓マーク用
 }
 
 let quizHistoryMap: Map<string, QuizHistory> = new Map();
 let lastQuizFilter: { date: string; category: string } = { date: '全期間', category: '全カテゴリ' };
+let lastTopMode: string = ''; // 最後に選んだトップモード（today/yesterday/week/history）
 
 // ========================================
 // クイズ回答ドキュメント（セッション通して累積）
@@ -52,6 +55,7 @@ let pendingQuizEvaluation: {
   newAnswerStartLine: number;
   claudeAnswer: string;
   answerContent: string;
+  fromList?: boolean; // リストから選んだ場合、評価後にリストに戻る
 } | null = null;
 
 let statusBarItem: vscode.StatusBarItem | null = null;
@@ -194,7 +198,8 @@ async function showEvaluationQuickPick(hasFactCheckError: boolean = false, isRep
   items.push({ label: '✅ 終了', description: '', action: 'exit' });
 
   const afterAnswer = await vscode.window.showQuickPick(items, {
-    placeHolder: hasFactCheckError ? '⚠ ファクトチェックで誤りが検出されました。理解度を評価またはメモを修正してください' : isRepeat ? '復習完了！理解度を評価してください（回答はそのまま保存）' : '理解度を評価してください'
+    placeHolder: hasFactCheckError ? '⚠ ファクトチェックで誤りが検出されました。理解度を評価またはメモを修正してください' : isRepeat ? '復習完了！理解度を評価してください（回答はそのまま保存）' : '理解度を評価してください',
+    ignoreFocusOut: true
   });
 
   return afterAnswer;
@@ -259,9 +264,13 @@ async function processEvaluation(evaluation: any) {
   }
 
   // ステータスバーを非表示
+  const wasFromList = pendingQuizEvaluation?.fromList ?? false;
+  const todayStr2 = new Date().toISOString().slice(0, 10);
+  const answeredHistory = quizHistoryMap.get(pendingQuizEvaluation!.quiz.title);
+  if (answeredHistory) { answeredHistory.lastAnsweredDate = todayStr2; saveQuizHistory(); }
   hideEvaluationStatusBar();
 
-  // 次の問題へ
+  // 次の問題へ（false = lastTopModeを使いトップ画面スキップ、空なら通常ランダム）
   await handleQuiz(false);
 }
 
@@ -1299,13 +1308,187 @@ async function handleQuiz(showFilterPick = false) {
       return;
     }
 
-    // フィルタQuickPick（showFilterPickがtrueのときのみ表示）
+    // ========================================
+    // リストモード（USE_QUIZ_LIST_MODE = true のとき）
+    // false にすると元のフィルタQuickPickに戻る
+    // ========================================
+    const USE_QUIZ_LIST_MODE = true;
+    let preSelectedQuiz: typeof headings[0] | undefined = undefined;
+
+    if (USE_QUIZ_LIST_MODE && (showFilterPick || lastTopMode)) {
+      // 日付計算（メモ絞り込み用）
+      const _now = Date.now();
+      const _pad2 = (n: number) => String(n).padStart(2, '0');
+      const _today = new Date(_now);
+      const _todayStr = `${_today.getFullYear()}-${_pad2(_today.getMonth() + 1)}-${_pad2(_today.getDate())}`;
+      const _yesterday = new Date(_now - 24 * 60 * 60 * 1000);
+      const _yesterdayStr = `${_yesterday.getFullYear()}-${_pad2(_yesterday.getMonth() + 1)}-${_pad2(_yesterday.getDate())}`;
+      const _weekAgo = new Date(_now); _weekAgo.setDate(_weekAgo.getDate() - 6);
+      const _weekAgoStr = `${_weekAgo.getFullYear()}-${_pad2(_weekAgo.getMonth() + 1)}-${_pad2(_weekAgo.getDate())}`;
+
+      let selectedMode = '';
+
+      if (showFilterPick) {
+        // Ctrl+Shift+7 で新規起動 → トップ画面を表示
+        type TopItem = vscode.QuickPickItem & { mode?: string };
+        const todayCount = headings.filter(h => h.date === _todayStr).length;
+        const yesterdayCount = headings.filter(h => h.date === _yesterdayStr).length;
+        const weekCount = headings.filter(h => h.date && h.date >= _weekAgoStr).length;
+        const historyCount = [...quizHistoryMap.values()].filter(h => h.lastReviewed >= _now - 7 * 24 * 60 * 60 * 1000).length;
+
+        const topItems: TopItem[] = [
+          { label: `📅 今日のメモから出題`, description: `${todayCount}件`, mode: 'today' },
+          { label: `📅 昨日のメモから出題`, description: `${yesterdayCount}件`, mode: 'yesterday' },
+          { label: `📅 今週のメモから出題`, description: `${weekCount}件`, mode: 'week' },
+          { label: '', kind: vscode.QuickPickItemKind.Separator },
+          { label: `📚 クイズ履歴から選ぶ（1週間）`, description: `${historyCount}件`, mode: 'history' },
+          { label: '🎲 ランダムで出題', description: '通常モード', mode: 'random' },
+        ];
+
+        const topPicked = await vscode.window.showQuickPick(topItems as vscode.QuickPickItem[], {
+          placeHolder: '出題方法を選んでください',
+        }) as TopItem | undefined;
+        if (!topPicked) { return; }
+        selectedMode = topPicked.mode || '';
+        if (selectedMode && selectedMode !== 'random') {
+          lastTopMode = selectedMode; // 次回の評価後に再利用
+        }
+      } else {
+        // 評価後 → トップ画面スキップ、前回のモードをそのまま使用
+        selectedMode = lastTopMode;
+      }
+
+      if (selectedMode === 'random' || selectedMode === '') {
+        // そのまま下のランダムロジックへ
+
+      } else if (selectedMode === 'today' || selectedMode === 'yesterday' || selectedMode === 'week') {
+        // メモ一覧から選ぶ
+        const filtered = headings.filter(h => {
+          if (!h.date) { return false; }
+          if (selectedMode === 'today') { return h.date === _todayStr; }
+          if (selectedMode === 'yesterday') { return h.date === _yesterdayStr; }
+          return h.date >= _weekAgoStr;
+        });
+        if (filtered.length === 0) {
+          vscode.window.showInformationMessage('該当する期間のメモが見つかりませんでした。出題方法を選び直してください。');
+          lastTopMode = ''; // リセットしてトップ画面へ
+          await handleQuiz(true);
+          return;
+        }
+        type MemoItem = vscode.QuickPickItem & { heading: typeof headings[0] };
+        const memoItems: MemoItem[] = filtered.map(h => {
+          const hist = quizHistoryMap.get(h.title);
+          let mark = '';
+          if (hist?.lastAnsweredDate) {
+            const lastEval = hist.evaluations?.[hist.evaluations.length - 1];
+            mark = lastEval === 3 ? '✓ ' : '↺ ';
+          }
+          return {
+            label: mark + h.title,
+            description: `${h.date || ''}  ${h.category || ''}`,
+            heading: h,
+          };
+        });
+        const memoPicked = await vscode.window.showQuickPick(memoItems as vscode.QuickPickItem[], {
+          placeHolder: '出題する問題を選んでください',
+          matchOnDescription: true,
+        }) as MemoItem | undefined;
+        if (!memoPicked) { return; }
+        preSelectedQuiz = memoPicked.heading;
+
+      } else if (selectedMode === 'history') {
+        // クイズ履歴リスト（1週間）
+        const oneWeekAgo = _now - 7 * 24 * 60 * 60 * 1000;
+        const recentHistory = [...quizHistoryMap.entries()]
+          .filter(([_, h]) => h.lastReviewed >= oneWeekAgo)
+          .sort((a, b) => b[1].lastReviewed - a[1].lastReviewed);
+
+        const HIDE_BTN: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('eye-closed'), tooltip: 'リストから非表示にする' };
+        const SHOW_BTN: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('eye'), tooltip: 'リストに戻す' };
+        type ListItem = vscode.QuickPickItem & { quizTitle?: string; isShowHidden?: boolean };
+        let showHidden = false;
+
+        function buildListItems(): ListItem[] {
+          const items: ListItem[] = [];
+          const visible = recentHistory.filter(([_, h]) => showHidden ? h.hiddenFromList : !h.hiddenFromList);
+          if (visible.length === 0) {
+            items.push({ label: showHidden ? '（非表示の項目なし）' : '（過去1週間の履歴なし）', description: '' });
+          } else {
+            for (const [title, history] of visible) {
+              const date = new Date(history.lastReviewed).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' });
+              let answeredMark = '';
+              if (history.lastAnsweredDate) {
+                const lastEval = history.evaluations?.[history.evaluations.length - 1];
+                answeredMark = lastEval === 3 ? '✓ ' : '↺ ';
+              }
+              items.push({
+                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + (history.questionText || title),
+                description: `${date}  ${history.aiCategory || ''}`,
+                quizTitle: title,
+                buttons: [history.hiddenFromList ? SHOW_BTN : HIDE_BTN],
+              } as ListItem);
+            }
+          }
+          const hiddenCount = recentHistory.filter(([_, h]) => h.hiddenFromList).length;
+          if (hiddenCount > 0) {
+            items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+            items.push({
+              label: showHidden ? '📋 通常の一覧に戻す' : `📋 非表示の項目を表示 (${hiddenCount}件)`,
+              description: '',
+              isShowHidden: true,
+            } as ListItem);
+          }
+          return items;
+        }
+
+        const qp = vscode.window.createQuickPick<ListItem>();
+        qp.placeholder = '復習したい問題を選ぶ（ESCでキャンセル）';
+        qp.matchOnDescription = true;
+        qp.items = buildListItems();
+
+        const picked = await new Promise<ListItem | undefined>(resolve => {
+          qp.onDidTriggerItemButton(e => {
+            const item = e.item as ListItem;
+            if (!item.quizTitle) { return; }
+            const h = quizHistoryMap.get(item.quizTitle);
+            if (!h) { return; }
+            h.hiddenFromList = !h.hiddenFromList;
+            saveQuizHistory();
+            qp.items = buildListItems();
+          });
+          qp.onDidAccept(() => {
+            const sel = qp.activeItems[0] as ListItem;
+            if (sel?.isShowHidden) {
+              showHidden = !showHidden;
+              qp.items = buildListItems();
+              return;
+            }
+            resolve(sel);
+            qp.dispose();
+          });
+          qp.onDidHide(() => { resolve(undefined); qp.dispose(); });
+          qp.show();
+        });
+
+        if (!picked) { return; }
+        if ((picked as ListItem).quizTitle) {
+          preSelectedQuiz = headings.find(h => h.title === (picked as ListItem).quizTitle);
+          if (!preSelectedQuiz) {
+            vscode.window.showWarningMessage('メモから該当の問題が見つかりませんでした');
+            return;
+          }
+        }
+      }
+    }
+
+    // フィルタQuickPick（USE_QUIZ_LIST_MODE が false のときのみ表示）
     const allCategories = ['全カテゴリ', ...categoryList];
     const dateOptions = ['全期間', '今日', '昨日', '今週'];
     const filterItems: vscode.QuickPickItem[] = [];
-    if (!showFilterPick) {
+    if (!showFilterPick || (USE_QUIZ_LIST_MODE && !preSelectedQuiz)) {
       // フィルタQuickPickをスキップ → lastQuizFilterをそのまま使用
-    } else {
+      // （リストモードでランダム選択時もlastQuizFilterをそのまま使う）
+    } else if (!USE_QUIZ_LIST_MODE) {
 
     // 前回の選択を一番上に
     const isDefaultFilter = lastQuizFilter.date === '全期間' && lastQuizFilter.category === '全カテゴリ';
@@ -1392,9 +1575,8 @@ async function handleQuiz(showFilterPick = false) {
       filteredHeadings = filteredHeadings.filter(h => isInDateRange(h.date, filterDate));
     }
 
-    if (filteredHeadings.length === 0) {
+    if (!preSelectedQuiz && filteredHeadings.length === 0) {
       vscode.window.showWarningMessage(`「${filterDate} × ${filterCategory}」に一致する問題がまだありません。別の条件を選択してください。`);
-      // 該当する問題がない場合は、再度フィルタ選択画面を表示する
       await handleQuiz(true);
       return;
     }
@@ -1419,7 +1601,8 @@ async function handleQuiz(showFilterPick = false) {
       return daysSince >= requiredInterval;
     });
 
-    let quiz;
+    let quiz: typeof headings[0] | undefined = preSelectedQuiz;
+    if (!quiz) {
     const useReview = reviewCandidates.length > 0 && Math.random() < 0.3; // 30%で復習
 
     if (useReview) {
@@ -1464,6 +1647,8 @@ async function handleQuiz(showFilterPick = false) {
         quiz = available[randomIndex];
       }
     }
+    } // end if (!quiz)
+    if (!quiz) { return; }
 
     // 問題文の決定（初回のみGeminiで生成→JSON保存、2回目以降は保存済みを再利用）
     const geminiApiKey = config.get<string>('geminiApiKey', '');
@@ -1554,22 +1739,26 @@ ${categoryList.join(' / ')}
       }
     }
 
-    // QuickPickで問題表示
-    const answer = await vscode.window.showQuickPick(
-      [
-        { label: '💡 答えを見る', description: '', action: 'answer' },
-        { label: '🔄 別の問題', description: '', action: 'next' }
-      ],
-      {
-        placeHolder: `🎯 ${questionText}`
-      }
-    );
-
-    if (!answer) {
-      return; // キャンセル
+    // QuickPickで問題表示（リストから選んだ場合はスキップして直接答えへ）
+    let answerAction: string;
+    if (preSelectedQuiz) {
+      answerAction = 'answer';
+    } else {
+      const answer = await vscode.window.showQuickPick(
+        [
+          { label: '💡 答えを見る', description: '', action: 'answer' },
+          { label: '🔄 別の問題', description: '', action: 'next' }
+        ],
+        {
+          placeHolder: `🎯 ${questionText}`,
+          ignoreFocusOut: true
+        }
+      );
+      if (!answer) { return; } // キャンセル
+      answerAction = answer.action;
     }
 
-    if (answer.action === 'answer') {
+    if (answerAction === 'answer') {
       // 履歴記録（答えを見た時点で記録）
       const existingHistory = quizHistoryMap.get(quiz.title);
       if (existingHistory) {
@@ -1604,10 +1793,6 @@ ${categoryList.join(' / ')}
       memoEditor.setDecorations(decorationType, [memoRange]);
       setTimeout(() => decorationType.dispose(), 1500);
 
-      // === 2. 3秒待機 ===
-      console.log('[Quiz] 3秒待機開始...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      console.log('[Quiz] 3秒待機完了 → 回答取得開始');
 
       // === 3. 初回 or 既回答かを判定 ===
       const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
@@ -1744,7 +1929,8 @@ ${categoryList.join(' / ')}
             quizAnswerDoc: quizAnswerDoc,
             newAnswerStartLine: 0,
             claudeAnswer: '',
-            answerContent: answerContent
+            answerContent: answerContent,
+            fromList: !!preSelectedQuiz,
           };
         }
 
@@ -1765,12 +1951,12 @@ ${categoryList.join(' / ')}
         return;
       }
 
-      // ===== 初回：Claude呼び出し → md書き込み =====
-      console.log('[Quiz][DEBUG] ★★★ 初回ブランチに入りました → Claude呼び出し・書き込み処理へ ★★★');
+      // ===== 初回：Gemini Flash-Lite呼び出し → md書き込み =====
+      console.log('[Quiz][DEBUG] ★★★ 初回ブランチに入りました → Gemini呼び出し・書き込み処理へ ★★★');
       let claudeAnswer = '';
 
-      if (claudeApiKey) {
-        console.log('[Quiz][DEBUG] Claude API呼び出し開始...');
+      if (geminiApiKey) {
+        console.log('[Quiz][DEBUG] Gemini Flash-Lite API呼び出し開始...');
         // Claude API で質問に対する回答生成
         const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。また、メモ内容に技術的な誤りがあればファクトチェックとして指摘してください。
 
@@ -1842,14 +2028,19 @@ z-index
 「子要素も含めて他の要素より前面に配置できる」は誤りです。正しくは、stacking contextが形成されるため、親のz-indexが低いと子は他のstacking context内の要素より後ろになる場合があります。`;
 
         try {
-          claudeAnswer = await askClaudeAPI('', answerPrompt);
-          // デバッグ: 文字化けチェック
-          console.log('[Quiz] Claude回答:', claudeAnswer.substring(0, 100));
+          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiApiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: answerPrompt }] }] })
+          });
+          const geminiData: any = await geminiRes.json();
+          claudeAnswer = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || answerContent;
+          console.log('[Quiz] Gemini回答:', claudeAnswer.substring(0, 100));
         } catch (e: any) {
-          claudeAnswer = `[Claude API エラー: ${e.message}]\n\n元のメモ内容:\n${answerContent}`;
+          claudeAnswer = `[Gemini API エラー: ${e.message}]\n\n元のメモ内容:\n${answerContent}`;
         }
       } else {
-        // Claude APIキーなし → メモ内容をそのまま表示
+        // Gemini APIキーなし → メモ内容をそのまま表示
         claudeAnswer = answerContent;
       }
 
@@ -2004,7 +2195,8 @@ z-index
         quizAnswerDoc: quizAnswerDoc,
         newAnswerStartLine: newAnswerStartLine,
         claudeAnswer: claudeAnswer,
-        answerContent: answerContent
+        answerContent: answerContent,
+        fromList: !!preSelectedQuiz,
       };
 
       // questionText を履歴に保存（次回の重複検出用）
@@ -2043,7 +2235,7 @@ z-index
         await processEvaluation(afterAnswer);
         return; // 評価完了後は次の問題へ（processEvaluation内でhandleQuiz呼出済）
       }
-    } else if (answer.action === 'next') {
+    } else if (answerAction === 'next') {
       // 別の問題 → 10日間スキップ
       const skipHistory = quizHistoryMap.get(quiz.title);
       if (skipHistory) {
