@@ -16,7 +16,8 @@
       "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)",
       "Read(//c/Users/sensh/.claude/**)",
       "Bash(\"d:/50_knowledge/01_memo.md\":*)",
-      "Bash(\"C:/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)"
+      "Bash(\"C:/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)",
+      "Bash(date /t)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",

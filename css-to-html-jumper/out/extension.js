@@ -25,6 +25,7 @@ let lastMemoResultIndex = 0;
 let quizHistoryMap = new Map();
 let lastQuizFilter = { date: '全期間', category: '全カテゴリ' };
 let lastTopMode = ''; // 最後に選んだトップモード（today/yesterday/week/history）
+let lastPregenTime = 0; // バックグラウンド生成の最終実行時刻（5分に1回制限）
 // ========================================
 // クイズ回答ドキュメント（セッション通して累積）
 // ========================================
@@ -1238,6 +1239,49 @@ async function handleQuiz(showFilterPick = false) {
             vscode.window.showInformationMessage('メモに見出し（##/###）が見つかりませんでした');
             return;
         }
+        // === バックグラウンド生成: questionText がない見出しを10件まで並列生成（5分に1回・待ち時間ゼロ） ===
+        const pregenApiKey = config.get('geminiApiKey', '');
+        const PREGEN_INTERVAL = 5 * 60 * 1000; // 5分
+        if (pregenApiKey && Date.now() - lastPregenTime >= PREGEN_INTERVAL) {
+            lastPregenTime = Date.now();
+            const needsGen = headings.filter(h => !quizHistoryMap.get(h.title)?.questionText).slice(0, 10);
+            if (needsGen.length > 0) {
+                const buildPregenPrompt = (h) => {
+                    const contentPreview = h.content.slice(0, 10).join('\n');
+                    return `以下のメモの見出しをもとに、クイズ問題とカテゴリをJSON形式で返してください。\n\n【見出しのフォーマット説明】\n見出しは「条件 → 結果（解決策）」の形式で書かれていることがあります。\n例：「mix-blend-mode: screen → 動画の黒が透過する（炎素材に使う）」\nこの形式の場合、「条件（何をしたとき）」を問う問題を作ってください。\n\n【見出し】（これを問題にする）\n${h.title}\n\n【内容】（見出しの意味理解のためだけに使う。内容の細部から問題を作らない）\n${contentPreview}\n\n【カテゴリ候補】\n${categoryList.join(' / ')}\n\n【要件】\n- questionは【見出し】を問い形式にしたもの\n- 見出しが既に「？」で終わる場合はそのまま使ってよい\n- questionは50文字以内（明確さ優先）\n- questionは必ず「？」で終わる\n- questionは質問のみ（前置き禁止）\n- categoryはカテゴリ候補から1つ選ぶ\n\n出力形式（JSONのみ）:\n{"question": "質問文？", "category": "CSS"}`;
+                };
+                // バックグラウンドで並列実行（await しない → リスト表示をブロックしない）
+                Promise.all(needsGen.map(async (h) => {
+                    try {
+                        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${pregenApiKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ contents: [{ parts: [{ text: buildPregenPrompt(h) }] }], generationConfig: { responseMimeType: 'application/json' } })
+                        });
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            const raw = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                            if (raw) {
+                                const parsed = JSON.parse(raw);
+                                if (parsed.question) {
+                                    const existing = quizHistoryMap.get(h.title);
+                                    if (existing) {
+                                        existing.questionText = parsed.question;
+                                        if (!existing.aiCategory && parsed.category) {
+                                            existing.aiCategory = parsed.category;
+                                        }
+                                    }
+                                    else {
+                                        quizHistoryMap.set(h.title, { title: h.title, line: h.line, lastReviewed: 0, reviewCount: 0, questionText: parsed.question, aiCategory: parsed.category || '' });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (_e) { /* 失敗しても無視 */ }
+                })).then(() => saveQuizHistory());
+            }
+        }
         // ========================================
         // リストモード（USE_QUIZ_LIST_MODE = true のとき）
         // false にすると元のフィルタQuickPickに戻る
@@ -1314,8 +1358,12 @@ async function handleQuiz(showFilterPick = false) {
                         const lastEval = hist.evaluations?.[hist.evaluations.length - 1];
                         mark = lastEval === 3 ? '✓ ' : '↺ ';
                     }
+                    const displayLabel = hist?.questionText || h.title;
+                    if (!mark && hist?.questionText && !hist?.lastAnsweredDate) {
+                        mark = '🆕 ';
+                    }
                     return {
-                        label: mark + h.title,
+                        label: mark + displayLabel,
                         description: `${h.date || ''}  ${h.category || ''}`,
                         heading: h,
                     };
@@ -1604,19 +1652,26 @@ async function handleQuiz(showFilterPick = false) {
             // 初回：Geminiで問題文を新規生成
             try {
                 const contentPreview = quiz.content.slice(0, 10).join('\n');
-                const prompt = `以下のメモの見出しと内容から、クイズ問題とカテゴリをJSON形式で返してください。
+                const prompt = `以下のメモの見出しをもとに、クイズ問題とカテゴリをJSON形式で返してください。
 
-【見出し】
+【見出しのフォーマット説明】
+見出しは「条件 → 結果（解決策）」の形式で書かれていることがあります。
+例：「mix-blend-mode: screen → 動画の黒が透過する（炎素材に使う）」
+この形式の場合、「条件（何をしたとき）」を問う問題を作ってください。
+
+【見出し】（これを問題にする）
 ${quiz.title}
 
-【内容】
+【内容】（見出しの意味理解のためだけに使う。内容の細部から問題を作らない）
 ${contentPreview}
 
 【カテゴリ候補】
 ${categoryList.join(' / ')}
 
 【要件】
-- questionは50文字以内の質問（明確さを優先、短さは二の次）
+- questionは【見出し】を問い形式にしたもの（内容の細部から出題しない）
+- 見出しが既に「？」で終わる場合はそのまま使ってよい
+- questionは50文字以内（明確さを優先、短さは二の次）
 - questionは必ず「？」で終わる
 - questionは前置き・説明文は一切禁止、質問のみ
 - categoryはカテゴリ候補から最も近いものを1つ選ぶ（候補に合わなければ「その他」）
@@ -1628,6 +1683,7 @@ ${categoryList.join(' / ')}
 良い例:
 ○ "中身の幅だけの箱を作るdisplayの値は？"
 ○ "Flexコンテナ内の子要素同士の間隔を一括設定するプロパティは？"
+○ "動画の黒を透過させたいとき使うCSSプロパティと値は？"
 
 出力形式（JSONのみ、他のテキスト禁止）:
 {"question": "質問文？", "category": "CSS"}`;
@@ -1714,7 +1770,7 @@ ${categoryList.join(' / ')}
             const memoPosition = new vscode.Position(quiz.line - 1, 0);
             const memoRange = new vscode.Range(memoPosition, new vscode.Position(quiz.line, 0));
             memoEditor.selection = new vscode.Selection(memoPosition, memoPosition);
-            memoEditor.revealRange(memoRange, vscode.TextEditorRevealType.InCenter);
+            memoEditor.revealRange(memoRange, vscode.TextEditorRevealType.AtTop);
             // ハイライト（黄色フラッシュ 1.5秒）
             const decorationType = vscode.window.createTextEditorDecorationType({
                 backgroundColor: 'rgba(255, 255, 0, 0.3)'
@@ -1864,7 +1920,7 @@ ${categoryList.join(' / ')}
             if (geminiApiKey) {
                 console.log('[Quiz][DEBUG] Gemini Flash-Lite API呼び出し開始...');
                 // Claude API で質問に対する回答生成
-                const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。また、メモ内容に技術的な誤りがあればファクトチェックとして指摘してください。
+                const answerPrompt = `以下の質問に対して、メモの内容をもとに回答してください。
 
 【質問】
 ${questionText}
@@ -1882,9 +1938,6 @@ ${answerContent}
 コード
 \`\`\`
 
-⚠ ファクトチェック：（メモに技術的誤りがある場合のみ記載）
-「〜」は誤りです。正しくは〜
-
 【要件】
 - 超シンプルに、核心だけ書く
 - 見出し禁止（**答え**、**説明**、**メモの要約：** 等を使わない）
@@ -1893,27 +1946,11 @@ ${answerContent}
 - 回答内に「# 」で始まる見出しを含めない
 - メモに ★★「語呂合わせ」★★ の行がある場合は、必ず回答の末尾に「語呂：★★「...」★★」として含める
 - 【重要】「答え」と「説明」は、あなたの知識ではなく100%「メモの内容」を正として出力してください。メモの内容がCSSの仕様と異なっていても、現場の経験則として書かれている場合はそのまま回答として出力してください。
-- 【重要】メモの内容に対して「実際には不要です」「これは誤りです」などの否定や訂正を「答え」「説明」の中に絶対に混ぜないでください。
-- 仕様との乖離や訂正がある場合は、すべて「⚠ ファクトチェック：」の項目の中だけで行ってください。
-- ファクトチェックは誤りがない場合は完全に省略（「問題ありません」等も書かない）
-- メモが正確なら回答のみ出力する
+- 【重要】メモの内容に対して「実際には不要です」「これは誤りです」などの否定や訂正を一切書かないでください。
+- 【重要】「⚠ ファクトチェック」という文言を回答に含めないでください。
+- メモの内容をそのまま正として、シンプルに回答だけ出力してください。
 
-【悪い例】
-**答え**
-
-vertical-align
-
-**説明**
-
-インライン要素の縦位置を調整するプロパティ。
-
-**メモの要約：**
-- ❌ ...
-- ⭕ ...
-
-（見出しが多すぎ、長すぎ）
-
-【良い例（誤りなし）】
+【良い例】
 vertical-align
 
 インライン要素の縦位置を調整。負の値（-0.2rem等）で下方向に微調整できる。
@@ -1924,14 +1961,7 @@ vertical-align
   vertical-align: -0.2rem;
 }
 \`\`\`
-
-【良い例（誤りあり）】
-z-index
-
-重なり順を制御するプロパティ。positionと併用が必要。
-
-⚠ ファクトチェック：
-「子要素も含めて他の要素より前面に配置できる」は誤りです。正しくは、stacking contextが形成されるため、親のz-indexが低いと子は他のstacking context内の要素より後ろになる場合があります。`;
+`;
                 try {
                     const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${geminiApiKey}`, {
                         method: 'POST',
