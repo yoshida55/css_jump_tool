@@ -1528,16 +1528,16 @@ async function handleQuiz(showFilterPick = false) {
         // 見えない文字や制御文字を除去
         const fullTitle = match[1].trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
 
-        // 【日付】yyyy-MM-dd を抽出（見出し行 OR 直後5行以内）
+        // 【日付】yyyy-MM-dd または yyyy-MM-dd を抽出（見出し行 OR 直後5行以内）
         let headingDate: string | null = null;
-        const inlineDateMatch = fullTitle.match(/【日付】(\d{4}-\d{2}-\d{2})/);
+        const inlineDateMatch = fullTitle.match(/(?:【日付】)?(\d{4}-\d{2}-\d{2})/);
         if (inlineDateMatch) {
           headingDate = inlineDateMatch[1];
         } else {
-          // 見出し直後5行以内を検索
+          // 見出し直後5行以内を検索（【日付】付き or 日付のみの行）
           for (let k = i + 1; k < Math.min(i + 6, lines.length); k++) {
             if (lines[k].match(/^#{2,3}\s+/)) { break; }
-            const nearDateMatch = lines[k].match(/【日付】(\d{4}-\d{2}-\d{2})/);
+            const nearDateMatch = lines[k].match(/(?:【日付】)?(\d{4}-\d{2}-\d{2})/);
             if (nearDateMatch) { headingDate = nearDateMatch[1]; break; }
           }
         }
@@ -1607,13 +1607,26 @@ async function handleQuiz(showFilterPick = false) {
     const PREGEN_INTERVAL = 5 * 60 * 1000; // 5分
     if (pregenApiKey && Date.now() - lastPregenTime >= PREGEN_INTERVAL) {
       lastPregenTime = Date.now();
-      const needsGen = headings.filter(h => !quizHistoryMap.get(h.title)?.questionText).slice(0, 10);
+      // 直近の日付順（新しい順）で未生成のものを10件取得
+      const needsGen = headings
+        .filter(h => !quizHistoryMap.get(h.title)?.questionText)
+        .sort((a, b) => {
+          if (!a.date && !b.date) { return 0; }
+          if (!a.date) { return 1; }
+          if (!b.date) { return -1; }
+          return b.date.localeCompare(a.date); // 新しい順
+        })
+        .slice(0, 10);
       if (needsGen.length > 0) {
         const buildPregenPrompt = (h: typeof headings[0]) => {
           const contentPreview = h.content.slice(0, 10).join('\n');
           return `以下のメモの見出しをもとに、クイズ問題とカテゴリをJSON形式で返してください。\n\n【見出しのフォーマット説明】\n見出しは「条件 → 結果（解決策）」の形式で書かれていることがあります。\n例：「mix-blend-mode: screen → 動画の黒が透過する（炎素材に使う）」\nこの形式の場合、「条件（何をしたとき）」を問う問題を作ってください。\n\n【見出し】（これを問題にする）\n${h.title}\n\n【内容】（見出しの意味理解のためだけに使う。内容の細部から問題を作らない）\n${contentPreview}\n\n【カテゴリ候補】\n${categoryList.join(' / ')}\n\n【要件】\n- questionは【見出し】を問い形式にしたもの\n- 見出しが既に「？」で終わる場合はそのまま使ってよい\n- questionは50文字以内（明確さ優先）\n- questionは必ず「？」で終わる\n- questionは質問のみ（前置き禁止）\n- categoryはカテゴリ候補から1つ選ぶ\n\n出力形式（JSONのみ）:\n{"question": "質問文？", "category": "CSS"}`;
         };
         // バックグラウンドで並列実行（await しない → リスト表示をブロックしない）
+        const pregenStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+        pregenStatus.text = `$(sync~spin) 問題生成中 0/${needsGen.length}件`;
+        pregenStatus.show();
+        let pregenDone = 0;
         Promise.all(needsGen.map(async h => {
           try {
             const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${pregenApiKey}`, {
@@ -1638,7 +1651,13 @@ async function handleQuiz(showFilterPick = false) {
               }
             }
           } catch (_e) { /* 失敗しても無視 */ }
-        })).then(() => saveQuizHistory());
+          pregenDone++;
+          pregenStatus.text = `$(sync~spin) 問題生成中 ${pregenDone}/${needsGen.length}件`;
+        })).then(() => {
+          saveQuizHistory();
+          pregenStatus.text = `$(check) 問題生成完了 ${pregenDone}件`;
+          setTimeout(() => pregenStatus.dispose(), 4000);
+        });
       }
     }
 
