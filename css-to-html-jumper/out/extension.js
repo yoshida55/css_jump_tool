@@ -148,6 +148,7 @@ async function showEvaluationQuickPick(hasFactCheckError = false, isRepeat = fal
     if (hasFactCheckError) {
         items.push({ label: '📝 メモを修正する', description: 'AIがメモの誤りを自動修正してmemo.mdも更新', action: 'correct' });
     }
+    items.push({ label: '🔍 深掘り質問', description: 'なぜ・応用・例外・比較・具体例をAIが生成してメモに追記', action: 'deepdive' });
     items.push({ label: '✅ 終了', description: '', action: 'exit' });
     const afterAnswer = await vscode.window.showQuickPick(items, {
         placeHolder: hasFactCheckError ? '⚠ ファクトチェックで誤りが検出されました。理解度を評価またはメモを修正してください' : isRepeat ? '復習完了！理解度を評価してください（回答はそのまま保存）' : '理解度を評価してください',
@@ -317,6 +318,265 @@ ${factCheckText}
     }
     if (afterCorrect.eval) {
         await processEvaluation(afterCorrect);
+    }
+}
+// ========================================
+// 深掘り質問生成・メモ追記
+// ========================================
+async function generateDeepDiveQuestion() {
+    if (!pendingQuizEvaluation) {
+        return;
+    }
+    const { quiz, claudeAnswer, answerContent } = pendingQuizEvaluation;
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const geminiApiKey = config.get('geminiApiKey', '');
+    const memoFilePath = config.get('memoFilePath', '');
+    if (!geminiApiKey) {
+        vscode.window.showErrorMessage('Gemini APIキーが設定されていません。');
+        showEvaluationStatusBar();
+        return;
+    }
+    if (!memoFilePath) {
+        vscode.window.showErrorMessage('メモファイルパスが設定されていません。');
+        showEvaluationStatusBar();
+        return;
+    }
+    const todayStr = new Date().toISOString().slice(0, 10);
+    // Step1: 深掘り質問を生成
+    const prompt = `以下のクイズと正解を見て、理解を深める追加質問を1〜2個作ってください。
+
+【元の問題】
+${quiz.title}
+
+【メモ内容・正解】
+${claudeAnswer || answerContent}
+
+ルール：
+- 質問は以下の種類から選ぶ（なるべく違う種類を混ぜる）
+  1. なぜそうなるか（理由）
+  2. どんな場面で使うか（応用）
+  3. 使わない・逆効果な場面（例外）
+  4. 似ているものとの違い（比較）
+  5. 具体的な例（具体化）
+- 【重要】元の問題に出てきた言葉だけで質問を作る（新しい専門用語を使わない）
+- 「○○とは何ですか？」のような定義を聞く質問はNG（知らない言葉が出てしまうため）
+- 中学生でもわかる言葉で
+- 質問だけ出す（答えは出さない）
+- 形式：「Q1. ～？」のように番号付き
+- 挨拶・説明文は一切不要`;
+    const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
+    let deepDiveQuestions = '';
+    await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: '🔍 深掘り質問を生成中...',
+        cancellable: false
+    }, async () => {
+        const raw = await callGeminiApi(geminiApiKey, 'gemini-2.0-flash', postData);
+        const parsed = JSON.parse(raw);
+        deepDiveQuestions = parsed.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    });
+    if (!deepDiveQuestions) {
+        vscode.window.showErrorMessage('深掘り質問の生成に失敗しました。');
+        showEvaluationStatusBar();
+        return;
+    }
+    // Step2: QuickPickで質問を選択
+    const questionLines = deepDiveQuestions.split('\n').filter(l => l.trim().match(/^Q\d*\./));
+    if (questionLines.length === 0) {
+        vscode.window.showErrorMessage('深掘り質問の解析に失敗しました。');
+        showEvaluationStatusBar();
+        return;
+    }
+    const selectedQuestion = await vscode.window.showQuickPick(questionLines.map(q => ({ label: q, description: 'この質問をメモに追記する' })), { placeHolder: 'メモに追記する深掘り質問を選んでください', ignoreFocusOut: true });
+    if (!selectedQuestion) {
+        showEvaluationStatusBar();
+        return;
+    }
+    const chosenQuestion = selectedQuestion.label.replace(/^Q\d+\.\s*/, '').trim();
+    // Step3: AIで見出し・説明・関連リンクを生成
+    const memoPrompt = `以下の深掘り質問について、メモ形式で回答を作ってください。
+
+【深掘り質問】
+${chosenQuestion}
+
+【元の問題・背景知識】
+${quiz.title}
+${claudeAnswer || answerContent}
+
+出力フォーマット（必ずこの形式で）：
+## [詳しい見出し：質問内容＋キーワードを含める]
+[説明：箇条書き・中学生でもわかる言葉・3〜5行程度]
+
+ルール：
+- 見出しは質問の意味とキーワードが一目でわかるように詳しく書く
+- 説明は簡潔に、箇条書き推奨
+- 挨拶・余計な文章は一切不要
+- 関連リンク行は出力しない（コードで自動付与するため）`;
+    const memoPostData = JSON.stringify({ contents: [{ parts: [{ text: memoPrompt }] }] });
+    let memoEntry = '';
+    await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: '📝 メモ追記内容を生成中...',
+        cancellable: false
+    }, async () => {
+        const raw2 = await callGeminiApi(geminiApiKey, 'gemini-2.0-flash', memoPostData);
+        const parsed2 = JSON.parse(raw2);
+        memoEntry = parsed2.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    });
+    if (!memoEntry) {
+        vscode.window.showErrorMessage('メモ追記内容の生成に失敗しました。');
+        showEvaluationStatusBar();
+        return;
+    }
+    // 見出しの直下に【日付】形式で日付を挿入
+    memoEntry = memoEntry.replace(/^(##[^\n]+)\n/, `$1\n【日付】${todayStr}\n`);
+    // 末尾にある 関連: [[...]] 形式を除去（コード側で付与するため）
+    memoEntry = memoEntry.replace(/\n関連:.*$/s, '').trimEnd();
+    // 【関連】リンクをコード側で生成して付与（#アンカー形式）
+    const relatedAnchor = quiz.title
+        .toLowerCase()
+        .replace(/[^\w\s\u3040-\u30FF\u4E00-\u9FFF-]/g, '')
+        .replace(/\s+/g, '-');
+    memoEntry = memoEntry + `\n\n【関連】→ [${quiz.title}](#${relatedAnchor})`;
+    // Step4: memo.md に追記
+    const fs = require('fs');
+    try {
+        const existing = fs.readFileSync(memoFilePath, 'utf8');
+        const appended = existing.trimEnd() + '\n\n' + memoEntry + '\n';
+        fs.writeFileSync(memoFilePath, appended, 'utf8');
+    }
+    catch (e) {
+        vscode.window.showErrorMessage(`メモへの追記に失敗しました: ${e}`);
+        showEvaluationStatusBar();
+        return;
+    }
+    vscode.window.showInformationMessage(`✅ メモに追記しました（${todayStr}）`);
+    // Step4.5: memo.mdを開いて追記箇所をハイライト
+    try {
+        const memoDoc = await vscode.workspace.openTextDocument(memoFilePath);
+        const memoEditor = await vscode.window.showTextDocument(memoDoc, {
+            viewColumn: vscode.ViewColumn.One,
+            preserveFocus: true
+        });
+        const memoLineCount = memoDoc.lineCount;
+        const newEntryLines = memoEntry.split('\n').length;
+        const startLine = Math.max(0, memoLineCount - newEntryLines - 1);
+        const memoHighlightRange = new vscode.Range(new vscode.Position(startLine, 0), new vscode.Position(memoLineCount - 1, 0));
+        memoEditor.selection = new vscode.Selection(new vscode.Position(startLine, 0), new vscode.Position(startLine, 0));
+        memoEditor.revealRange(memoHighlightRange, vscode.TextEditorRevealType.InCenter);
+        const memoDecorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(255, 255, 0, 0.3)',
+            isWholeLine: true
+        });
+        memoEditor.setDecorations(memoDecorationType, [memoHighlightRange]);
+        setTimeout(() => memoDecorationType.dispose(), 3000);
+    }
+    catch (e) {
+        console.error('[Quiz] memo.mdハイライト失敗:', e);
+    }
+    // Step4.6: クイズ回答.mdにも深掘りQ&Aを追記
+    try {
+        const memoDir = path.dirname(memoFilePath);
+        const answerFilePath = path.join(memoDir, 'クイズ回答.md');
+        if (!fs.existsSync(answerFilePath)) {
+            fs.writeFileSync(answerFilePath, '', 'utf8');
+        }
+        const answerDoc = await vscode.workspace.openTextDocument(answerFilePath);
+        const currentContent = answerDoc.getText();
+        // クイズ回答.md用に簡潔な回答をGeminiで別途生成（通常クイズと同じ形式）
+        let answerBody = '';
+        const concisePrompt = `以下の深掘り質問に対して、シンプルな回答を作ってください。
+
+【深掘り質問】
+${chosenQuestion}
+
+【背景・元の問題】
+${quiz.title}
+
+【詳細内容】
+${memoEntry}
+
+【回答フォーマット】
+答え（1行、核心のみ）
+
+説明（1〜2行、理由や用途）
+
+【要件】
+- 超シンプルに、核心だけ書く
+- 見出し禁止（**答え**、**説明** 等を使わない）
+- 200文字以内
+- 中学生でもわかる言葉で
+- 知らない言葉を使って説明しない`;
+        try {
+            const concisePostData = JSON.stringify({ contents: [{ parts: [{ text: concisePrompt }] }] });
+            const raw3 = await callGeminiApi(geminiApiKey, 'gemini-2.0-flash', concisePostData);
+            const parsed3 = JSON.parse(raw3);
+            answerBody = parsed3.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+        }
+        catch (e) {
+            console.error('[Quiz] クイズ回答.md用簡潔回答生成エラー:', e);
+        }
+        // 生成失敗時はmemoEntryから見出し・日付・関連行を除去したものをフォールバックに使用
+        if (!answerBody) {
+            answerBody = memoEntry
+                .replace(/^##[^\n]*\n/, '')
+                .replace(/^【日付】[^\n]*\n/, '')
+                .replace(/\n【関連】.*$/, '')
+                .trim();
+        }
+        const deepDiveQ = `**Q: [深掘り] ${chosenQuestion}**`;
+        const SEP = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+        const newEntry = `${deepDiveQ}\n\n${answerBody}`;
+        const separator = !currentContent.trim() ? '' : SEP;
+        const newContent = currentContent.trimEnd() + separator + newEntry + '\n';
+        const newAnswerStartLine = answerDoc.lineCount;
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(answerDoc.lineCount, 0));
+        edit.replace(answerDoc.uri, fullRange, newContent);
+        await vscode.workspace.applyEdit(edit);
+        await answerDoc.save();
+        console.log('[Quiz] クイズ回答.md に深掘りQ&Aを追記完了');
+        // クイズ回答.mdを右エリアで表示してハイライト
+        const existingTab = vscode.window.tabGroups.all
+            .flatMap(group => group.tabs)
+            .find(tab => tab.input instanceof vscode.TabInputText &&
+            tab.input.uri.fsPath === answerFilePath);
+        const targetViewColumn = existingTab ? existingTab.group.viewColumn : vscode.ViewColumn.Two;
+        const answerEditor = await vscode.window.showTextDocument(answerDoc, {
+            viewColumn: targetViewColumn,
+            preview: false,
+            preserveFocus: false
+        });
+        const lastLine = answerDoc.lineCount - 1;
+        answerEditor.selection = new vscode.Selection(new vscode.Position(newAnswerStartLine, 0), new vscode.Position(newAnswerStartLine, 0));
+        answerEditor.revealRange(new vscode.Range(newAnswerStartLine, 0, lastLine, 0), vscode.TextEditorRevealType.InCenter);
+        const answerDecorationType = vscode.window.createTextEditorDecorationType({
+            backgroundColor: 'rgba(255, 255, 0, 0.3)',
+            isWholeLine: true
+        });
+        answerEditor.setDecorations(answerDecorationType, [new vscode.Range(newAnswerStartLine, 0, lastLine, 0)]);
+        setTimeout(() => answerDecorationType.dispose(), 3000);
+    }
+    catch (e) {
+        console.error('[Quiz] クイズ回答.md追記失敗:', e);
+    }
+    // Step5: 評価QuickPickを再表示
+    const hasFactCheckError = pendingQuizEvaluation.claudeAnswer?.includes('⚠ ファクトチェック') ?? false;
+    const afterDeepDive = await showEvaluationQuickPick(hasFactCheckError);
+    if (!afterDeepDive) {
+        showEvaluationStatusBar();
+        return;
+    }
+    if (afterDeepDive.action === 'exit') {
+        hideEvaluationStatusBar();
+        return;
+    }
+    if (afterDeepDive.action === 'correct') {
+        await correctMemo();
+        return;
+    }
+    if (afterDeepDive.eval) {
+        await processEvaluation(afterDeepDive);
     }
 }
 // ========================================
@@ -1637,8 +1897,8 @@ async function handleQuiz(showFilterPick = false) {
         const geminiApiKey = config.get('geminiApiKey', '');
         const savedHistory = quizHistoryMap.get(quiz.title);
         // 初回かどうかの判定を、回答による状態変更前に確定しておく
-        // 確実に「クイズ回答.md」にAIの回答が書き込まれている（＝questionTextが保存されている）かどうかで判定する
-        const wasAnsweredBefore = savedHistory ? !!savedHistory.questionText : false;
+        // lastReviewed > 0 でチェック（バックグラウンド事前生成は lastReviewed: 0 なので初回扱いになる）
+        const wasAnsweredBefore = savedHistory ? savedHistory.lastReviewed > 0 : false;
         console.log('[Quiz][DEBUG] quiz.title:', quiz.title);
         console.log('[Quiz][DEBUG] savedHistory:', savedHistory ? JSON.stringify({ lastReviewed: savedHistory.lastReviewed, reviewCount: savedHistory.reviewCount, questionText: savedHistory.questionText?.substring(0, 30), aiCategory: savedHistory.aiCategory }) : 'undefined');
         console.log('[Quiz][DEBUG] wasAnsweredBefore:', wasAnsweredBefore);
@@ -1791,7 +2051,11 @@ ${categoryList.join(' / ')}
             if (!isFirstTime) {
                 // ===== 2回目以降：既存エントリにジャンプするだけ（Claude呼び出し・md書き込みなし）=====
                 console.log('[Quiz][DEBUG] ★★★ 2回目以降ブランチに入りました → ジャンプのみ ★★★');
-                if (fs.existsSync(answerFilePath)) {
+                if (!fs.existsSync(answerFilePath)) {
+                    // ファイルが存在しない場合は初回パスへフォールスルー（ファイルが削除された等）
+                    console.log('[Quiz][DEBUG] 2回目だがファイルなし → 初回パスへフォールスルー');
+                }
+                else {
                     quizAnswerDoc = await vscode.workspace.openTextDocument(answerFilePath);
                     const existingContent = quizAnswerDoc.getText();
                     const lines = existingContent.split('\n');
@@ -1821,11 +2085,12 @@ ${categoryList.join(' / ')}
                         const revealPos = new vscode.Position(Math.max(0, jumpLine - 2), 0);
                         answerEditor.revealRange(new vscode.Range(revealPos, revealPos), vscode.TextEditorRevealType.AtTop);
                         const jumpDecorationType = vscode.window.createTextEditorDecorationType({
-                            backgroundColor: 'rgba(255, 255, 0, 0.4)'
+                            backgroundColor: 'rgba(255, 255, 0, 0.4)',
+                            isWholeLine: true
                         });
-                        // 当該行から5行を下をハイライト
+                        // 当該行から5行下をハイライト（isWholeLine:true で範囲が空でも確実に表示）
                         const endLine = Math.min(quizAnswerDoc.lineCount - 1, jumpLine + 5);
-                        answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, endLine, 0)]);
+                        answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, endLine + 1, 0)]);
                         setTimeout(() => jumpDecorationType.dispose(), 3000); // 3秒間に延長
                         console.log(`[Quiz][DEBUG] 既存回答にジャンプしました: L${jumpLine}`);
                     }
@@ -1887,6 +2152,14 @@ ${categoryList.join(' / ')}
                                 isRegex: false,
                                 isCaseSensitive: false
                             });
+                            // findWithArgs はデコレーションを使わないため、ファイル末尾を黄色ハイライトしてガイド
+                            const lastVisibleLine = Math.max(0, quizAnswerDoc.lineCount - 1);
+                            const fallbackDecorationType = vscode.window.createTextEditorDecorationType({
+                                backgroundColor: 'rgba(255, 165, 0, 0.3)', // オレンジ（見つからなかった時）
+                                isWholeLine: true
+                            });
+                            answerEditor.setDecorations(fallbackDecorationType, [new vscode.Range(lastVisibleLine, 0, lastVisibleLine, 0)]);
+                            setTimeout(() => fallbackDecorationType.dispose(), 3000);
                         }
                     }
                     pendingQuizEvaluation = {
@@ -1897,22 +2170,27 @@ ${categoryList.join(' / ')}
                         answerContent: answerContent,
                         fromList: !!preSelectedQuiz,
                     };
-                }
-                // 評価（2回目以降：文言を変える・削除しない）
-                const afterAnswerRepeat = await showEvaluationQuickPick(false, true);
-                if (!afterAnswerRepeat) {
-                    showEvaluationStatusBar();
+                    // 評価（2回目以降：文言を変える・削除しない）
+                    const afterAnswerRepeat = await showEvaluationQuickPick(false, true);
+                    if (!afterAnswerRepeat) {
+                        showEvaluationStatusBar();
+                        return;
+                    }
+                    if (afterAnswerRepeat.action === 'exit') {
+                        hideEvaluationStatusBar();
+                        return;
+                    }
+                    if (afterAnswerRepeat.action === 'deepdive') {
+                        await generateDeepDiveQuestion();
+                        return;
+                    }
+                    if (afterAnswerRepeat.eval) {
+                        await processEvaluation(afterAnswerRepeat);
+                        return;
+                    }
                     return;
                 }
-                if (afterAnswerRepeat.action === 'exit') {
-                    hideEvaluationStatusBar();
-                    return;
-                }
-                if (afterAnswerRepeat.eval) {
-                    await processEvaluation(afterAnswerRepeat);
-                    return;
-                }
-                return;
+                // ファイルなし → 初回パスへフォールスルー
             }
             // ===== 初回：Gemini Flash-Lite呼び出し → md書き込み =====
             console.log('[Quiz][DEBUG] ★★★ 初回ブランチに入りました → Gemini呼び出し・書き込み処理へ ★★★');
@@ -2131,6 +2409,11 @@ vertical-align
             if (afterAnswer.action === 'correct') {
                 // メモ修正
                 await correctMemo();
+                return;
+            }
+            if (afterAnswer.action === 'deepdive') {
+                // 深掘り質問生成・メモ追記
+                await generateDeepDiveQuestion();
                 return;
             }
             // 評価あり → 処理実行
@@ -4072,6 +4355,7 @@ ${explanation}
                         : userInput.trim();
                     resolve({
                         question: directQuestion,
+                        userInputText: userInput.trim(),
                         isSvg: false,
                         isSkeleton: false,
                         isStructural: false,
@@ -4178,6 +4462,7 @@ ${explanation}
                     // スケルトン・構造改善は入力無視、元のプリセットプロンプトのみ使用
                     resolve({
                         question: finalQuestion,
+                        userInputText: userInput.trim(),
                         isSvg: selected.label.includes('SVG'),
                         isSkeleton: isSkeleton,
                         isStructural: isStructural,
@@ -4204,7 +4489,7 @@ ${explanation}
         if (!result) {
             return; // キャンセル
         }
-        let { question, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile } = result;
+        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile } = result;
         let codeToSend = code;
         let htmlContext = '';
         // 複数ファイル選択モードの場合の特別処理
@@ -4643,12 +4928,14 @@ ${explanation}
                     const endPosition = selection.end;
                     const insertPosition = new vscode.Position(endPosition.line, editor.document.lineAt(endPosition.line).text.length);
                     const lang = editor.document.languageId;
+                    // 質問文を先頭に付ける（直接入力またはプリセット+入力の場合）
+                    const questionPrefix = userInputText ? `Q: ${userInputText}\n\n` : '';
                     let insertText;
                     if (lang === 'html') {
-                        insertText = `\n<!-- ✨\n${cleanAnswer}\n-->\n`;
+                        insertText = `\n<!-- ✨\n${questionPrefix}${cleanAnswer}\n-->\n`;
                     }
                     else {
-                        insertText = `\n/* ✨\n${cleanAnswer}\n*/\n`;
+                        insertText = `\n/* ✨\n${questionPrefix}${cleanAnswer}\n*/\n`;
                     }
                     await editor.edit(editBuilder => {
                         editBuilder.insert(insertPosition, insertText);
@@ -4733,6 +5020,10 @@ ${explanation}
         }
         if (afterAnswer.action === 'correct') {
             await correctMemo();
+            return;
+        }
+        if (afterAnswer.action === 'deepdive') {
+            await generateDeepDiveQuestion();
             return;
         }
         // 評価あり → 処理実行
