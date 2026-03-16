@@ -26,7 +26,9 @@
       "Bash(mv \"node-v22.18.0-win-x64\" \"node\")",
       "Bash(rm \"node-portable.zip\")",
       "Bash(\"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\wp-reload\\\\node\\\\node.exe\" --version)",
-      "Read(//c/Users/sensh/Local Sites//**)"
+      "Read(//c/Users/sensh/Local Sites//**)",
+      "Read(//c/Users/sensh/.vscode/extensions/undefined_publisher.css-to-html-jumper-1.10.0/out/**)",
+      "Read(//c/Users/sensh/.vscode/extensions//**)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",

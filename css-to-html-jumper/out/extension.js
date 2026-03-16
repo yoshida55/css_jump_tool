@@ -985,7 +985,10 @@ async function handleMemoSearch() {
             qp.matchOnDetail = true; // detail行を表示＆検索対象に
             qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で検索';
             qp.items = phpFunctionItems.length > 0 ? phpFunctionItems : [];
+            // 見出し/メモ補完直後のフラグ（onDidChangeValue で即座に同じ項目が再表示されるのを防ぐ）
+            let suppressMemoItems = false;
             qp.onDidChangeValue(value => {
+                suppressMemoItems = false; // ユーザーが文字を打ったらリセット
                 const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
                 const fullQuery = value.trim().toLowerCase();
                 if (!lastWord && !fullQuery) {
@@ -1014,6 +1017,10 @@ async function handleMemoSearch() {
                     const katLbl = toKatakana(lbl);
                     // メモ本文・見出しは全体フレーズで検索、CSS/JS/PHPは最後の単語で検索
                     const isMemoItem = desc === 'メモ' || desc === '見出し';
+                    // 見出し/メモ補完直後は同じ項目が再表示されないよう非表示
+                    if (isMemoItem && suppressMemoItems) {
+                        return 0;
+                    }
                     // メモ項目は2文字以上のときだけ有効（短すぎると大量ヒットで見づらい）
                     if (isMemoItem && fullQuery.length < 2) {
                         return 0;
@@ -1080,18 +1087,11 @@ async function handleMemoSearch() {
                     qp.hide();
                 }
                 else if (sel && qp.items.length > 0) {
-                    // 見出しが選択された場合 → Gemini検索せずメモファイルの該当行にジャンプ
                     if ((sel.description === '見出し' || sel.description === 'メモ') && sel._lineNum !== undefined) {
-                        const lineNum = sel._lineNum;
-                        const memoUri = vscode.Uri.file(memoFilePath);
-                        const doc = await vscode.workspace.openTextDocument(memoUri);
-                        const editor = await vscode.window.showTextDocument(doc, { preview: false });
-                        const pos = new vscode.Position(lineNum, 0);
-                        editor.selection = new vscode.Selection(pos, pos);
-                        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-                        accepted = true;
-                        resolve('');
-                        qp.hide();
+                        // 見出し・メモ行 → ボックスに補完するだけ（検索・ジャンプしない）
+                        suppressMemoItems = true; // 補完直後に同じ項目が再表示されるのを防ぐ
+                        qp.value = sel.label + ' ';
+                        qp.items = [];
                     }
                     else if (sel.description === '検索履歴') {
                         const raw = sel.label.replace(/^🕐\s*/, '');
