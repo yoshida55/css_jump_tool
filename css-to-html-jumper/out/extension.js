@@ -844,67 +844,12 @@ async function handleMemoSearch() {
         ? activeEditor.document.getText(selection).trim()
         : '';
     let query;
-    if (selectedText) {
-        // 選択テキストあり → Geminiにコメント形式で説明させてコードに挿入
-        const geminiCfg = vscode.workspace.getConfiguration('cssToHtmlJumper');
-        const geminiKey = geminiCfg.get('geminiApiKey', '');
-        if (!geminiKey) {
-            vscode.window.showErrorMessage('Gemini APIキーが設定されていません。');
-            return;
-        }
-        const lang = activeEditor.document.languageId;
-        const prompt = `「${selectedText}」について、プログラミング初心者向けに以下のフォーマットで説明してください。
-
-フォーマット（コードブロックなし、このテキストをそのまま出力）:
-🔍 ${selectedText}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 何をする  [1行で説明]
-📥 引数      [引数の型と意味。なければ「なし」]
-📤 戻り値    [型 → 具体的な値の例（例: "https://example.com/wp-content/themes/mytheme" や HTMLElement など）]
-            └ 取得後: [戻り値を使った操作例]
-            └ [nullや失敗時の注意があれば]
-💡 使い方    [実際のコード例1行]
-            [戻り値を使った次の一手の例]
-⚠️  注意      [30文字以内で簡潔に]
-            └ [補足や代替手段があれば]
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-引数・戻り値がない場合はその行を省略してください。`;
-        const postData = JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 512 }
-        });
-        let rawAnswer = '';
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: `✨ 「${selectedText}」を調査中...`,
-            cancellable: false
-        }, async () => {
-            const raw = await callGeminiApi(geminiKey, 'gemini-2.0-flash', postData);
-            const parsed = JSON.parse(raw);
-            rawAnswer = parsed.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-        });
-        if (!rawAnswer) {
-            vscode.window.showErrorMessage('Geminiから回答を取得できませんでした。');
-            return;
-        }
-        const endLine = activeEditor.selection.end.line;
-        const endChar = activeEditor.document.lineAt(endLine).text.length;
-        const insertPos = new vscode.Position(endLine, endChar);
-        const commentText = lang === 'html'
-            ? `\n<!-- \n${rawAnswer}\n-->\n`
-            : `\n/*\n${rawAnswer}\n*/\n`;
-        await activeEditor.edit(eb => eb.insert(insertPos, commentText));
-        // 挿入したコメントを選択状態にする（Ctrl+Iで追い質問できるように）
-        const insertedLines = commentText.split('\n');
-        const selEndLine = insertPos.line + insertedLines.length - 1;
-        const selEndChar = insertedLines[insertedLines.length - 1].length;
-        activeEditor.selection = new vscode.Selection(new vscode.Position(insertPos.line + 1, 0), new vscode.Position(selEndLine, selEndChar));
-        return;
-    }
-    else {
+    {
+        // QuickPickでクエリ入力（選択テキストがあれば初期値にセット）
         // メモファイルから見出し行を抽出（サジェスト用）
         let headingItems = [];
+        let contentItems = [];
+        let termItems = [];
         const historyItems = memoSearchHistory.map(h => ({
             label: `🕐 ${h}`, description: '検索履歴'
         }));
@@ -915,6 +860,63 @@ async function handleMemoSearch() {
                 .map((line, idx) => ({ line, idx }))
                 .filter(x => /^#{1,3}\s/.test(x.line))
                 .map(x => ({ label: x.line.replace(/^#+\s*/, '').trim(), description: '見出し', _lineNum: x.idx }));
+            // メモ本文行を候補に追加（コードブロック・空行・区切り線等を除外）
+            let inCodeBlock = false;
+            tmpLines.forEach((line, idx) => {
+                const t = line.trim();
+                if (t.startsWith('```')) {
+                    inCodeBlock = !inCodeBlock;
+                    return;
+                }
+                if (inCodeBlock) {
+                    return;
+                }
+                if (t.length < 5) {
+                    return;
+                }
+                if (/^#{1,6}\s/.test(t)) {
+                    return;
+                } // 見出しは別管理
+                if (/^[-*]{3,}$/.test(t)) {
+                    return;
+                } // 水平線
+                if (/^\|[-:| ]+\|/.test(t)) {
+                    return;
+                } // テーブル区切り
+                contentItems.push({
+                    label: t.length > 80 ? t.substring(0, 80) + '…' : t,
+                    description: 'メモ',
+                    _lineNum: idx
+                });
+            });
+            // メモから技術用語・関数名を抽出して常時サジェスト候補にする
+            // （PHPファイル以外でも has_post_thumbnail 等が "has" で候補に出るように）
+            const termSet = new Set();
+            tmpLines.forEach(line => {
+                // バッククォート内のコード: `has_post_thumbnail()` など
+                const backtickMatches = line.match(/`([^`\n]{2,40})`/g);
+                if (backtickMatches) {
+                    backtickMatches.forEach(m => {
+                        const term = m.replace(/`/g, '').trim();
+                        if (/^[a-zA-Z_$]/.test(term)) {
+                            termSet.add(term);
+                        }
+                    });
+                }
+                // 関数呼び出し: word() / word_name() / WordName()
+                const funcMatches = line.match(/\b([a-zA-Z_$][a-zA-Z0-9_$]{2,})\(\)/g);
+                if (funcMatches) {
+                    funcMatches.forEach(m => termSet.add(m));
+                }
+                // snake_case 識別子: has_post_thumbnail, get_the_title 等
+                const snakeMatches = line.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}\b/g);
+                if (snakeMatches) {
+                    snakeMatches.forEach(m => { if (m.length >= 5) {
+                        termSet.add(m);
+                    } });
+                }
+            });
+            termItems = Array.from(termSet).map(term => ({ label: term, description: '📌 用語' }));
         }
         catch { /* 見出し取得失敗時は候補なし */ }
         // CSS辞書 + 追加CSS + JS辞書をサジェスト候補に追加
@@ -975,7 +977,7 @@ async function handleMemoSearch() {
                 return { label, description: '📖 PHP関数', detail: meaning || undefined, _isPhp: true };
             });
         }
-        const memoAllItems = [...phpFunctionItems, ...historyItems, ...headingItems, ...cssQpItems, ...extraCssQpItems, ...jsQpItems];
+        const memoAllItems = [...phpFunctionItems, ...historyItems, ...headingItems, ...termItems, ...contentItems, ...cssQpItems, ...extraCssQpItems, ...jsQpItems];
         // QuickPick1本で完結：最後の単語で候補表示 → Enter で単語置き換え → 候補なし状態でEnter → 検索
         query = await new Promise((resolve) => {
             const qp = vscode.window.createQuickPick();
@@ -985,13 +987,15 @@ async function handleMemoSearch() {
             qp.items = phpFunctionItems.length > 0 ? phpFunctionItems : [];
             qp.onDidChangeValue(value => {
                 const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
-                if (!lastWord || lastWord.length < 1) {
+                const fullQuery = value.trim().toLowerCase();
+                if (!lastWord && !fullQuery) {
                     qp.items = [];
                     return;
                 }
                 // ひらがな→カタカナ変換
                 const toKatakana = (s) => s.replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
-                const kata = toKatakana(lastWord);
+                const kataLast = toKatakana(lastWord);
+                const kataFull = toKatakana(fullQuery);
                 // fuzzy match（文字が順番に含まれるか）
                 const fuzzyMatch = (target, q) => {
                     let idx = 0;
@@ -1008,17 +1012,28 @@ async function handleMemoSearch() {
                     const lbl = item.label.toLowerCase();
                     const desc = (item.description || '').toLowerCase();
                     const katLbl = toKatakana(lbl);
+                    // メモ本文・見出しは全体フレーズで検索、CSS/JS/PHPは最後の単語で検索
+                    const isMemoItem = desc === 'メモ' || desc === '見出し';
+                    // メモ項目は2文字以上のときだけ有効（短すぎると大量ヒットで見づらい）
+                    if (isMemoItem && fullQuery.length < 2) {
+                        return 0;
+                    }
+                    const q = isMemoItem ? fullQuery : lastWord;
+                    const kata = isMemoItem ? kataFull : kataLast;
+                    if (!q) {
+                        return 0;
+                    }
                     let s = 0;
-                    if (lbl.startsWith(lastWord) || katLbl.startsWith(kata)) {
+                    if (lbl.startsWith(q) || katLbl.startsWith(kata)) {
                         s = 4;
                     }
-                    else if (lbl.includes(lastWord) || katLbl.includes(kata)) {
+                    else if (lbl.includes(q) || katLbl.includes(kata)) {
                         s = 3;
                     }
-                    else if (desc.includes(lastWord) || toKatakana(desc).includes(kata)) {
+                    else if (desc.includes(q) || toKatakana(desc).includes(kata)) {
                         s = 2;
                     }
-                    else if (fuzzyMatch(lbl, lastWord) || fuzzyMatch(katLbl, kata)) {
+                    else if (fuzzyMatch(lbl, q) || fuzzyMatch(katLbl, kata)) {
                         s = 1;
                     }
                     return s;
@@ -1066,7 +1081,7 @@ async function handleMemoSearch() {
                 }
                 else if (sel && qp.items.length > 0) {
                     // 見出しが選択された場合 → Gemini検索せずメモファイルの該当行にジャンプ
-                    if (sel.description === '見出し' && sel._lineNum !== undefined) {
+                    if ((sel.description === '見出し' || sel.description === 'メモ') && sel._lineNum !== undefined) {
                         const lineNum = sel._lineNum;
                         const memoUri = vscode.Uri.file(memoFilePath);
                         const doc = await vscode.workspace.openTextDocument(memoUri);
@@ -1083,6 +1098,24 @@ async function handleMemoSearch() {
                         accepted = true;
                         resolve(raw);
                         qp.hide();
+                    }
+                    else if (sel.description === '📌 用語') {
+                        // 📌 用語 → lastWordが用語の先頭と一致するときだけ置き換え、そうでなければ検索へ
+                        const raw = sel.label;
+                        const parts = qp.value.split(/[\s　]+/);
+                        const lastW = (parts[parts.length - 1] || '').toLowerCase();
+                        if (raw.toLowerCase().startsWith(lastW) && lastW.length > 0) {
+                            // 例: "has" → "has_post_thumbnail" に置き換えて続けて入力可能
+                            parts[parts.length - 1] = raw;
+                            qp.value = parts.join(' ') + ' ';
+                            qp.items = [];
+                        }
+                        else {
+                            // 例: "get_theme_file_uri とは" でEnter → そのまま検索
+                            accepted = true;
+                            resolve(qp.value.trim());
+                            qp.hide();
+                        }
                     }
                     else {
                         // CSS/JSプロパティ → 最後の単語を選択テキストで置き換え（続けて入力可能）
@@ -1110,7 +1143,8 @@ async function handleMemoSearch() {
                 qp.value = currentWordForPhp;
             }
             else {
-                const initVal = memoSearchHistory[0] || '';
+                // 選択テキスト優先 → なければ検索履歴
+                const initVal = selectedText || memoSearchHistory[0] || '';
                 if (initVal) {
                     qp.value = initVal;
                 }
@@ -1179,10 +1213,6 @@ async function handleMemoSearch() {
             editor.setDecorations(highlight, [new vscode.Range(position, position)]);
             setTimeout(() => highlight.dispose(), 3000);
         };
-        if (selectedText) {
-            await jumpToLine(geminiResults[0].line);
-            return;
-        }
         // QuickPickで選択
         const memoLines = memoContent.split('\n');
         const extractCodeNear = (lineNum) => {
