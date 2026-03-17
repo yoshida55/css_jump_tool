@@ -791,9 +791,17 @@ async function selectRelevantSections(
   query: string,
   sections: Array<{ heading: string; lineStart: number; lineEnd: number }>,
   apiKey: string,
-  modelPath: string
+  modelPath: string,
+  lines: string[] = []
 ): Promise<number[]> {
-  const headingList = sections.map((s, i) => `${i}: ${s.heading}`).join('\n');
+  const headingList = sections.map((s, i) => {
+    const snippet = lines.slice(s.lineStart + 1, s.lineStart + 7)
+      .filter(l => l.trim())
+      .slice(0, 3)
+      .map(l => `  ${l.trim()}`)
+      .join('\n');
+    return snippet ? `${i}: ${s.heading}\n${snippet}` : `${i}: ${s.heading}`;
+  }).join('\n');
   const prompt = `以下の見出し一覧から「${query}」に意味的に関連する見出しのインデックスを選んでください。
 
 【見出し一覧】
@@ -845,7 +853,7 @@ async function searchWithGemini(query: string, memoContent: string): Promise<{ a
 
   // Stage1: 見出し一覧をGeminiに送ってセマンティックに絞り込む
   const sections = parseSections(memoContent);
-  const selectedIndices = await selectRelevantSections(query, sections, apiKey, modelPath);
+  const selectedIndices = await selectRelevantSections(query, sections, apiKey, modelPath, lines);
 
   // マッチなし → 終了（全件フォールバック禁止・料金節約）
   if (selectedIndices.length === 0) {
@@ -886,6 +894,7 @@ ${query}
 - 単語の順序は問わない、離れていてもOK
 - typoや表記ゆれも考慮する
 - **最大3件のみ**抽出（関連度が最も高いものだけ、厳選すること）
+- **関連度の高い順に並べる**（1番目が最も関連性が高いものにすること）
 - **必ず異なるセクション（トピック）から選ぶ**（連続した行番号NG、離れた箇所から）
 - 見出し行（##で始まる）やコードブロックの開始行を優先（ジャンプ先として正確なため）
 - 類似内容・同じセクションの重複は絶対に避ける
