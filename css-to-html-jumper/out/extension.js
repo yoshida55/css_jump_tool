@@ -665,7 +665,9 @@ function callGeminiApi(apiKey, modelPath, postData) {
  * Stage1: 見出し一覧をGeminiに送り、関連セクションのインデックスを返す
  */
 async function selectRelevantSections(query, sections, apiKey, modelPath, lines = []) {
-    const headingList = sections.map((s, i) => {
+    // 新しいメモ（ファイル末尾）を優先するため逆順で送る（インデックスは元の位置を維持）
+    const headingList = [...sections].reverse().map((s) => {
+        const i = sections.indexOf(s);
         const snippet = lines.slice(s.lineStart + 1, s.lineStart + 7)
             .filter(l => l.trim())
             .slice(0, 3)
