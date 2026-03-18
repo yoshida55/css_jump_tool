@@ -4458,6 +4458,7 @@ ${explanation}
 // - 矢印やボックスで関係性を示す
 // - SVGコードのみ出力（説明文は不要）
 // - 必ず </svg> で終わること`, showBeside: false, model: 'gemini' },
+    { label: '📋 ファイル全体をレビュー', prompt: `__FILE_REVIEW__`, showBeside: true, model: 'gemini' },
     { label: '📝 CSSスケルトン生成', prompt: `以下のHTMLからclass名とid名を抽出し、CSSスケルトン（空のルールセット）を生成してください。
 
 【重要な制約】
@@ -4710,6 +4711,41 @@ ${explanation}
             isFreeQuestion: true,
             isSectionQuestion: false,
             showBeside: false,
+            useGemini: true
+          });
+        } else if (selected && selected.label.includes('ファイル全体をレビュー')) {
+          // ファイル全体をGeminiでレビュー
+          const fullText = editor.document.getText();
+          const lang = editor.document.languageId;
+          const langLabel = lang === 'css' ? 'CSS' : lang === 'php' ? 'PHP' : lang === 'html' ? 'HTML' : lang;
+          const reviewPrompt = `以下の${langLabel}ファイルを初心者向けにレビューしてください。
+
+【レビュー観点】
+- バグや誤りになりそうな箇所
+- 改善できる箇所（シンプルにできる・まとめられる等）
+- ベストプラクティスに反している箇所
+- 初心者が見落としやすいポイント
+
+【出力形式】
+- 問題があれば「⚠ 行番号: 内容」の形式で箇条書き
+- 提案があれば「💡 行番号: 提案内容」の形式で
+- 問題がなければ「✅ 特に問題は見つかりませんでした」
+- 最後に全体的な総評を2〜3行で
+
+【ファイル内容】
+${fullText}`;
+
+          resolve({
+            question: reviewPrompt,
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isHtmlGeneration: false,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: true,
+            isSectionQuestion: false,
+            showBeside: true,
             useGemini: true
           });
         } else if (selected && selected.label.includes('複数ファイルを選択')) {
@@ -7002,11 +7038,13 @@ async function runCssToHtmlCheck(
   const cssText = doc.getText();
   const diagnostics: vscode.Diagnostic[] = [];
 
-  const skipPatterns = /^(hover|focus|active|visited|first-child|last-child|nth-child|not|before|after|root|checked|disabled|placeholder|from|to)$/;
+  const skipPatterns = /^(hover|focus|active|visited|first-child|last-child|nth-child|not|before|after|root|checked|disabled|placeholder|from|to|jpg|jpeg|png|gif|svg|webp|mp4|mp3|pdf|woff|woff2|ttf|eot)$/;
+  // url(...) の中身をあらかじめ除外するためにブランク化
+  const cssTextClean = cssText.replace(/url\([^)]*\)/gi, match => ' '.repeat(match.length));
   const selRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
   const cssClasses: { name: string; offset: number }[] = [];
   let m: RegExpExecArray | null;
-  while ((m = selRegex.exec(cssText)) !== null) {
+  while ((m = selRegex.exec(cssTextClean)) !== null) {
     const name = m[1];
     if (skipPatterns.test(name)) { continue; }
     cssClasses.push({ name, offset: m.index + 1 });
@@ -7252,7 +7290,7 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
   // ④ 同じプロパティセットを持つセレクタのマージ提案
   const propSignatureMap = new Map<string, string[]>();
   for (const rule of rules) {
-    if (rule.props.size === 0) { continue; }
+    if (rule.props.size < 3) { continue; } // 3つ以上一致したときだけ提案
     const sig = Array.from(rule.props.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}:${v.value}`)
