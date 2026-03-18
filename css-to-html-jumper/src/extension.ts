@@ -7501,6 +7501,61 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
     }
   }
 
+  // ⑧ @mediaクエリ内の重複チェック（通常ルールと同じ値）
+  // @mediaブロックの範囲を収集（ネストした{}に対応）
+  interface MediaBlock { start: number; end: number; }
+  const mediaBlocks: MediaBlock[] = [];
+  {
+    let i = 0;
+    while (i < text.length) {
+      const atIdx = text.indexOf('@media', i);
+      if (atIdx === -1) { break; }
+      const openIdx = text.indexOf('{', atIdx);
+      if (openIdx === -1) { break; }
+      let depth = 1;
+      let j = openIdx + 1;
+      while (j < text.length && depth > 0) {
+        if (text[j] === '{') { depth++; }
+        else if (text[j] === '}') { depth--; }
+        j++;
+      }
+      mediaBlocks.push({ start: atIdx, end: j });
+      i = j;
+    }
+  }
+
+  // 通常ルール（@media外）のmap: "selector|property" → value
+  const normalRuleMap = new Map<string, string>();
+  for (const rule of rules) {
+    const isInMedia = mediaBlocks.some(mb => rule.selectorOffset >= mb.start && rule.selectorOffset < mb.end);
+    if (isInMedia) { continue; }
+    for (const [propName, propInfo] of rule.props) {
+      const key = `${rule.selector.replace(/\s+/g, ' ').toLowerCase()}|${propName}`;
+      normalRuleMap.set(key, propInfo.value);
+    }
+  }
+
+  // @media内のルールと通常ルールを比較
+  for (const rule of rules) {
+    const isInMedia = mediaBlocks.some(mb => rule.selectorOffset >= mb.start && rule.selectorOffset < mb.end);
+    if (!isInMedia) { continue; }
+    for (const [propName, propInfo] of rule.props) {
+      const key = `${rule.selector.replace(/\s+/g, ' ').toLowerCase()}|${propName}`;
+      const normalValue = normalRuleMap.get(key);
+      if (normalValue !== undefined && normalValue === propInfo.value) {
+        const start = doc.positionAt(propInfo.offset);
+        const end = doc.positionAt(propInfo.offset + propName.length);
+        const diag = new vscode.Diagnostic(
+          new vscode.Range(start, end),
+          `"${propName}: ${propInfo.value}" は通常ルールと同じ値です。@media内では不要な可能性があります`,
+          vscode.DiagnosticSeverity.Information
+        );
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+      }
+    }
+  }
+
   diagCollection.set(doc.uri, diagnostics);
 }
 
