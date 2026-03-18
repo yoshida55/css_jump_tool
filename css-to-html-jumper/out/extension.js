@@ -690,8 +690,7 @@ ${headingList}
         generationConfig: {
             temperature: 0.1,
             maxOutputTokens: 256,
-            responseMimeType: 'application/json',
-            thinkingConfig: { thinkingLevel: 'MINIMAL' }
+            responseMimeType: 'application/json'
         }
     });
     const raw = await callGeminiApi(apiKey, modelPath, postData);
@@ -1560,7 +1559,7 @@ async function handleQuiz(showFilterPick = false) {
                 }
                 return b.date.localeCompare(a.date); // 新しい順
             })
-                .slice(0, 10);
+                .slice(0, 3);
             if (needsGen.length > 0) {
                 const buildPregenPrompt = (h) => {
                     const contentPreview = h.content.slice(0, 10).join('\n');
@@ -6322,9 +6321,598 @@ ${selectedText}
         }
     });
     context.subscriptions.push(wpHookDefinitionProvider);
+    // ========================================
+    // CSSクラス名補完（PHP / HTML）
+    // ========================================
+    let cssClassCache = [];
+    let cssClassCacheTime = 0;
+    async function getCssClassNames() {
+        // 10秒キャッシュ
+        if (Date.now() - cssClassCacheTime < 10000 && cssClassCache.length > 0) {
+            return cssClassCache;
+        }
+        const defined = await collectDefinedClassesFromCss();
+        cssClassCache = Array.from(defined);
+        cssClassCacheTime = Date.now();
+        return cssClassCache;
+    }
+    const cssClassCompletionProvider = vscode.languages.registerCompletionItemProvider([{ language: 'php' }, { language: 'html' }], {
+        async provideCompletionItems(document, position) {
+            const lineText = document.lineAt(position).text;
+            const beforeCursor = lineText.substring(0, position.character);
+            // class="..." の中かチェック
+            const inClassAttr = /class=["'][^"']*$/.test(beforeCursor);
+            // post_class( / body_class( / add_class( の中かチェック
+            const inClassFunc = /(post_class|body_class|add_class|wp_nav_menu.*classes)\s*\(\s*['"][^'"]*$/.test(beforeCursor);
+            // PHPの文字列リテラルの中（$class = '...' のような形）
+            const inPhpString = /\$\w*[Cc]lass\w*\s*=\s*['"][^'"]*$/.test(beforeCursor);
+            if (!inClassAttr && !inClassFunc && !inPhpString) {
+                return undefined;
+            }
+            const classNames = await getCssClassNames();
+            return classNames.map(name => {
+                const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Value);
+                item.detail = 'CSSクラス';
+                return item;
+            });
+        }
+    }, '"', "'", ' ' // トリガー文字
+    );
+    context.subscriptions.push(cssClassCompletionProvider);
+    // ========================================
+    // WordPress関数補完（PHPで the_ / get_ / wp_ / has_ / is_ を入力時）
+    // ========================================
+    const wpFunctions = [
+        { name: 'the_title()', detail: '投稿タイトルを表示' },
+        { name: 'the_content()', detail: '投稿本文を表示' },
+        { name: 'the_date()', detail: '投稿日を表示' },
+        { name: 'the_author()', detail: '著者名を表示' },
+        { name: 'the_permalink()', detail: '投稿URLを表示' },
+        { name: 'the_excerpt()', detail: '抜粋を表示' },
+        { name: 'the_category()', detail: 'カテゴリを表示' },
+        { name: 'the_tags()', detail: 'タグを表示' },
+        { name: 'the_post_thumbnail()', detail: 'アイキャッチ画像を表示' },
+        { name: 'the_ID()', detail: '投稿IDを表示' },
+        { name: 'get_the_title()', detail: '投稿タイトルを取得（戻り値）' },
+        { name: 'get_the_ID()', detail: '投稿IDを取得（戻り値）' },
+        { name: 'get_the_date()', detail: '投稿日を取得（戻り値）' },
+        { name: 'get_permalink()', detail: '投稿URLを取得（戻り値）' },
+        { name: 'get_the_excerpt()', detail: '抜粋を取得（戻り値）' },
+        { name: 'get_post_thumbnail_url()', detail: 'アイキャッチ画像URLを取得' },
+        { name: 'get_theme_file_uri()', detail: 'テーマファイルのURLを取得' },
+        { name: 'get_template_directory_uri()', detail: 'テーマディレクトリのURLを取得' },
+        { name: 'have_posts()', detail: '投稿があるか判定' },
+        { name: 'has_post_thumbnail()', detail: 'アイキャッチがあるか判定' },
+        { name: 'wp_head()', detail: '<head>内に必要なコードを出力' },
+        { name: 'wp_footer()', detail: '</body>前に必要なコードを出力' },
+        { name: 'wp_nav_menu()', detail: 'ナビゲーションメニューを出力' },
+        { name: 'bloginfo()', detail: 'サイト情報を出力（name/urlなど）' },
+        { name: 'get_bloginfo()', detail: 'サイト情報を取得（戻り値）' },
+        { name: 'is_front_page()', detail: 'フロントページか判定' },
+        { name: 'is_single()', detail: '投稿ページか判定' },
+        { name: 'is_page()', detail: '固定ページか判定' },
+        { name: 'is_archive()', detail: 'アーカイブページか判定' },
+        { name: 'is_category()', detail: 'カテゴリページか判定' },
+        { name: 'wp_enqueue_style()', detail: 'CSSを読み込み登録' },
+        { name: 'wp_enqueue_script()', detail: 'JSを読み込み登録' },
+        { name: 'add_action()', detail: 'フックにアクションを登録' },
+        { name: 'add_filter()', detail: 'フックにフィルターを登録' },
+    ];
+    const wpFuncCompletionProvider = vscode.languages.registerCompletionItemProvider({ language: 'php' }, {
+        provideCompletionItems(document, position) {
+            const lineText = document.lineAt(position).text;
+            // PHP開きタグの中かチェック
+            if (!/(<\?php|<\?=)/.test(lineText) && !document.getText().substring(0, document.offsetAt(position)).includes('<?php')) {
+                return undefined;
+            }
+            return wpFunctions.map(fn => {
+                const item = new vscode.CompletionItem(fn.name, vscode.CompletionItemKind.Function);
+                item.detail = fn.detail;
+                item.documentation = `WordPress関数: ${fn.detail}`;
+                return item;
+            });
+        }
+    }, 'the_', 'get_', 'wp_', 'has_', 'is_', 'add_', 'blog');
+    context.subscriptions.push(wpFuncCompletionProvider);
+    // ========================================
+    // CSS品質チェック（重複・矛盾・マージ提案）
+    // ========================================
+    const cssDupDiag = vscode.languages.createDiagnosticCollection('cssDuplicate');
+    context.subscriptions.push(cssDupDiag);
+    let cssDupTimer;
+    function scheduleCssDupCheck(doc) {
+        if (doc.languageId !== 'css') {
+            return;
+        }
+        if (cssDupTimer) {
+            clearTimeout(cssDupTimer);
+        }
+        cssDupTimer = setTimeout(() => runCssDupCheck(doc, cssDupDiag), 800);
+    }
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(scheduleCssDupCheck), vscode.workspace.onDidChangeTextDocument(e => scheduleCssDupCheck(e.document)), vscode.workspace.onDidSaveTextDocument(scheduleCssDupCheck));
+    if (vscode.window.activeTextEditor) {
+        scheduleCssDupCheck(vscode.window.activeTextEditor.document);
+    }
+    // ========================================
+    // クラス不一致チェック（CSS → HTML/PHP）
+    // CSSに書いたセレクタがHTMLで使われていない場合に警告
+    // ========================================
+    const classMismatchDiag = vscode.languages.createDiagnosticCollection('classMismatch');
+    context.subscriptions.push(classMismatchDiag);
+    let classMismatchTimer;
+    function scheduleClassMismatchCheck(doc) {
+        if (doc.languageId !== 'css' && doc.languageId !== 'php') {
+            return;
+        }
+        if (classMismatchTimer) {
+            clearTimeout(classMismatchTimer);
+        }
+        classMismatchTimer = setTimeout(() => runClassMismatchCheck(doc, classMismatchDiag), 800);
+    }
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(scheduleClassMismatchCheck), vscode.workspace.onDidChangeTextDocument(e => scheduleClassMismatchCheck(e.document)), vscode.workspace.onDidSaveTextDocument(scheduleClassMismatchCheck));
+    if (vscode.window.activeTextEditor) {
+        scheduleClassMismatchCheck(vscode.window.activeTextEditor.document);
+    }
+    // ========================================
+    // HTML品質チェック（img alt欠落）
+    // ========================================
+    const htmlQualityDiag = vscode.languages.createDiagnosticCollection('htmlQuality');
+    context.subscriptions.push(htmlQualityDiag);
+    let htmlQualityTimer;
+    function scheduleHtmlQualityCheck(doc) {
+        if (doc.languageId !== 'html' && doc.languageId !== 'php') {
+            return;
+        }
+        if (htmlQualityTimer) {
+            clearTimeout(htmlQualityTimer);
+        }
+        htmlQualityTimer = setTimeout(() => runHtmlQualityCheck(doc, htmlQualityDiag), 800);
+    }
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(scheduleHtmlQualityCheck), vscode.workspace.onDidChangeTextDocument(e => scheduleHtmlQualityCheck(e.document)), vscode.workspace.onDidSaveTextDocument(scheduleHtmlQualityCheck));
+    if (vscode.window.activeTextEditor) {
+        scheduleHtmlQualityCheck(vscode.window.activeTextEditor.document);
+    }
 }
 async function deactivate() {
-    // クイズ回答は自動保存されるため、特に処理なし
+}
+// ========================================
+// クラス不一致チェック ヘルパー（CSS → HTML/PHP）
+// CSSのセレクタがHTML/PHPで使われているか確認
+// ========================================
+async function runClassMismatchCheck(doc, diagCollection) {
+    if (doc.languageId === 'css') {
+        await runCssToHtmlCheck(doc, diagCollection);
+    }
+    else if (doc.languageId === 'php') {
+        await runPhpToCssCheck(doc, diagCollection);
+    }
+}
+// CSSファイル用：セレクタがHTML/PHPで使われているか確認
+async function runCssToHtmlCheck(doc, diagCollection) {
+    const cssText = doc.getText();
+    const diagnostics = [];
+    const skipPatterns = /^(hover|focus|active|visited|first-child|last-child|nth-child|not|before|after|root|checked|disabled|placeholder|from|to)$/;
+    const selRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
+    const cssClasses = [];
+    let m;
+    while ((m = selRegex.exec(cssText)) !== null) {
+        const name = m[1];
+        if (skipPatterns.test(name)) {
+            continue;
+        }
+        cssClasses.push({ name, offset: m.index + 1 });
+    }
+    if (cssClasses.length === 0) {
+        diagCollection.set(doc.uri, []);
+        return;
+    }
+    const usedClasses = await collectUsedClassesFromHtmlPhp();
+    if (usedClasses.size === 0) {
+        diagCollection.set(doc.uri, []);
+        return;
+    }
+    const warned = new Set();
+    for (const { name, offset } of cssClasses) {
+        if (usedClasses.has(name) || warned.has(name)) {
+            continue;
+        }
+        warned.add(name);
+        const start = doc.positionAt(offset);
+        const end = doc.positionAt(offset + name.length);
+        const diag = new vscode.Diagnostic(new vscode.Range(start, end), `".${name}" はHTML/PHPで使われていません（タイポ？未使用？）`, vscode.DiagnosticSeverity.Warning);
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+    }
+    diagCollection.set(doc.uri, diagnostics);
+}
+// PHPファイル用：class属性のクラスがCSSに定義されているか確認
+async function runPhpToCssCheck(doc, diagCollection) {
+    const text = doc.getText();
+    const diagnostics = [];
+    // class="..." からクラス名と位置を収集（PHP動的クラスはスキップ）
+    const classAttrRegex = /class=["']([^"'>]*)["']/g;
+    const usedClasses = [];
+    let m;
+    while ((m = classAttrRegex.exec(text)) !== null) {
+        const val = m[1];
+        if (val.includes('<?')) {
+            continue;
+        }
+        const valStart = m.index + m[0].indexOf(val);
+        let pos = 0;
+        for (const cls of val.split(/\s+/).filter(Boolean)) {
+            const idx = val.indexOf(cls, pos);
+            usedClasses.push({ name: cls, offset: valStart + idx });
+            pos = idx + cls.length;
+        }
+    }
+    if (usedClasses.length === 0) {
+        diagCollection.set(doc.uri, []);
+        return;
+    }
+    // CSSファイルから定義済みクラスを収集
+    const defined = await collectDefinedClassesFromCss();
+    if (defined.size === 0) {
+        diagCollection.set(doc.uri, []);
+        return;
+    }
+    for (const { name, offset } of usedClasses) {
+        if (defined.has(name)) {
+            continue;
+        }
+        const start = doc.positionAt(offset);
+        const end = doc.positionAt(offset + name.length);
+        const diag = new vscode.Diagnostic(new vscode.Range(start, end), `クラス "${name}" はCSSに定義されていません`, vscode.DiagnosticSeverity.Warning);
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+    }
+    diagCollection.set(doc.uri, diagnostics);
+}
+// ワークスペースのHTML/PHPから使用クラスを収集
+async function collectUsedClassesFromHtmlPhp() {
+    const usedClasses = new Set();
+    // HTML/PHPからclass属性を収集
+    const htmlFiles = await vscode.workspace.findFiles('**/*.{html,php}', '**/node_modules/**', 50);
+    for (const fileUri of htmlFiles) {
+        try {
+            const content = fs.readFileSync(fileUri.fsPath, 'utf-8');
+            const classAttrRegex = /class=["']([^"'>]*)["']/g;
+            let hm;
+            while ((hm = classAttrRegex.exec(content)) !== null) {
+                const val = hm[1];
+                if (val.includes('<?')) {
+                    continue;
+                }
+                for (const cls of val.split(/\s+/).filter(Boolean)) {
+                    usedClasses.add(cls);
+                }
+            }
+        }
+        catch { /* ignore */ }
+    }
+    // JSファイルから動的クラス操作を収集
+    // classList.add/remove/toggle/replace, className, addClass, $('...') など
+    const jsFiles = await vscode.workspace.findFiles('**/*.{js,ts}', '**/node_modules/**', 30);
+    const jsClassRegex = /classList\.\w+\(['"]([^'"]+)['"]\)|className\s*[=+]+\s*['"]([^'"]+)['"]|addClass\(['"]([^'"]+)['"]\)|removeClass\(['"]([^'"]+)['"]\)|toggleClass\(['"]([^'"]+)['"]\)/g;
+    for (const fileUri of jsFiles) {
+        try {
+            const content = fs.readFileSync(fileUri.fsPath, 'utf-8');
+            let jm;
+            while ((jm = jsClassRegex.exec(content)) !== null) {
+                const val = jm[1] || jm[2] || jm[3] || jm[4] || jm[5] || '';
+                for (const cls of val.split(/\s+/).filter(Boolean)) {
+                    usedClasses.add(cls);
+                }
+            }
+        }
+        catch { /* ignore */ }
+    }
+    return usedClasses;
+}
+// ワークスペースのCSSから定義済みクラスを収集
+async function collectDefinedClassesFromCss() {
+    const defined = new Set();
+    const cssFiles = await vscode.workspace.findFiles('**/*.css', '**/node_modules/**', 20);
+    for (const fileUri of cssFiles) {
+        try {
+            const css = fs.readFileSync(fileUri.fsPath, 'utf-8');
+            const selRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
+            let sm;
+            while ((sm = selRegex.exec(css)) !== null) {
+                defined.add(sm[1]);
+            }
+        }
+        catch { /* ignore */ }
+    }
+    return defined;
+}
+// ========================================
+// CSS品質チェック ヘルパー
+// ========================================
+function runCssDupCheck(doc, diagCollection) {
+    const text = doc.getText();
+    const diagnostics = [];
+    // shorthand → longhand の上書き対応表
+    const shorthandMap = {
+        'margin': ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'],
+        'padding': ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+        'border': ['border-top', 'border-right', 'border-bottom', 'border-left', 'border-width', 'border-style', 'border-color'],
+        'background': ['background-color', 'background-image', 'background-position', 'background-size', 'background-repeat'],
+        'font': ['font-size', 'font-family', 'font-weight', 'font-style', 'font-variant'],
+        'flex': ['flex-grow', 'flex-shrink', 'flex-basis'],
+    };
+    const rules = [];
+    // @keyframes内のルール（0%, 100%, from, to）は除外
+    const keyframeStopRegex = /^(from|to|\d+%(\s*,\s*\d+%)*)$/i;
+    const ruleRegex = /([^{}@][^{}]*?)\{([^{}]*)\}/g;
+    let m;
+    while ((m = ruleRegex.exec(text)) !== null) {
+        const selector = m[1].trim();
+        if (keyframeStopRegex.test(selector)) {
+            continue;
+        }
+        const body = m[2];
+        const bodyStart = m.index + m[0].indexOf(m[2]);
+        const props = new Map();
+        const propRegex = /([\w-]+)\s*:\s*([^;]+);/g;
+        let pm;
+        while ((pm = propRegex.exec(body)) !== null) {
+            const propName = pm[1].trim().toLowerCase();
+            const propValue = pm[2].trim();
+            const offset = bodyStart + pm.index;
+            const line = doc.positionAt(offset).line;
+            props.set(propName, { value: propValue, line, offset });
+        }
+        const selectorOffset = m.index;
+        rules.push({ selector, props, selectorLine: doc.positionAt(selectorOffset).line, selectorOffset });
+    }
+    // ① 同じルール内のプロパティ重複チェック（同じファイルを走査する前に重複チェック）
+    for (const rule of rules) {
+        // 既に追加済みのプロパティを追跡（同じルール内での重複）
+        const seen = new Map();
+        const propRegex2 = /([\w-]+)\s*:\s*([^;]+);/g;
+        const bodyMatch = /\{([^{}]*)\}/.exec(text.substring(rule.selectorOffset));
+        if (!bodyMatch) {
+            continue;
+        }
+        const bodyStart = rule.selectorOffset + bodyMatch.index + 1;
+        let pm2;
+        while ((pm2 = propRegex2.exec(bodyMatch[1])) !== null) {
+            const propName = pm2[1].trim().toLowerCase();
+            const propValue = pm2[2].trim();
+            const offset = bodyStart + pm2.index;
+            if (seen.has(propName)) {
+                const prev = seen.get(propName);
+                // 前の定義に警告
+                const prevStart = doc.positionAt(prev.offset);
+                const prevEnd = doc.positionAt(prev.offset + propName.length);
+                const diag = new vscode.Diagnostic(new vscode.Range(prevStart, prevEnd), `"${propName}" が同じルール内で重複しています（後の "${propValue}" が有効）`, vscode.DiagnosticSeverity.Warning);
+                diag.source = 'CSS Jumper';
+                diagnostics.push(diag);
+            }
+            seen.set(propName, { value: propValue, line: doc.positionAt(offset).line, offset });
+        }
+        // ② shorthand が longhand を上書きするチェック
+        for (const [shorthand, longhands] of Object.entries(shorthandMap)) {
+            if (!rule.props.has(shorthand)) {
+                continue;
+            }
+            const shortInfo = rule.props.get(shorthand);
+            for (const longhand of longhands) {
+                if (!rule.props.has(longhand)) {
+                    continue;
+                }
+                const longInfo = rule.props.get(longhand);
+                // longhandがshorthandより前にある場合は上書きされる
+                if (longInfo.offset < shortInfo.offset) {
+                    const start = doc.positionAt(longInfo.offset);
+                    const end = doc.positionAt(longInfo.offset + longhand.length);
+                    const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"${longhand}" は後の "${shorthand}" に上書きされます`, vscode.DiagnosticSeverity.Warning);
+                    diag.source = 'CSS Jumper';
+                    diagnostics.push(diag);
+                }
+            }
+        }
+    }
+    // ③ 同じセレクタが複数定義されているチェック
+    const selectorMap = new Map();
+    for (const rule of rules) {
+        const sel = rule.selector.replace(/\s+/g, ' ').toLowerCase();
+        if (!selectorMap.has(sel)) {
+            selectorMap.set(sel, []);
+        }
+        selectorMap.get(sel).push({ line: rule.selectorLine, offset: rule.selectorOffset });
+    }
+    for (const [sel, locations] of selectorMap) {
+        if (locations.length < 2) {
+            continue;
+        }
+        // 最初の定義に警告
+        const first = locations[0];
+        const start = doc.positionAt(first.offset);
+        const end = doc.positionAt(first.offset + sel.length);
+        const lines = locations.map(l => `行${l.line + 1}`).join(', ');
+        const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"${sel}" が${locations.length}箇所に定義されています（${lines}）。まとめられます`, vscode.DiagnosticSeverity.Information);
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+    }
+    // ④ 同じプロパティセットを持つセレクタのマージ提案
+    const propSignatureMap = new Map();
+    for (const rule of rules) {
+        if (rule.props.size === 0) {
+            continue;
+        }
+        const sig = Array.from(rule.props.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, v]) => `${k}:${v.value}`)
+            .join(';');
+        if (!propSignatureMap.has(sig)) {
+            propSignatureMap.set(sig, []);
+        }
+        propSignatureMap.get(sig).push(rule.selector);
+    }
+    for (const [, selectors] of propSignatureMap) {
+        if (selectors.length < 2) {
+            continue;
+        }
+        // 該当ルールに情報警告を追加
+        for (const rule of rules) {
+            if (!selectors.includes(rule.selector)) {
+                continue;
+            }
+            const start = doc.positionAt(rule.selectorOffset);
+            const end = doc.positionAt(rule.selectorOffset + rule.selector.length);
+            const others = selectors.filter(s => s !== rule.selector).join(', ');
+            const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"${rule.selector}" は "${others}" と同じプロパティです。まとめられます`, vscode.DiagnosticSeverity.Information);
+            diag.source = 'CSS Jumper';
+            diagnostics.push(diag);
+        }
+    }
+    // ⑤ 必須セットプロパティのチェック
+    for (const rule of rules) {
+        const props = rule.props;
+        const hasPosition = props.has('position');
+        const positionValue = props.get('position')?.value ?? '';
+        const hasTop = props.has('top');
+        const hasBottom = props.has('bottom');
+        const hasLeft = props.has('left');
+        const hasRight = props.has('right');
+        // z-index は position が static 以外のときのみ有効
+        if (props.has('z-index') && (!hasPosition || positionValue === 'static')) {
+            const info = props.get('z-index');
+            const start = doc.positionAt(info.offset);
+            const end = doc.positionAt(info.offset + 'z-index'.length);
+            const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"z-index" は "position: static"（デフォルト）のままでは効きません。position: relative/absolute/fixed のいずれかが必要です`, vscode.DiagnosticSeverity.Warning);
+            diag.source = 'CSS Jumper';
+            diagnostics.push(diag);
+        }
+        // position: absolute/fixed/sticky には座標が必要
+        if (hasPosition && ['absolute', 'fixed', 'sticky'].includes(positionValue)) {
+            const hasAxisX = hasLeft || hasRight;
+            const hasAxisY = hasTop || hasBottom;
+            if (!hasAxisX || !hasAxisY) {
+                const info = props.get('position');
+                const start = doc.positionAt(info.offset);
+                const end = doc.positionAt(info.offset + positionValue.length);
+                const missing = [];
+                if (!hasAxisY) {
+                    missing.push('top か bottom');
+                }
+                if (!hasAxisX) {
+                    missing.push('left か right');
+                }
+                const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"position: ${positionValue}" には ${missing.join(' と ')} も必要です`, vscode.DiagnosticSeverity.Information);
+                diag.source = 'CSS Jumper';
+                diagnostics.push(diag);
+            }
+        }
+        // display: grid にはテンプレート定義が必要
+        if (props.get('display')?.value === 'grid') {
+            const hasCols = props.has('grid-template-columns') || props.has('grid-template');
+            const hasRows = props.has('grid-template-rows');
+            if (!hasCols && !hasRows) {
+                const info = props.get('display');
+                const start = doc.positionAt(info.offset);
+                const end = doc.positionAt(info.offset + 'display'.length);
+                const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"display: grid" には "grid-template-columns" か "grid-template-rows" が必要です`, vscode.DiagnosticSeverity.Information);
+                diag.source = 'CSS Jumper';
+                diagnostics.push(diag);
+            }
+        }
+    }
+    // ⑥ px と rem の混在チェック（font-size / margin / padding / width / height）
+    const sizeProps = ['font-size', 'margin', 'margin-top', 'margin-bottom', 'margin-left', 'margin-right',
+        'padding', 'padding-top', 'padding-bottom', 'padding-left', 'padding-right', 'width', 'height',
+        'gap', 'line-height', 'border-radius'];
+    const pxOffsets = [];
+    const remOffsets = [];
+    const sizePropRegex = new RegExp(`(${sizeProps.join('|')})\\s*:\\s*[^;]*(\\d+(?:\\.\\d+)?)(px|rem)`, 'g');
+    let sp;
+    while ((sp = sizePropRegex.exec(text)) !== null) {
+        const unit = sp[3];
+        const unitOffset = sp.index + sp[0].lastIndexOf(unit);
+        if (unit === 'px') {
+            pxOffsets.push(unitOffset);
+        }
+        else {
+            remOffsets.push(unitOffset);
+        }
+    }
+    if (pxOffsets.length > 0 && remOffsets.length > 0) {
+        // 最初のpxに警告を1つだけ出す
+        const offset = pxOffsets[0];
+        const start = doc.positionAt(offset);
+        const end = doc.positionAt(offset + 2);
+        const diag = new vscode.Diagnostic(new vscode.Range(start, end), `px と rem が混在しています（${pxOffsets.length}箇所px / ${remOffsets.length}箇所rem）。どちらかに統一すると管理しやすくなります`, vscode.DiagnosticSeverity.Information);
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+    }
+    // ⑦ CSS変数（var(--xxx)）の未定義チェック
+    const definedVars = new Set();
+    const varDefRegex = /(--[\w-]+)\s*:/g;
+    let vd;
+    while ((vd = varDefRegex.exec(text)) !== null) {
+        definedVars.add(vd[1]);
+    }
+    const varUseRegex = /var\((--[\w-]+)\)/g;
+    let vu;
+    while ((vu = varUseRegex.exec(text)) !== null) {
+        const varName = vu[1];
+        if (definedVars.has(varName)) {
+            continue;
+        }
+        const offset = vu.index + 4; // "var(" の後
+        const start = doc.positionAt(offset);
+        const end = doc.positionAt(offset + varName.length);
+        const diag = new vscode.Diagnostic(new vscode.Range(start, end), `CSS変数 "${varName}" が定義されていません（:root に定義が必要です）`, vscode.DiagnosticSeverity.Warning);
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+    }
+    // ⑦ 画像パスの存在チェック（url(...)）
+    const docDir = path.dirname(doc.uri.fsPath);
+    const urlRegex = /url\(['"]?([^'")]+)['"]?\)/g;
+    let um;
+    while ((um = urlRegex.exec(text)) !== null) {
+        const imgPath = um[1].trim();
+        if (imgPath.startsWith('http') || imgPath.startsWith('data:') || imgPath.startsWith('/')) {
+            continue;
+        }
+        const absPath = path.resolve(docDir, imgPath);
+        if (!fs.existsSync(absPath)) {
+            const offset = um.index + um[0].indexOf(um[1]);
+            const start = doc.positionAt(offset);
+            const end = doc.positionAt(offset + imgPath.length);
+            const diag = new vscode.Diagnostic(new vscode.Range(start, end), `画像ファイルが見つかりません: "${imgPath}"`, vscode.DiagnosticSeverity.Warning);
+            diag.source = 'CSS Jumper';
+            diagnostics.push(diag);
+        }
+    }
+    diagCollection.set(doc.uri, diagnostics);
+}
+// ========================================
+// HTML品質チェック ヘルパー（img alt欠落）
+// ========================================
+function runHtmlQualityCheck(doc, diagCollection) {
+    const text = doc.getText();
+    const diagnostics = [];
+    // <img> タグで alt属性がないものを検出（PHP動的imgはスキップ）
+    const imgRegex = /<img\b([^>]*)>/gi;
+    let m;
+    while ((m = imgRegex.exec(text)) !== null) {
+        const attrs = m[1];
+        if (attrs.includes('<?')) {
+            continue;
+        } // PHP動的属性はスキップ
+        if (/\balt\s*=/.test(attrs)) {
+            continue;
+        } // alt属性あり → OK
+        const start = doc.positionAt(m.index);
+        const end = doc.positionAt(m.index + 4); // "<img" の部分
+        const diag = new vscode.Diagnostic(new vscode.Range(start, end), `<img> に alt 属性がありません（アクセシビリティ・SEOのために必要です）`, vscode.DiagnosticSeverity.Warning);
+        diag.source = 'CSS Jumper';
+        diagnostics.push(diag);
+    }
+    diagCollection.set(doc.uri, diagnostics);
 }
 // 正規表現の特殊文字をエスケープ
 function escapeRegex(str) {
