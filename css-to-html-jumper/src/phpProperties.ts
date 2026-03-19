@@ -6,6 +6,7 @@ export interface PhpFunctionInfo {
   returns?: string;
   tips?: string[];
   category?: string;
+  frequent?: boolean; // trueにすると補完で上位表示
 }
 
 export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
@@ -211,6 +212,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_post_meta": {
     name: "get_post_meta",
+    frequent: true,
     category: "WordPress投稿",
     description: "投稿のカスタムフィールド（メタデータ）を取得する。",
     params: ["int $post_id — 投稿ID", "string $key — フィールド名", "bool $single — trueで単一値, falseで配列"],
@@ -227,6 +229,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_the_title": {
     name: "get_the_title",
+    frequent: true,
     category: "WordPress投稿",
     description: "投稿タイトルを文字列で返す。",
     params: ["int|WP_Post $post — 投稿ID（省略時はグローバル$post）"],
@@ -235,6 +238,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_title": {
     name: "the_title",
+    frequent: true,
     category: "WordPress投稿",
     description: "投稿タイトルを直接出力する（ループ内で使用）。",
     params: ["string $before — タイトル前に追加（省略可）", "string $after — タイトル後に追加（省略可）"],
@@ -243,6 +247,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_content": {
     name: "the_content",
+    frequent: true,
     category: "WordPress投稿",
     description: "投稿本文を出力する（ループ内で使用）。",
     params: [],
@@ -251,6 +256,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_the_permalink": {
     name: "get_the_permalink",
+    frequent: true,
     category: "WordPress投稿",
     description: "投稿のパーマリンク（URL）を文字列で返す。",
     params: ["int|WP_Post $post — 投稿ID（省略時はグローバル$post）"],
@@ -259,6 +265,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_the_ID": {
     name: "get_the_ID",
+    frequent: true,
     category: "WordPress投稿",
     description: "現在の投稿IDを返す（ループ内で使用）。",
     params: [],
@@ -283,6 +290,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "have_posts": {
     name: "have_posts",
+    frequent: true,
     category: "WordPress投稿",
     description: "ループに次の投稿があるかチェックする。while(have_posts()) で使用。",
     params: [],
@@ -291,6 +299,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_post": {
     name: "the_post",
+    frequent: true,
     category: "WordPress投稿",
     description: "次の投稿データをグローバル変数$postにセットし、テンプレートタグを使えるようにする。",
     params: [],
@@ -299,6 +308,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_permalink": {
     name: "the_permalink",
+    frequent: true,
     category: "WordPress投稿",
     description: "現在の投稿のパーマリンク（URL）を直接出力する。",
     params: [],
@@ -315,6 +325,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_author": {
     name: "the_author",
+    frequent: true,
     category: "WordPress投稿",
     description: "現在の投稿の著者名を出力する。",
     params: [],
@@ -323,6 +334,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_date": {
     name: "the_date",
+    frequent: true,
     category: "WordPress投稿",
     description: "投稿の公開日を出力する（同日複数投稿時は最初の1件のみ）。",
     params: ["string $format — 日付フォーマット（デフォルトはWordPress設定に従う）"],
@@ -357,6 +369,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   // ==================== WordPress条件分岐 ====================
   "is_page": {
     name: "is_page",
+    frequent: true,
     category: "WordPress条件分岐",
     description: "現在のページが固定ページかどうかを返す。",
     params: ["int|string|array $page — ページID/スラッグ/タイトル（省略可）"],
@@ -365,6 +378,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "is_single": {
     name: "is_single",
+    frequent: true,
     category: "WordPress条件分岐",
     description: "現在のページが投稿の個別ページかどうかを返す。",
     params: ["int|string|array $post — 投稿ID/スラッグ（省略可）"],
@@ -389,6 +403,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "is_archive": {
     name: "is_archive",
+    frequent: true,
     category: "WordPress条件分岐",
     description: "現在のページがアーカイブページ（カテゴリ/タグ/日付等）かどうかを返す。",
     params: [],
@@ -420,6 +435,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   // ==================== WordPressフック ====================
   "add_action": {
     name: "add_action",
+    frequent: true,
     category: "WordPressフック",
     description: "アクションフックに関数を登録する。指定のタイミングで登録した関数が実行される。",
     params: ["string $hook_name — フック名", "callable $callback — 実行する関数", "int $priority — 優先度（デフォルト10）", "int $accepted_args — 引数の数（デフォルト1）"],
@@ -428,6 +444,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "add_filter": {
     name: "add_filter",
+    frequent: true,
     category: "WordPressフック",
     description: "フィルターフックに関数を登録する。値を加工して返す処理に使う。",
     params: ["string $hook_name — フック名", "callable $callback — 実行する関数（値を受け取りreturnする）", "int $priority — 優先度（デフォルト10）", "int $accepted_args — 引数の数（デフォルト1）"],
@@ -475,6 +492,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   // ==================== WordPress URL・パス ====================
   "get_template_directory_uri": {
     name: "get_template_directory_uri",
+    frequent: true,
     category: "WordPress URL",
     description: "アクティブなテーマのディレクトリURLを返す。",
     params: [],
@@ -523,6 +541,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   // ==================== WordPressエンキュー ====================
   "wp_enqueue_script": {
     name: "wp_enqueue_script",
+    frequent: true,
     category: "WordPress読み込み",
     description: "JavaScriptファイルをHTMLに読み込む（重複防止・依存関係管理付き）。",
     params: ["string $handle — ハンドル名（固有のID）", "string $src — ファイルのURL", "array $deps — 依存スクリプトのハンドル名配列", "string|bool $ver — バージョン番号", "bool $in_footer — trueでfooterに読み込む"],
@@ -531,6 +550,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "wp_enqueue_style": {
     name: "wp_enqueue_style",
+    frequent: true,
     category: "WordPress読み込み",
     description: "CSSファイルをHTMLに読み込む（重複防止・依存関係管理付き）。",
     params: ["string $handle — ハンドル名", "string $src — ファイルのURL", "array $deps — 依存スタイルのハンドル名配列", "string|bool $ver — バージョン番号", "string $media — メディアタイプ（省略可）"],
@@ -623,6 +643,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   // ==================== WordPressセキュリティ ====================
   "esc_html": {
     name: "esc_html",
+    frequent: true,
     category: "WordPressセキュリティ",
     description: "HTMLタグをエスケープして安全に出力する。",
     params: ["string $text — エスケープする文字列"],
@@ -631,6 +652,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "esc_url": {
     name: "esc_url",
+    frequent: true,
     category: "WordPressセキュリティ",
     description: "URLを安全にエスケープする。",
     params: ["string $url — エスケープするURL"],
@@ -639,6 +661,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "esc_attr": {
     name: "esc_attr",
+    frequent: true,
     category: "WordPressセキュリティ",
     description: "HTML属性値を安全にエスケープする。",
     params: ["string $text — エスケープする文字列"],
@@ -1390,6 +1413,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_the_post_thumbnail": {
     name: "get_the_post_thumbnail",
+    frequent: true,
     category: "WordPressメディア",
     description: "投稿のアイキャッチ画像タグを返す。",
     params: ["int|WP_Post $post — 投稿ID（省略時はグローバル$post）", "string|array $size — サイズ（デフォルト'post-thumbnail'）", "array $attr — imgタグの属性"],
@@ -1558,6 +1582,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "the_excerpt": {
     name: "the_excerpt",
+    frequent: true,
     category: "WordPress投稿操作",
     description: "投稿の抜粋を出力する。",
     params: [],
@@ -1566,6 +1591,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_the_excerpt": {
     name: "get_the_excerpt",
+    frequent: true,
     category: "WordPress投稿操作",
     description: "投稿の抜粋を文字列で返す。",
     params: ["int|WP_Post $post — 投稿ID（省略可）"],
@@ -1672,6 +1698,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   // ==================== WordPressテーマ・テンプレート ====================
   "get_theme_file_uri": {
     name: "get_theme_file_uri",
+    frequent: true,
     category: "WordPressテーマ",
     description: "テーマファイルのURLを返す（子テーマを優先して検索）。",
     params: ["string $file — テーマディレクトリからの相対パス（省略可）"],
@@ -1694,6 +1721,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_header": {
     name: "get_header",
+    frequent: true,
     category: "WordPressテーマ",
     description: "テーマのheader.phpを読み込む。",
     params: ["string $name — テンプレート名（省略可）"],
@@ -1702,6 +1730,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_footer": {
     name: "get_footer",
+    frequent: true,
     category: "WordPressテーマ",
     description: "テーマのfooter.phpを読み込む。",
     params: ["string $name — テンプレート名（省略可）"],
@@ -1716,6 +1745,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "get_template_part": {
     name: "get_template_part",
+    frequent: true,
     category: "WordPressテーマ",
     description: "テンプレートパーツを読み込む。",
     params: ["string $slug — テンプレートのスラッグ", "string $name — テンプレート名（省略可）", "array $args — テンプレートに渡す変数（省略可）"],
@@ -1747,6 +1777,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "wp_nav_menu": {
     name: "wp_nav_menu",
+    frequent: true,
     category: "WordPressテーマ",
     description: "ナビゲーションメニューを出力する。",
     params: ["array $args — theme_location/menu/container/menu_class等の設定"],
@@ -1755,6 +1786,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "register_sidebar": {
     name: "register_sidebar",
+    frequent: true,
     category: "WordPressテーマ",
     description: "ウィジェットエリア（サイドバー）を登録する。",
     params: ["array $args — id/name/description/before_widget等の設定"],
@@ -1763,6 +1795,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "dynamic_sidebar": {
     name: "dynamic_sidebar",
+    frequent: true,
     category: "WordPressテーマ",
     description: "登録したウィジェットエリアを出力する。",
     params: ["int|string $index — サイドバーIDまたはインデックス"],
@@ -1777,6 +1810,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "wp_head": {
     name: "wp_head",
+    frequent: true,
     category: "WordPressテーマ",
     description: "</head>の直前に必ず呼ぶWordPressのフック発火関数。",
     params: [],
@@ -1785,6 +1819,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "wp_footer": {
     name: "wp_footer",
+    frequent: true,
     category: "WordPressテーマ",
     description: "</body>の直前に必ず呼ぶWordPressのフック発火関数。",
     params: [],
@@ -1816,6 +1851,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   },
   "bloginfo": {
     name: "bloginfo",
+    frequent: true,
     category: "WordPressテーマ",
     description: "サイト情報を出力する。",
     params: ["string $show — 'name'/'description'/'charset'/'url'/'template_url'等"],
@@ -2088,7 +2124,7 @@ export const phpFunctions: { [key: string]: PhpFunctionInfo } = {
   "wp_login_url": { name: "wp_login_url", category: "追加辞書", description: "" },
   "wp_logout_url": { name: "wp_logout_url", category: "追加辞書", description: "" },
   "wp_registration_url": { name: "wp_registration_url", category: "追加辞書", description: "" },
-  "is_home": { name: "is_home", category: "追加辞書", description: "" },
+  "is_home": { name: "is_home", frequent: true, category: "WordPress条件分岐", description: "現在のページがブログのトップページかどうかを返す。" },
   "is_admin": { name: "is_admin", category: "追加辞書", description: "" },
   "is_404": { name: "is_404", category: "追加辞書", description: "" },
   "is_search": { name: "is_search", category: "追加辞書", description: "" },

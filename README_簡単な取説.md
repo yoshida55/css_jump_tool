@@ -44,6 +44,7 @@
 | `Ctrl+Shift+7` | クイズ出題                       |
 | `Ctrl+Shift+8` | クイズ評価                       |
 | `Ctrl+Alt+S`   | SVGリンク挿入                    |
+| `Ctrl+Shift+J` | PHP/WP関数を調べる（PHPファイルのみ） |
 
 ### Chrome拡張（ブラウザ上）
 
@@ -81,6 +82,31 @@
   - 🎨 **SVGで図解**: SVGをクリップボードにコピー
   - 📝 **CSSスケルトン生成**: HTMLからCSS空ルール生成
   - 🏗 **HTML構造改善**: セマンティックHTML提案（header/section/footer単位で選択）
+
+#### ⚡ ショートカットトリガー（コード選択して Ctrl+I）
+
+プリセット選択を省略して、入力末尾の1文字で動作を即指定できます。
+
+| 末尾文字         | 動作                                                              |
+| ---------------- | ----------------------------------------------------------------- |
+| `s` / `S` / `し` | **その場で修正・置換** → 選択コードを直接書き換える（プリセット不要） |
+| `n` / `ｎ` / `な` | **エラーチェック** → 問題点をコメントとして下に挿入（置換しない） |
+
+**例（sトリガー）**:
+```
+1. コードを選択
+2. Ctrl+I
+3. InputBoxに「s」だけ入れてEnter
+→ AIが修正したコードで即座に置き換え（プリセット選択画面は出ない）
+```
+
+**例（nトリガー）**:
+```
+1. コードを選択
+2. Ctrl+I
+3. InputBoxに「n」だけ入れてEnter
+→ AIが間違いを指摘するコメントをコード下に挿入
+```
 
 ### 4. 踏み込んだ質問
 
@@ -198,6 +224,45 @@ Ctrl+Shift+P → "クイズのカテゴリ変更"
   - `🎇 overview ⚠ 要更新` → クリックで再生成
 - **料金目安**: 1ファイルあたり約**0.15円**（Gemini 2.5 Flash）
 
+### 16. 🐘 PHP/WordPress スニペット補完【2026-03追加】
+
+PHPファイルで WordPress関数を素早く入力できるスニペット補完が使えます。
+
+- **対象**: PHPファイル（`.php`）
+- **操作**: 関数名の一部を入力 → 候補が表示される → Tab/Enter で確定
+
+#### よく使う関数の例
+
+| 入力キーワード | 補完される関数              | 説明                       |
+| -------------- | --------------------------- | -------------------------- |
+| `theme`        | `get_theme_file_uri()`      | テーマファイルのURL取得    |
+| `title`        | `get_the_title()`           | 投稿タイトル取得           |
+| `permalink`    | `get_the_permalink()`       | 投稿URL取得                |
+| `thumbnail`    | `get_the_post_thumbnail()`  | アイキャッチ画像タグ取得   |
+| `meta`         | `get_post_meta()`           | カスタムフィールド取得     |
+| `estyle`       | `wp_enqueue_style()`        | CSSファイル読み込み        |
+| `escript`      | `wp_enqueue_script()`       | JSファイル読み込み         |
+| `ehtml`        | `esc_html()`                | HTMLエスケープ（XSS対策）  |
+| `part`         | `get_template_part()`       | テンプレートパーツ読み込み |
+| `hposts`       | `have_posts()`              | ループ判定                 |
+| `ph`           | `<?php ${1} ?>`             | PHPタグ                    |
+| `pif`          | `<?php if(): ?> ... endif;` | PHPテンプレートif文        |
+
+#### ゴーストテキスト（インライン補完）
+
+3文字以上入力すると、確定候補がうっすら表示されます（ゴーストテキスト）。
+
+```
+get_t  →  get_the_title()  ← うっすら表示（Tab で確定）
+```
+
+#### スニペットの特徴
+
+- **vsixに内包済み** → インストールするだけで使える（設定不要）
+- `get_post_meta` は `get_post_meta(get_the_ID(), '${1:key}', true)` の形で展開
+- `bloginfo` は `name / description / charset / url` の選択肢が出る
+- `register_sidebar` は複数行テンプレートで展開
+
 ---
 
 ## ⚙ settings.json 設定一覧
@@ -306,6 +371,20 @@ D:\50_knowledge\（会社: T:\50_knowledge\）
 → slideについて詳しく解説がコメント挿入される
 ```
 
+### Ctrl+I ショートカットトリガーの活用
+
+```
+【その場で修正したいとき】
+1. コード選択
+2. Ctrl+I → InputBoxに「s」だけ入力 → Enter
+→ 選択コードがAIの修正版に即置き換わる
+
+【間違いを調べたいとき（勉強用）】
+1. コードを選択（またはカーソルを置く）
+2. Ctrl+I → InputBoxに「n」だけ入力 → Enter
+→ 問題点がコメントとして下に挿入される（コードは変わらない）
+```
+
 ### SVG図解の活用
 
 ```
@@ -341,11 +420,14 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 ```
 
 ※ node_modules/ と out/ がGit管理済み → npm install 不要
+※ **PHPスニペット補完も.vsixに内包済み** → 追加設定なしで使える
 
 ### 方法2: USBで持ち込み
 
 1. **vsixファイルをUSBで持ち込み**
 2. **Install from VSIX**
+
+※ スニペットはvsixに内包されているため、インストールするだけで補完が使えます。
 
 ### 共通: settings.json設定
 
@@ -377,11 +459,13 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 | **HTMLハイライトが出ない**    | **vsix再インストール → Developer: Restart Extension Host**  |
 | **モバイルCSS検索が動かない** | **Chrome拡張リロード → ページリロード（Ctrl+Shift+R）**     |
 | **ポート3848エラー**          | **`http://127.0.0.1:3848/selector` で確認 → VS Code再起動** |
+| **PHP補完が出ない**           | **vsix再インストール → Developer: Reload Window**           |
+| **sトリガーが効かない**       | **vsix再インストール後、必ずReload Windowを実行**           |
 
 ---
 
 **バージョン**: 1.10.0
-**最終更新**: 2026-02-21
+**最終更新**: 2026-03-19
 
 ### API料金の目安（Gemini API）
 

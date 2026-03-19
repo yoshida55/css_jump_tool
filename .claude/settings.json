@@ -30,7 +30,8 @@
       "Read(//c/Users/sensh/.vscode/extensions/undefined_publisher.css-to-html-jumper-1.10.0/out/**)",
       "Read(//c/Users/sensh/.vscode/extensions//**)",
       "Read(//d/01_AI/10_Python/00_Python_src/99_commit/62_HTMLからCSSへジャンプ/**)",
-      "WebFetch(domain:astomosgroup-logistics-recruit.jp)"
+      "WebFetch(domain:astomosgroup-logistics-recruit.jp)",
+      "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code.cmd\" --install-extension css-to-html-jumper-1.10.0.vsix --force)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",

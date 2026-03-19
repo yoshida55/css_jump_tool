@@ -3,8 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractPhpFunctionsFromMemo = extractPhpFunctionsFromMemo;
 exports.getCachedPhpFunctions = getCachedPhpFunctions;
 exports.registerPhpCompletionProvider = registerPhpCompletionProvider;
+exports.registerPhpInlineCompletionProvider = registerPhpInlineCompletionProvider;
 const vscode = require("vscode");
 const fs = require("fs");
+const phpProperties_1 = require("./phpProperties");
 // メモから抽出したPHP/WP関数キャッシュ
 let cachedFunctions = null;
 /**
@@ -70,15 +72,17 @@ function registerPhpCompletionProvider(context) {
     context.subscriptions.push(debugCmd);
     const provider = vscode.languages.registerCompletionItemProvider('php', {
         provideCompletionItems(document, position) {
-            // メモファイルを読み込む（キャッシュあれば再利用）
+            // メモファイルを読み込む（キャッシュあれば再利用。なくても辞書補完は動く）
             if (!cachedFunctions) {
                 const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
                 const memoFilePath = config.get('memoFilePath', '');
-                if (!memoFilePath || !fs.existsSync(memoFilePath)) {
-                    return [];
+                if (memoFilePath && fs.existsSync(memoFilePath)) {
+                    const memoContent = fs.readFileSync(memoFilePath, 'utf-8');
+                    cachedFunctions = extractPhpFunctionsFromMemo(memoContent);
                 }
-                const memoContent = fs.readFileSync(memoFilePath, 'utf-8');
-                cachedFunctions = extractPhpFunctionsFromMemo(memoContent);
+                else {
+                    cachedFunctions = []; // メモなしでも辞書補完は続行
+                }
             }
             // カーソル位置の単語を取得
             const wordRange = document.getWordRangeAtPosition(position, /[\w_]+/);
@@ -89,8 +93,8 @@ function registerPhpCompletionProvider(context) {
             if (word.length < 2) {
                 return [];
             }
-            // 途中一致でフィルタ（先頭一致を上位に）
-            return cachedFunctions
+            // メモ由来の補完（途中一致）
+            const memoItems = cachedFunctions
                 .filter(f => f.name.toLowerCase().includes(word))
                 .map(f => {
                 const actualInsert = f.insertText || f.name;
@@ -99,11 +103,47 @@ function registerPhpCompletionProvider(context) {
                 item.detail = '📖 メモより';
                 item.documentation = new vscode.MarkdownString(f.description);
                 item.insertText = new vscode.SnippetString(`${actualInsert}($1)$0`);
-                // "!" は英字より前に並ぶのでメモ補完を上位表示
                 const isPrefix = f.name.toLowerCase().startsWith(word);
                 item.sortText = (isPrefix ? '!0_' : '!1_') + f.name;
                 return item;
             });
+            // phpProperties.ts 辞書由来の補完（途中一致）
+            const memoNames = new Set(memoItems.map(i => i.label.split(' → ')[0]));
+            const dictItems = Object.entries(phpProperties_1.phpFunctions)
+                .filter(([key]) => key.toLowerCase().includes(word) && !memoNames.has(key))
+                .map(([key, info]) => {
+                // frequent な関数はプレフィックスを除いたラベルにして前方一致させる
+                // 例: get_theme_file_uri → ラベル "theme_file_uri"、挿入は "get_theme_file_uri()"
+                const stripped = key.replace(/^(get_|the_|wp_|is_|have_|add_|do_|apply_|register_|setup_|remove_|wc_|esc_|sanitize_)/, '');
+                const useShortLabel = info.frequent && stripped !== key && stripped.toLowerCase().includes(word);
+                const label = useShortLabel ? stripped : key;
+                const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Function);
+                item.detail = useShortLabel
+                    ? `📚 → ${key}`
+                    : (info.category ? `📚 ${info.category}` : '📚 PHP/WP辞書');
+                let doc = `**${key}**\n\n` + info.description;
+                if (info.params?.length) {
+                    doc += '\n\n**引数**: ' + info.params.join(' \\ ');
+                }
+                if (info.returns) {
+                    doc += '\n\n**戻り値**: ' + info.returns;
+                }
+                if (info.tips?.length) {
+                    doc += '\n\n💡 ' + info.tips.join('\n\n💡 ');
+                }
+                item.documentation = new vscode.MarkdownString(doc);
+                item.insertText = new vscode.SnippetString(`${key}($1)$0`);
+                item.filterText = label;
+                const isPrefix = label.toLowerCase().startsWith(word);
+                // \x00 = 最低文字コード → どのプロバイダーより前に並ぶ
+                const rank = info.frequent ? '\x00\x00' : (isPrefix ? '\x00\x01' : '\x00\x02');
+                item.sortText = rank + label;
+                if (info.frequent && isPrefix) {
+                    item.preselect = true;
+                }
+                return item;
+            });
+            return [...memoItems, ...dictItems];
         }
     });
     // メモ保存時にキャッシュをリセット
@@ -115,5 +155,34 @@ function registerPhpCompletionProvider(context) {
         }
     });
     context.subscriptions.push(provider, watcher);
+}
+/**
+ * PHPファイル用のゴーストテキスト（インライン補完）プロバイダーを登録する
+ * Intelephense と競合しないドロップダウン外の補完
+ */
+function registerPhpInlineCompletionProvider(context) {
+    const provider = vscode.languages.registerInlineCompletionItemProvider({ language: 'php' }, {
+        provideInlineCompletionItems(document, position) {
+            const wordRange = document.getWordRangeAtPosition(position, /[\w_]+/);
+            if (!wordRange) {
+                return [];
+            }
+            const word = document.getText(wordRange);
+            if (word.length < 3) {
+                return [];
+            }
+            const wordLower = word.toLowerCase();
+            // frequent 関数から前方一致で候補を探す（短い順）
+            const candidates = Object.entries(phpProperties_1.phpFunctions)
+                .filter(([key, info]) => info.frequent && key.toLowerCase().startsWith(wordLower))
+                .sort(([a], [b]) => a.length - b.length);
+            if (candidates.length === 0) {
+                return [];
+            }
+            // 上位3件をゴーストテキストとして返す（Alt+] で切り替え可能）
+            return candidates.slice(0, 3).map(([key]) => new vscode.InlineCompletionItem(`${key}()`, wordRange));
+        }
+    });
+    context.subscriptions.push(provider);
 }
 //# sourceMappingURL=phpCompletionProvider.js.map

@@ -9,7 +9,7 @@ import { jsMethods } from './jsProperties';
 import { registerAiHoverProvider } from './aiHoverProvider';
 import { registerOverviewGenerator } from './overviewGenerator';
 import { phpFunctions } from './phpProperties';
-import { registerPhpCompletionProvider, extractPhpFunctionsFromMemo, getCachedPhpFunctions, PhpFunction } from './phpCompletionProvider';
+import { registerPhpCompletionProvider, registerPhpInlineCompletionProvider, extractPhpFunctionsFromMemo, getCachedPhpFunctions, PhpFunction } from './phpCompletionProvider';
 
 // ========================================
 // メモ検索履歴（最新10件）
@@ -3282,6 +3282,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // PHP補完プロバイダーの有効化（メモから途中一致補完）
   registerPhpCompletionProvider(context);
+  // PHPゴーストテキスト補完（Intelephenseと競合しない）
+  registerPhpInlineCompletionProvider(context);
 
   // クイズ履歴をファイルから復元
   loadQuizHistory();
@@ -4655,6 +4657,20 @@ ${explanation}
 
       let accepted = false;
       qp.onDidAccept(() => {
+        // 末尾 s/S/ｓ/Ｓ/し → その場置換トリガー（候補の有無に関わらず即確定）
+        if (/[sSｓＳし]$/.test(qp.value)) {
+          accepted = true;
+          resolve(qp.value.trim() || '');
+          qp.hide();
+          return;
+        }
+        // 末尾 n/ｎ/な → 間違いチェックトリガー（コメント挿入）
+        if (/[nｎな]$/.test(qp.value)) {
+          accepted = true;
+          resolve(qp.value.trim() || '');
+          qp.hide();
+          return;
+        }
         const sel = qp.selectedItems[0];
         if (sel && qp.items.length > 0) {
           // 候補あり → 最後の単語を選択テキストで置き換え
@@ -4677,6 +4693,71 @@ ${explanation}
       return; // キャンセル
     }
 
+    // 末尾が n / ｎ / な → Step2スキップ・間違いチェックモード（コメント挿入）
+    if (/[nｎな]$/.test(userInput)) {
+      const codeContext = code ? `【コード】\n${code}\n\n` : '';
+      const checkQuestion = `${codeContext}このコードに何か間違っている部分・改善すべき問題はありますか？\n問題点があれば「どこが・なぜ問題か」を日本語で教えてください。問題なければ「問題なし」と一言だけ答えてください。`;
+
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '🔍 チェック中...', cancellable: false }, async () => {
+        try {
+          const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+          const apiKey = config.get<string>('claudeApiKey', '');
+          if (!apiKey) { vscode.window.showErrorMessage('APIキーが設定されていません'); return; }
+          const model = config.get<string>('claudeModel', 'claude-sonnet-4-5');
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content: checkQuestion }] })
+          });
+          const data = await response.json() as any;
+          const cleanAnswer = (data?.content?.[0]?.text || '').trim();
+          const lang = editor.document.languageId;
+          const endPosition = selection.end;
+          const insertPosition = new vscode.Position(endPosition.line, editor.document.lineAt(endPosition.line).text.length);
+          const insertText = lang === 'html'
+            ? `\n<!-- 🔍 チェック結果\n${cleanAnswer}\n-->\n`
+            : `\n/* 🔍 チェック結果\n${cleanAnswer}\n*/\n`;
+          await editor.edit(editBuilder => { editBuilder.insert(insertPosition, insertText); });
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`エラー: ${e.message}`);
+        }
+      });
+      return;
+    }
+
+    // 末尾が s / S / ｓ / Ｓ / し → Step2スキップ・その場置換モード
+    if (/[sSｓＳし]$/.test(userInput)) {
+      const promptText = userInput.replace(/[sSｓＳし]$/, '').trim();
+      const instruction = promptText || 'このコードを改善してください';
+      const codeContext = code ? `【選択コード】\n${code}\n\n` : '';
+      const replaceQuestion = `${codeContext}【指示】\n${instruction}\n\n【重要】コードのみを出力してください。説明・変更点コメント・\`\`\` 等は一切不要。`;
+
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '⚡ 置換中...', cancellable: false }, async () => {
+        try {
+          const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+          const apiKey = config.get<string>('claudeApiKey', '');
+          if (!apiKey) { vscode.window.showErrorMessage('APIキーが設定されていません'); return; }
+          const model = config.get<string>('claudeModel', 'claude-sonnet-4-5');
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content: replaceQuestion }] })
+          });
+          const data = await response.json() as any;
+          const rawAnswer = data?.content?.[0]?.text || '';
+          // コードブロック記号を除去
+          const cleanAnswer = rawAnswer.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '').trim();
+          if (!selection.isEmpty) {
+            await editor.edit(editBuilder => { editBuilder.replace(selection, cleanAnswer); });
+            vscode.window.showInformationMessage('✅ 置換しました');
+          }
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`エラー: ${e.message}`);
+        }
+      });
+      return;
+    }
+
     // Step 2: プリセット選択
     // 入力ありの場合は「直接質問」を先頭に追加
     const presetItems = [...presetQuestions];
@@ -4685,12 +4766,29 @@ ${explanation}
     }
     presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
 
-    const result = await new Promise<{ question: string; userInputText?: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean } | undefined>((resolve) => {
+    const result = await new Promise<{ question: string; userInputText?: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean; replaceInline?: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
       quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
 
       quickPick.onDidAccept(() => {
+        const inputValue = quickPick.value;
+
+        // 末尾が s / S / ｓ / Ｓ / し → その場置換モード（プリセット不要）
+        if (/[sSｓＳし]$/.test(inputValue)) {
+          const promptText = inputValue.replace(/[sSｓＳし]$/, '').trim();
+          const instruction = promptText || 'このコードを改善してください';
+          const codeContext = code ? `【選択コード】\n${code}\n\n` : '';
+          resolve({
+            question: `${codeContext}【指示】\n${instruction}\n\n【重要】コードのみを出力してください。説明・変更点コメント・\`\`\` 等は一切不要。`,
+            isSvg: false, isSkeleton: false, isStructural: false, isHtmlGeneration: false,
+            isMemoSearch: false, isQuiz: false, isFreeQuestion: true, isSectionQuestion: false,
+            showBeside: false, useGemini: false, replaceInline: true
+          });
+          quickPick.hide();
+          return;
+        }
+
         const selected = quickPick.selectedItems[0] as typeof presetItems[0] | undefined;
 
         if (selected && selected.label.includes('直接質問')) {
@@ -4777,7 +4875,8 @@ ${explanation}
 ---
 【出力フォーマット】
 問題がある観点のみ出力（問題なしの観点はスキップ）。
-各観点: 「⚠ 行N: 内容」または「💡 行N: 提案」の形式で。
+行番号は使わない。問題箇所はコードを短く抜粋して引用すること。
+各観点: 「⚠ `問題のコード` → 内容」または「💡 `コード` → 提案」の形式で。
 最後に「優先度高: 不要ルール・マジックナンバー / 優先度中: プロパティ順 / 優先度低: 仮クラス名」のように**観点名の言葉**でまとめる（番号だけは使わない）。
 
 【ファイル内容】
@@ -4917,7 +5016,7 @@ ${fullText}`;
       return; // キャンセル
     }
 
-    let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile } = result;
+    let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline } = result;
 
     let codeToSend = code;
     let htmlContext = '';
@@ -5358,6 +5457,16 @@ ${fullText}`;
 
           await vscode.env.clipboard.writeText(svgCode);
           vscode.window.showInformationMessage('✅ SVGをクリップボードにコピーしました');
+        } else if (replaceInline) {
+          // その場置換モード（末尾 s/S/し で発動）
+          if (!selection.isEmpty) {
+            await editor.edit(editBuilder => {
+              editBuilder.replace(selection, cleanAnswer);
+            });
+            vscode.window.showInformationMessage('✅ 選択範囲を置換しました');
+          } else {
+            vscode.window.showWarningMessage('置換するにはコードを選択してください');
+          }
         } else if (showBeside) {
           // 改善・バグチェック：右側に新しいドキュメントを開く
           const doc = await vscode.workspace.openTextDocument({

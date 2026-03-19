@@ -3163,6 +3163,8 @@ function activate(context) {
     (0, overviewGenerator_1.registerOverviewGenerator)(context);
     // PHP補完プロバイダーの有効化（メモから途中一致補完）
     (0, phpCompletionProvider_1.registerPhpCompletionProvider)(context);
+    // PHPゴーストテキスト補完（Intelephenseと競合しない）
+    (0, phpCompletionProvider_1.registerPhpInlineCompletionProvider)(context);
     // クイズ履歴をファイルから復元
     loadQuizHistory();
     // 起動時クイズリマインダー（5秒後、1日1回のみ）
@@ -4378,6 +4380,20 @@ ${explanation}
             });
             let accepted = false;
             qp.onDidAccept(() => {
+                // 末尾 s/S/ｓ/Ｓ/し → その場置換トリガー（候補の有無に関わらず即確定）
+                if (/[sSｓＳし]$/.test(qp.value)) {
+                    accepted = true;
+                    resolve(qp.value.trim() || '');
+                    qp.hide();
+                    return;
+                }
+                // 末尾 n/ｎ/な → 間違いチェックトリガー（コメント挿入）
+                if (/[nｎな]$/.test(qp.value)) {
+                    accepted = true;
+                    resolve(qp.value.trim() || '');
+                    qp.hide();
+                    return;
+                }
                 const sel = qp.selectedItems[0];
                 if (sel && qp.items.length > 0) {
                     // 候補あり → 最後の単語を選択テキストで置き換え
@@ -4401,6 +4417,75 @@ ${explanation}
         if (userInput === undefined) {
             return; // キャンセル
         }
+        // 末尾が n / ｎ / な → Step2スキップ・間違いチェックモード（コメント挿入）
+        if (/[nｎな]$/.test(userInput)) {
+            const codeContext = code ? `【コード】\n${code}\n\n` : '';
+            const checkQuestion = `${codeContext}このコードに何か間違っている部分・改善すべき問題はありますか？\n問題点があれば「どこが・なぜ問題か」を日本語で教えてください。問題なければ「問題なし」と一言だけ答えてください。`;
+            await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '🔍 チェック中...', cancellable: false }, async () => {
+                try {
+                    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+                    const apiKey = config.get('claudeApiKey', '');
+                    if (!apiKey) {
+                        vscode.window.showErrorMessage('APIキーが設定されていません');
+                        return;
+                    }
+                    const model = config.get('claudeModel', 'claude-sonnet-4-5');
+                    const response = await fetch('https://api.anthropic.com/v1/messages', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+                        body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content: checkQuestion }] })
+                    });
+                    const data = await response.json();
+                    const cleanAnswer = (data?.content?.[0]?.text || '').trim();
+                    const lang = editor.document.languageId;
+                    const endPosition = selection.end;
+                    const insertPosition = new vscode.Position(endPosition.line, editor.document.lineAt(endPosition.line).text.length);
+                    const insertText = lang === 'html'
+                        ? `\n<!-- 🔍 チェック結果\n${cleanAnswer}\n-->\n`
+                        : `\n/* 🔍 チェック結果\n${cleanAnswer}\n*/\n`;
+                    await editor.edit(editBuilder => { editBuilder.insert(insertPosition, insertText); });
+                }
+                catch (e) {
+                    vscode.window.showErrorMessage(`エラー: ${e.message}`);
+                }
+            });
+            return;
+        }
+        // 末尾が s / S / ｓ / Ｓ / し → Step2スキップ・その場置換モード
+        if (/[sSｓＳし]$/.test(userInput)) {
+            const promptText = userInput.replace(/[sSｓＳし]$/, '').trim();
+            const instruction = promptText || 'このコードを改善してください';
+            const codeContext = code ? `【選択コード】\n${code}\n\n` : '';
+            const replaceQuestion = `${codeContext}【指示】\n${instruction}\n\n【重要】コードのみを出力してください。説明・変更点コメント・\`\`\` 等は一切不要。`;
+            await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '⚡ 置換中...', cancellable: false }, async () => {
+                try {
+                    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+                    const apiKey = config.get('claudeApiKey', '');
+                    if (!apiKey) {
+                        vscode.window.showErrorMessage('APIキーが設定されていません');
+                        return;
+                    }
+                    const model = config.get('claudeModel', 'claude-sonnet-4-5');
+                    const response = await fetch('https://api.anthropic.com/v1/messages', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+                        body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content: replaceQuestion }] })
+                    });
+                    const data = await response.json();
+                    const rawAnswer = data?.content?.[0]?.text || '';
+                    // コードブロック記号を除去
+                    const cleanAnswer = rawAnswer.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '').trim();
+                    if (!selection.isEmpty) {
+                        await editor.edit(editBuilder => { editBuilder.replace(selection, cleanAnswer); });
+                        vscode.window.showInformationMessage('✅ 置換しました');
+                    }
+                }
+                catch (e) {
+                    vscode.window.showErrorMessage(`エラー: ${e.message}`);
+                }
+            });
+            return;
+        }
         // Step 2: プリセット選択
         // 入力ありの場合は「直接質問」を先頭に追加
         const presetItems = [...presetQuestions];
@@ -4413,6 +4498,21 @@ ${explanation}
             quickPick.items = presetItems;
             quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
             quickPick.onDidAccept(() => {
+                const inputValue = quickPick.value;
+                // 末尾が s / S / ｓ / Ｓ / し → その場置換モード（プリセット不要）
+                if (/[sSｓＳし]$/.test(inputValue)) {
+                    const promptText = inputValue.replace(/[sSｓＳし]$/, '').trim();
+                    const instruction = promptText || 'このコードを改善してください';
+                    const codeContext = code ? `【選択コード】\n${code}\n\n` : '';
+                    resolve({
+                        question: `${codeContext}【指示】\n${instruction}\n\n【重要】コードのみを出力してください。説明・変更点コメント・\`\`\` 等は一切不要。`,
+                        isSvg: false, isSkeleton: false, isStructural: false, isHtmlGeneration: false,
+                        isMemoSearch: false, isQuiz: false, isFreeQuestion: true, isSectionQuestion: false,
+                        showBeside: false, useGemini: false, replaceInline: true
+                    });
+                    quickPick.hide();
+                    return;
+                }
                 const selected = quickPick.selectedItems[0];
                 if (selected && selected.label.includes('直接質問')) {
                     // 直接質問: 選択範囲 + userInput のみ送信
@@ -4638,7 +4738,7 @@ ${fullText}`;
         if (!result) {
             return; // キャンセル
         }
-        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile } = result;
+        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline } = result;
         let codeToSend = code;
         let htmlContext = '';
         // 複数ファイル選択モードの場合の特別処理
@@ -5063,6 +5163,18 @@ ${fullText}`;
                     const svgCode = svgMatch ? svgMatch[0] : cleanAnswer;
                     await vscode.env.clipboard.writeText(svgCode);
                     vscode.window.showInformationMessage('✅ SVGをクリップボードにコピーしました');
+                }
+                else if (replaceInline) {
+                    // その場置換モード（末尾 s/S/し で発動）
+                    if (!selection.isEmpty) {
+                        await editor.edit(editBuilder => {
+                            editBuilder.replace(selection, cleanAnswer);
+                        });
+                        vscode.window.showInformationMessage('✅ 選択範囲を置換しました');
+                    }
+                    else {
+                        vscode.window.showWarningMessage('置換するにはコードを選択してください');
+                    }
                 }
                 else if (showBeside) {
                     // 改善・バグチェック：右側に新しいドキュメントを開く

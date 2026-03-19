@@ -1,0 +1,199 @@
+{
+  "get_the_title": {
+    "prefix": ["get_the_title", "the_title", "title"],
+    "body": "get_the_title($1)$0",
+    "description": "投稿タイトルを文字列で返す（ループ外でも使用可）"
+  },
+  "the_title": {
+    "prefix": "the_title",
+    "body": "the_title()$0",
+    "description": "投稿タイトルを直接出力する（ループ内）"
+  },
+  "the_content": {
+    "prefix": ["the_content", "content"],
+    "body": "the_content()$0",
+    "description": "投稿本文を出力する（ループ内）"
+  },
+  "get_the_permalink": {
+    "prefix": ["get_the_permalink", "permalink"],
+    "body": "get_the_permalink($1)$0",
+    "description": "投稿のURLを文字列で返す"
+  },
+  "the_permalink": {
+    "prefix": "the_permalink",
+    "body": "the_permalink()$0",
+    "description": "投稿のURLを直接出力する（ループ内）"
+  },
+  "get_the_ID": {
+    "prefix": ["get_the_ID", "the_ID", "postid"],
+    "body": "get_the_ID()$0",
+    "description": "現在の投稿IDを返す（ループ内）"
+  },
+  "the_author": {
+    "prefix": ["the_author", "author"],
+    "body": "the_author()$0",
+    "description": "投稿の著者名を出力する（ループ内）"
+  },
+  "the_date": {
+    "prefix": ["the_date", "date"],
+    "body": "the_date('${1:Y年m月d日}')$0",
+    "description": "投稿の公開日を出力する（ループ内）"
+  },
+  "the_excerpt": {
+    "prefix": ["the_excerpt", "excerpt"],
+    "body": "the_excerpt()$0",
+    "description": "投稿の抜粋を出力する（ループ内）"
+  },
+  "get_the_excerpt": {
+    "prefix": "get_the_excerpt",
+    "body": "get_the_excerpt($1)$0",
+    "description": "投稿の抜粋を文字列で返す"
+  },
+  "get_the_post_thumbnail": {
+    "prefix": ["get_the_post_thumbnail", "thumbnail", "thumb"],
+    "body": "get_the_post_thumbnail(get_the_ID(), '${1:full}')$0",
+    "description": "アイキャッチ画像タグを返す"
+  },
+  "get_post_meta": {
+    "prefix": ["get_post_meta", "post_meta", "meta"],
+    "body": "get_post_meta(get_the_ID(), '${1:key}', true)$0",
+    "description": "投稿のカスタムフィールドを取得する"
+  },
+
+  "have_posts": {
+    "prefix": ["have_posts", "hposts"],
+    "body": "have_posts()$0",
+    "description": "ループに次の投稿があるかチェックする"
+  },
+  "the_post": {
+    "prefix": "the_post",
+    "body": "the_post()$0",
+    "description": "次の投稿データをセットする（ループ内）"
+  },
+
+  "is_page": {
+    "prefix": ["is_page", "ipage"],
+    "body": "is_page($1)$0",
+    "description": "現在のページが固定ページか判定する"
+  },
+  "is_single": {
+    "prefix": ["is_single", "isingle"],
+    "body": "is_single($1)$0",
+    "description": "現在のページが投稿個別ページか判定する"
+  },
+  "is_archive": {
+    "prefix": ["is_archive", "iarchive"],
+    "body": "is_archive()$0",
+    "description": "現在のページがアーカイブページか判定する"
+  },
+  "is_home": {
+    "prefix": ["is_home", "ihome"],
+    "body": "is_home()$0",
+    "description": "現在のページがブログトップか判定する"
+  },
+
+  "add_action": {
+    "prefix": ["add_action", "action"],
+    "body": "add_action('${1:hook}', '${2:callback}')$0",
+    "description": "アクションフックに関数を登録する"
+  },
+  "add_filter": {
+    "prefix": ["add_filter", "filter"],
+    "body": "add_filter('${1:hook}', '${2:callback}')$0",
+    "description": "フィルターフックに関数を登録する"
+  },
+
+  "get_template_directory_uri": {
+    "prefix": ["get_template_directory_uri", "template_directory_uri", "template"],
+    "body": "get_template_directory_uri()$0",
+    "description": "テーマのディレクトリURLを返す"
+  },
+  "get_theme_file_uri": {
+    "prefix": ["get_theme_file_uri", "theme_file_uri", "theme"],
+    "body": "get_theme_file_uri('${1:path/to/file}')$0",
+    "description": "テーマファイルのURLを返す（子テーマ優先）"
+  },
+  "get_theme_file_path": {
+    "prefix": ["get_theme_file_path", "theme_file_path"],
+    "body": "get_theme_file_path('${1:path/to/file}')$0",
+    "description": "テーマファイルの絶対パスを返す（子テーマ優先）"
+  },
+
+  "wp_enqueue_style": {
+    "prefix": ["wp_enqueue_style", "enqueue_style", "estyle"],
+    "body": "wp_enqueue_style('${1:handle}', get_theme_file_uri('${2:css/style.css}'))$0",
+    "description": "CSSファイルを読み込む"
+  },
+  "wp_enqueue_script": {
+    "prefix": ["wp_enqueue_script", "enqueue_script", "escript"],
+    "body": "wp_enqueue_script('${1:handle}', get_theme_file_uri('${2:js/main.js}'), [], '', true)$0",
+    "description": "JSファイルを読み込む（footerに出力）"
+  },
+
+  "esc_html": {
+    "prefix": ["esc_html", "ehtml"],
+    "body": "esc_html($1)$0",
+    "description": "HTMLをエスケープして安全に出力する（XSS対策）"
+  },
+  "esc_url": {
+    "prefix": ["esc_url", "eurl"],
+    "body": "esc_url($1)$0",
+    "description": "URLを安全にエスケープする"
+  },
+  "esc_attr": {
+    "prefix": ["esc_attr", "eattr"],
+    "body": "esc_attr($1)$0",
+    "description": "HTML属性値を安全にエスケープする"
+  },
+
+  "get_header": {
+    "prefix": ["get_header", "header"],
+    "body": "get_header()$0",
+    "description": "header.phpを読み込む"
+  },
+  "get_footer": {
+    "prefix": ["get_footer", "footer"],
+    "body": "get_footer()$0",
+    "description": "footer.phpを読み込む"
+  },
+  "get_template_part": {
+    "prefix": ["get_template_part", "template_part", "part"],
+    "body": "get_template_part('${1:template-parts/}${2:card}')$0",
+    "description": "テンプレートパーツを読み込む"
+  },
+  "wp_nav_menu": {
+    "prefix": ["wp_nav_menu", "nav_menu", "nav"],
+    "body": "wp_nav_menu(['theme_location' => '${1:primary}'])$0",
+    "description": "ナビゲーションメニューを出力する"
+  },
+  "register_sidebar": {
+    "prefix": ["register_sidebar", "sidebar"],
+    "body": [
+      "register_sidebar([",
+      "  'id'   => '${1:sidebar-1}',",
+      "  'name' => '${2:サイドバー}',",
+      "])$0"
+    ],
+    "description": "ウィジェットエリアを登録する"
+  },
+  "dynamic_sidebar": {
+    "prefix": ["dynamic_sidebar", "dsidebar"],
+    "body": "dynamic_sidebar('${1:sidebar-1}')$0",
+    "description": "ウィジェットエリアを出力する"
+  },
+  "wp_head": {
+    "prefix": ["wp_head", "wphead"],
+    "body": "wp_head()$0",
+    "description": "</head>直前に必ず呼ぶ"
+  },
+  "wp_footer": {
+    "prefix": ["wp_footer", "wpfooter"],
+    "body": "wp_footer()$0",
+    "description": "</body>直前に必ず呼ぶ"
+  },
+  "bloginfo": {
+    "prefix": ["bloginfo", "blog"],
+    "body": "bloginfo('${1|name,description,charset,url|}')$0",
+    "description": "サイト情報を出力する"
+  }
+}
