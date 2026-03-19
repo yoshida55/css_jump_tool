@@ -4493,6 +4493,7 @@ ${explanation}
             presetItems.unshift({ label: '💬 直接質問', prompt: '', showBeside: false });
         }
         presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
+        presetItems.push({ label: '🗑 レビューコメントを削除', prompt: '', showBeside: false });
         const result = await new Promise((resolve) => {
             const quickPick = vscode.window.createQuickPick();
             quickPick.items = presetItems;
@@ -4548,9 +4549,8 @@ ${explanation}
 - PCと全く同じ @keyframes / CSS規則が @media内に重複していないか
 - ::before / ::after に content: "" があるのに position や width/height が未指定で機能していないか
 
-## ② 重複の共通化
-- 同じプロパティセットが複数セレクタに繰り返し書かれていないか（5箇所以上なら共通化推奨）
-- 同一セレクタが2回定義されていないか
+## ② 重複セレクタ
+- 同一セレクタが2回定義されていないか（後ろが前を上書きしてバグになる）
 
 ## ③ マジックナンバー
 - 同じ数値（2rem・1.5s等）が3箇所以上繰り返されていないか → CSS変数化を提案
@@ -4598,7 +4598,9 @@ ${explanation}
 ---
 【出力フォーマット】
 問題がある観点のみ出力（問題なしの観点はスキップ）。
-各観点: 「⚠ 行N: 内容」または「💡 行N: 提案」の形式で。
+行番号は使わない。各指摘は以下の2行形式で出力:
+  ⚠ \`[ファイル内に存在するコードをそのまま短く抜粋（1行・改変しない）]\` → 問題の内容（1行で簡潔に）
+    修正例: \`[修正後コード]\`（1行・短く）
 最後に「優先度高: 不要ルール・マジックナンバー / 優先度中: プロパティ順 / 優先度低: 仮クラス名」のように**観点名の言葉**でまとめる（番号だけは使わない）。
 
 【ファイル内容】
@@ -4613,8 +4615,18 @@ ${fullText}`;
                         isQuiz: false,
                         isFreeQuestion: true,
                         isSectionQuestion: false,
-                        showBeside: true,
-                        useGemini: true
+                        showBeside: false,
+                        useGemini: true,
+                        isInlineReview: true
+                    });
+                }
+                else if (selected && selected.label.includes('レビューコメントを削除')) {
+                    // ⚠ REVIEW: コメントを一括削除（API不要）
+                    resolve({
+                        question: '',
+                        isSvg: false, isSkeleton: false, isStructural: false, isHtmlGeneration: false,
+                        isMemoSearch: false, isQuiz: false, isFreeQuestion: false, isSectionQuestion: false,
+                        showBeside: false, useGemini: false, isDeleteReview: true
                     });
                 }
                 else if (selected && selected.label.includes('複数ファイルを選択')) {
@@ -4738,7 +4750,29 @@ ${fullText}`;
         if (!result) {
             return; // キャンセル
         }
-        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline } = result;
+        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview } = result;
+        // ⚠ REVIEW: コメント一括削除（API呼び出し不要）
+        if (isDeleteReview) {
+            const docLines = editor.document.getText().split('\n');
+            const deleteNums = [];
+            for (let i = 0; i < docLines.length; i++) {
+                const t = docLines[i].trim();
+                if (t.match(/^\/\/ ⚠ REVIEW:|^<!-- ⚠ REVIEW:/)) {
+                    deleteNums.push(i);
+                }
+            }
+            if (deleteNums.length === 0) {
+                vscode.window.showInformationMessage('レビューコメントはありません');
+                return;
+            }
+            await editor.edit(editBuilder => {
+                for (let i = deleteNums.length - 1; i >= 0; i--) {
+                    editBuilder.delete(editor.document.lineAt(deleteNums[i]).rangeIncludingLineBreak);
+                }
+            });
+            vscode.window.showInformationMessage(`✅ レビューコメントを${deleteNums.length}箇所削除しました`);
+            return;
+        }
         let codeToSend = code;
         let htmlContext = '';
         // 複数ファイル選択モードの場合の特別処理
@@ -5174,6 +5208,75 @@ ${fullText}`;
                     }
                     else {
                         vscode.window.showWarningMessage('置換するにはコードを選択してください');
+                    }
+                }
+                else if (isInlineReview) {
+                    // レビュー結果をソースファイルに ⚠ REVIEW: コメントとして挿入
+                    const responseLines = cleanAnswer.split('\n');
+                    const lang = editor.document.languageId;
+                    const docText = editor.document.getText();
+                    const docLines = docText.split('\n');
+                    const reviewItems = [];
+                    for (let i = 0; i < responseLines.length; i++) {
+                        const line = responseLines[i];
+                        if (!line.trim().startsWith('⚠')) {
+                            continue;
+                        }
+                        const codeMatch = line.match(/`([^`]+)`/);
+                        if (!codeMatch) {
+                            continue;
+                        }
+                        const code = codeMatch[1].trim();
+                        const arrowMatch = line.match(/→\s*(.+)$/);
+                        const desc = arrowMatch ? arrowMatch[1].trim() : '';
+                        let fix = '';
+                        if (i + 1 < responseLines.length && responseLines[i + 1].trim().startsWith('修正例:')) {
+                            fix = responseLines[i + 1].trim().replace(/^修正例:\s*/, '');
+                        }
+                        const fullComment = fix ? `${desc} → 修正例: ${fix}` : desc;
+                        reviewItems.push({ code, comment: fullComment });
+                    }
+                    if (reviewItems.length === 0) {
+                        // パース失敗 → フォールバックで別タブ表示
+                        const doc = await vscode.workspace.openTextDocument({
+                            content: `✨ レビュー結果\n${'='.repeat(40)}\n\n${cleanAnswer}`,
+                            language: editor.document.languageId
+                        });
+                        await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+                    }
+                    else {
+                        const edits = [];
+                        for (const item of reviewItems) {
+                            for (let i = 0; i < docLines.length; i++) {
+                                if (docLines[i].includes(item.code)) {
+                                    edits.push({ line: i, comment: item.comment });
+                                    break;
+                                }
+                            }
+                        }
+                        if (edits.length === 0) {
+                            // マッチ失敗 → フォールバックで別タブ表示
+                            const doc = await vscode.workspace.openTextDocument({
+                                content: `✨ レビュー結果\n${'='.repeat(40)}\n\n${cleanAnswer}`,
+                                language: editor.document.languageId
+                            });
+                            await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+                        }
+                        else {
+                            edits.sort((a, b) => b.line - a.line); // 下から挿入（行番号ズレ防止）
+                            await editor.edit(editBuilder => {
+                                for (const edit of edits) {
+                                    const lineText = editor.document.lineAt(edit.line).text;
+                                    const indent = (lineText.match(/^(\s*)/) || ['', ''])[1];
+                                    const pos = new vscode.Position(edit.line, 0);
+                                    const commentLine = lang === 'html'
+                                        ? `${indent}<!-- ⚠ REVIEW: ${edit.comment} -->\n`
+                                        : `${indent}// ⚠ REVIEW: ${edit.comment}\n`;
+                                    editBuilder.insert(pos, commentLine);
+                                }
+                            });
+                            vscode.window.showInformationMessage(`✅ ${edits.length}件のレビューコメントを挿入しました`);
+                        }
                     }
                 }
                 else if (showBeside) {
@@ -6861,7 +6964,7 @@ function runCssDupCheck(doc, diagCollection) {
             const line = doc.positionAt(offset).line;
             props.set(propName, { value: propValue, line, offset });
         }
-        const selectorOffset = m.index;
+        const selectorOffset = m.index + (m[1].length - m[1].trimStart().length); // 先頭の空白・改行をスキップ
         rules.push({ selector, props, selectorLine: doc.positionAt(selectorOffset).line, selectorOffset });
     }
     // ① 同じルール内のプロパティ重複チェック（同じファイルを走査する前に重複チェック）
@@ -6961,7 +7064,7 @@ function runCssDupCheck(doc, diagCollection) {
             const start = doc.positionAt(rule.selectorOffset);
             const end = doc.positionAt(rule.selectorOffset + rule.selector.length);
             const others = selectors.filter(s => s !== rule.selector).join(', ');
-            const diag = new vscode.Diagnostic(new vscode.Range(start, end), `"${rule.selector}" は "${others}" と同じプロパティです。まとめられます`, vscode.DiagnosticSeverity.Information);
+            const diag = new vscode.Diagnostic(new vscode.Range(start, end), `[参考] "${rule.selector}" は "${others}" と同じプロパティです。まとめられます`, vscode.DiagnosticSeverity.Information);
             diag.source = 'CSS Jumper';
             diagnostics.push(diag);
         }
