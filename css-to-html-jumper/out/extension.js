@@ -13,6 +13,7 @@ const aiHoverProvider_1 = require("./aiHoverProvider");
 const overviewGenerator_1 = require("./overviewGenerator");
 const phpProperties_1 = require("./phpProperties");
 const phpCompletionProvider_1 = require("./phpCompletionProvider");
+const jsCompletionProvider_1 = require("./jsCompletionProvider");
 // ========================================
 // メモ検索履歴（最新10件）
 // ========================================
@@ -3165,6 +3166,10 @@ function activate(context) {
     (0, phpCompletionProvider_1.registerPhpCompletionProvider)(context);
     // PHPゴーストテキスト補完（Intelephenseと競合しない）
     (0, phpCompletionProvider_1.registerPhpInlineCompletionProvider)(context);
+    // JS/TS補完プロバイダーの有効化（メモ + jsProperties辞書から途中一致補完）
+    (0, jsCompletionProvider_1.registerJsCompletionProvider)(context);
+    // JS/TSゴーストテキスト補完
+    (0, jsCompletionProvider_1.registerJsInlineCompletionProvider)(context);
     // クイズ履歴をファイルから復元
     loadQuizHistory();
     // 起動時クイズリマインダー（5秒後、1日1回のみ）

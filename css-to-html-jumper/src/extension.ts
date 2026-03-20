@@ -10,6 +10,7 @@ import { registerAiHoverProvider } from './aiHoverProvider';
 import { registerOverviewGenerator } from './overviewGenerator';
 import { phpFunctions } from './phpProperties';
 import { registerPhpCompletionProvider, registerPhpInlineCompletionProvider, extractPhpFunctionsFromMemo, getCachedPhpFunctions, PhpFunction } from './phpCompletionProvider';
+import { registerJsCompletionProvider, registerJsInlineCompletionProvider } from './jsCompletionProvider';
 
 // ========================================
 // メモ検索履歴（最新10件）
@@ -3284,6 +3285,11 @@ export function activate(context: vscode.ExtensionContext) {
   registerPhpCompletionProvider(context);
   // PHPゴーストテキスト補完（Intelephenseと競合しない）
   registerPhpInlineCompletionProvider(context);
+
+  // JS/TS補完プロバイダーの有効化（メモ + jsProperties辞書から途中一致補完）
+  registerJsCompletionProvider(context);
+  // JS/TSゴーストテキスト補完
+  registerJsInlineCompletionProvider(context);
 
   // クイズ履歴をファイルから復元
   loadQuizHistory();
