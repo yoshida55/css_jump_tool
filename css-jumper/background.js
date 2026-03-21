@@ -335,10 +335,9 @@ function handleQuickResize(message, sender, sendResponse) {
 
 // セレクタ情報（ID, クラス）を処理（最新のCSS内容を取得してから検索）
 async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
-  // モバイル幅（768px未満）の場合はメディアクエリ内を優先
   var preferMediaQuery = viewportWidth && viewportWidth < 768;
   console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, viewportWidth: viewportWidth, preferMediaQuery: preferMediaQuery });
-  
+
   if (!id && !className) {
     notifyUser("IDまたはクラスが見つかりません（適用されている要素を右クリックしてください）", "error");
     return;
@@ -353,120 +352,92 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
     notifyUser("設定の読み込みに失敗しました", "error");
     return;
   }
-  
+
   var projectPath = result.projectPath;
   var cssFiles = result.cssFiles || [];
-  
+
   if (!projectPath) {
     notifyUser("⚠️ プロジェクトパスが未設定です\n拡張機能アイコンをクリックして設定してください", "error");
     return;
   }
-  
+
   if (cssFiles.length === 0) {
     notifyUser("⚠️ CSSファイルが未読み込みです\n拡張機能アイコンをクリックしてCSSを選択してください", "error");
     return;
   }
 
-  // 各CSSファイルの最新内容をLive Serverから取得
+  // 登録済みCSSの最新内容をLive Serverから取得
   var refreshedCssFiles = await refreshCssContents(cssFiles, projectPath);
-  
+
+  // 現在ページにロードされているCSS（登録済み以外も含む）を取得
+  var currentPageResult = await fetchCurrentPageCssFiles(refreshedCssFiles);
+  var allCssFiles = refreshedCssFiles.concat(currentPageResult.files);
+  var orderedRelativePaths = currentPageResult.orderedRelativePaths;
+
   // 除外ファイルをフィルタリング
   var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
-  var targetCssFiles = refreshedCssFiles.filter(function(file) {
-    for (var e = 0; e < excludeFiles.length; e++) {
-      if (file.name.toLowerCase() === excludeFiles[e].toLowerCase()) {
-        return false;
-      }
-    }
-    return true;
+  var targetCssFiles = allCssFiles.filter(function(file) {
+    return !excludeFiles.some(function(e) { return file.name.toLowerCase() === e; });
   });
-  
-  console.log("CSS Jumper: 最新CSS取得完了", { 
-    projectPath: projectPath, 
-    allFilesCount: refreshedCssFiles.length,
-    targetFilesCount: targetCssFiles.length,
+
+  console.log("CSS Jumper: 最新CSS取得完了", {
+    projectPath: projectPath,
+    storedFilesCount: refreshedCssFiles.length,
+    additionalFilesCount: currentPageResult.files.length,
+    totalFilesCount: targetCssFiles.length,
     targetFileNames: targetCssFiles.map(function(f) { return f.name; })
   });
 
+  // セレクタ検索 → 重複チェック → 正しいCSSにジャンプ（共通処理）
+  async function searchAndJump(selector, type) {
+    var matches = findAllMatchesInCss(selector, type, targetCssFiles, projectPath, preferMediaQuery);
+    if (matches.length === 0) return false;
+
+    // cascade順（後に読み込まれたCSSが優先）でベストマッチを選択
+    var bestMatch = pickBestMatch(matches, orderedRelativePaths);
+    var prefix = type === "id" ? "#" : ".";
+
+    // 重複メッセージを構築（同じ条件＝media内かどうかが同じものだけを重複とみなす）
+    var sameLevelMatches = matches.filter(function(m) {
+      return m.isInMediaQuery === bestMatch.isInMediaQuery;
+    });
+    var dupNote = "";
+    if (sameLevelMatches.length > 1) {
+      var otherFiles = sameLevelMatches
+        .filter(function(m) { return m !== bestMatch; })
+        .map(function(m) { return m.fileName + ":" + m.lineNumber; })
+        .join(", ");
+      dupNote = "\n⚠️ 重複あり: " + otherFiles + " にも定義されています";
+    }
+
+    // HTML検索 + 3点連携ジャンプ
+    var htmlResult = await searchInHtml(selector, type, projectPath);
+    if (htmlResult) {
+      openInVscode(htmlResult.filePath, htmlResult.lineNumber);
+      setTimeout(function() { highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber); }, 200);
+      setTimeout(function() {
+        openInVscode(bestMatch.filePath, bestMatch.lineNumber);
+        setTimeout(function() { highlightLineInVSCode(bestMatch.filePath, bestMatch.lineNumber); }, 300);
+      }, 100);
+      notifyUser("✓ " + prefix + selector + " → CSS:" + bestMatch.fileName + ":" + bestMatch.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
+    } else {
+      openInVscode(bestMatch.filePath, bestMatch.lineNumber);
+      setTimeout(function() { highlightLineInVSCode(bestMatch.filePath, bestMatch.lineNumber); }, 300);
+      notifyUser("✓ " + prefix + selector + " → " + bestMatch.fileName + ":" + bestMatch.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
+    }
+
+    triggerBrowserHighlight(selector, type);
+    return true;
+  }
+
   // 1. IDで検索（最優先）
   if (id) {
-    var idResult = searchSelectorInCss(id, "id", targetCssFiles, projectPath, preferMediaQuery);
-    if (idResult) {
-      // CSS + HTMLの3点連携
-      var htmlResult = await searchInHtml(id, "id", projectPath);
-
-      // HTML を先に開く（見つかった場合）
-      if (htmlResult) {
-        openInVscode(htmlResult.filePath, htmlResult.lineNumber);
-        // HTMLファイルの該当行をハイライト（少し遅延）
-        setTimeout(function() {
-          highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber);
-        }, 200);
-        // 少し遅延してからCSS を開く（CSSがアクティブになる）
-        setTimeout(function() {
-          openInVscode(idResult.filePath, idResult.lineNumber);
-          // CSS行を中央にスクロール＋ハイライト
-          setTimeout(function() {
-            highlightLineInVSCode(idResult.filePath, idResult.lineNumber);
-          }, 300);
-        }, 100);
-        notifyUser("✓ #" + id + " → CSS:" + idResult.fileName + ":" + idResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
-      } else {
-        // HTMLが見つからない場合はCSSのみ
-        openInVscode(idResult.filePath, idResult.lineNumber);
-        // CSS行を中央にスクロール＋ハイライト
-        setTimeout(function() {
-          highlightLineInVSCode(idResult.filePath, idResult.lineNumber);
-        }, 300);
-        notifyUser("✓ #" + id + " → " + idResult.fileName + ":" + idResult.lineNumber, "success");
-      }
-
-      // ブラウザハイライト（3秒間）
-      triggerBrowserHighlight(id, "id");
-
-      return;
-    }
+    if (await searchAndJump(id, "id")) return;
   }
 
   // 2. クラス名で検索
   if (className) {
-    var classResult = searchSelectorInCss(className, "class", targetCssFiles, projectPath, preferMediaQuery);
-
-    if (classResult) {
-      // CSS + HTMLの3点連携
-      var htmlResult = await searchInHtml(className, "class", projectPath);
-
-      // HTML を先に開く（見つかった場合）
-      if (htmlResult) {
-        openInVscode(htmlResult.filePath, htmlResult.lineNumber);
-        // HTMLファイルの該当行をハイライト（少し遅延）
-        setTimeout(function() {
-          highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber);
-        }, 200);
-        // 少し遅延してからCSS を開く（CSSがアクティブになる）
-        setTimeout(function() {
-          openInVscode(classResult.filePath, classResult.lineNumber);
-          // CSS行を中央にスクロール＋ハイライト
-          setTimeout(function() {
-            highlightLineInVSCode(classResult.filePath, classResult.lineNumber);
-          }, 300);
-        }, 100);
-        notifyUser("✓ ." + className + " → CSS:" + classResult.fileName + ":" + classResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
-      } else {
-        // HTMLが見つからない場合はCSSのみ
-        openInVscode(classResult.filePath, classResult.lineNumber);
-        // CSS行を中央にスクロール＋ハイライト
-        setTimeout(function() {
-          highlightLineInVSCode(classResult.filePath, classResult.lineNumber);
-        }, 300);
-        notifyUser("✓ ." + className + " → " + classResult.fileName + ":" + classResult.lineNumber, "success");
-      }
-
-      // ブラウザハイライト（3秒間）
-      triggerBrowserHighlight(className, "class");
-
-      return;
-    }
+    if (await searchAndJump(className, "class")) return;
   }
 
   // 3. 見つからない場合、全クラスで再検索
@@ -474,46 +445,10 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
     for (var i = 0; i < allClasses.length; i++) {
       var cls = allClasses[i];
       if (cls === className) continue;
-
-      var altResult = searchSelectorInCss(cls, "class", targetCssFiles, projectPath, preferMediaQuery);
-      if (altResult) {
-        // CSS + HTMLの3点連携
-        var htmlResult = await searchInHtml(cls, "class", projectPath);
-
-        // HTML を先に開く（見つかった場合）
-        if (htmlResult) {
-          openInVscode(htmlResult.filePath, htmlResult.lineNumber);
-          // HTMLファイルの該当行をハイライト（少し遅延）
-          setTimeout(function() {
-            highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber);
-          }, 200);
-          // 少し遅延してからCSS を開く（CSSがアクティブになる）
-          setTimeout(function() {
-            openInVscode(altResult.filePath, altResult.lineNumber);
-            // CSS行を中央にスクロール＋ハイライト
-            setTimeout(function() {
-              highlightLineInVSCode(altResult.filePath, altResult.lineNumber);
-            }, 300);
-          }, 100);
-          notifyUser("✓ ." + cls + " → CSS:" + altResult.fileName + ":" + altResult.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber, "success");
-        } else {
-          // HTMLが見つからない場合はCSSのみ
-          openInVscode(altResult.filePath, altResult.lineNumber);
-          // CSS行を中央にスクロール＋ハイライト
-          setTimeout(function() {
-            highlightLineInVSCode(altResult.filePath, altResult.lineNumber);
-          }, 300);
-          notifyUser("✓ ." + cls + " → " + altResult.fileName + ":" + altResult.lineNumber, "success");
-        }
-
-        // ブラウザハイライト（3秒間）
-        triggerBrowserHighlight(cls, "class");
-
-        return;
-      }
+      if (await searchAndJump(cls, "class")) return;
     }
   }
-    
+
   // 検索失敗時に詳細情報を表示
   var fileNames = targetCssFiles.map(function(f) { return f.name; }).join(", ");
   var targetName = id ? "#" + id : "." + className;
@@ -665,6 +600,159 @@ function searchSelectorInCss(selector, type, cssFiles, projectPath, preferMediaQ
 // 正規表現の特殊文字をエスケープ
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// 現在ページにロードされているCSS（登録済み以外）を取得
+async function fetchCurrentPageCssFiles(existingCssFiles) {
+  try {
+    var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tabs || !tabs[0]) return { files: [], orderedRelativePaths: [] };
+
+    var response = await new Promise(function(resolve) {
+      chrome.tabs.sendMessage(tabs[0].id, { action: "getCssLinks" }, function(r) {
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve(r);
+      });
+    });
+
+    if (!response || !response.cssLinks) return { files: [], orderedRelativePaths: [] };
+
+    var pageUrl = new URL(tabs[0].url);
+    var baseUrl = pageUrl.origin;
+    var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
+
+    // ページのCSS読み込み順序を記録（cascade優先度の根拠）
+    var orderedRelativePaths = [];
+    var newFiles = [];
+
+    for (var i = 0; i < response.cssLinks.length; i++) {
+      var href = response.cssLinks[i];
+      try {
+        var urlObj = new URL(href);
+        var relativePath = urlObj.pathname.replace(/^\//, "");
+        var fileName = relativePath.split("/").pop();
+
+        orderedRelativePaths.push(relativePath);
+
+        var isExcluded = excludeFiles.some(function(e) { return fileName.toLowerCase() === e; });
+        if (isExcluded) continue;
+
+        // 既に登録済みのファイルはスキップ（refreshCssContentsで最新化済み）
+        var alreadyExists = existingCssFiles.some(function(f) { return f.relativePath === relativePath; });
+        if (alreadyExists) continue;
+
+        try {
+          var cssUrl = baseUrl + "/" + relativePath;
+          var cssRes = await fetch(cssUrl, { cache: "no-store" });
+          if (cssRes.ok) {
+            var content = await cssRes.text();
+            newFiles.push({
+              name: fileName,
+              relativePath: relativePath,
+              content: content,
+              lines: content.split("\n").length
+            });
+            console.log("CSS Jumper: 現在ページの追加CSS検出", fileName);
+          }
+        } catch (e) {
+          console.warn("CSS Jumper: 追加CSS取得失敗", fileName, e);
+        }
+      } catch (e) {
+        console.warn("CSS Jumper: URL解析失敗", href);
+      }
+    }
+
+    return { files: newFiles, orderedRelativePaths: orderedRelativePaths };
+  } catch (e) {
+    console.error("CSS Jumper: 現在ページCSS検出エラー", e);
+    return { files: [], orderedRelativePaths: [] };
+  }
+}
+
+// 全CSSファイルからセレクタの全マッチを収集（ファイルごとに1件）
+function findAllMatchesInCss(selector, type, cssFiles, projectPath, preferMediaQuery) {
+  var matches = [];
+  var prefix = type === "id" ? "#" : "\\.";
+  var regex = new RegExp(prefix + "(" + escapeRegex(selector) + ")(?:\\s*[{,:\\[]|\\s*$)", "i");
+
+  for (var f = 0; f < cssFiles.length; f++) {
+    var file = cssFiles[f];
+    if (!file.content) {
+      console.warn("CSS Jumper: ファイル内容がありません", file.name);
+      continue;
+    }
+
+    var lines = file.content.split("\n");
+    var braceDepth = 0;
+    var mediaStack = [];
+    var firstMatch = null;
+    var mediaMatch = null;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var openBraces = (line.match(/{/g) || []).length;
+      var closeBraces = (line.match(/}/g) || []).length;
+
+      if (/@media\s/.test(line)) mediaStack.push(braceDepth);
+      braceDepth += openBraces;
+
+      var isInMediaQuery = mediaStack.length > 0 && braceDepth > mediaStack[mediaStack.length - 1];
+
+      if (regex.test(line)) {
+        var filePath;
+        if (file.relativePath && file.relativePath !== file.name) {
+          filePath = projectPath + "/" + file.relativePath;
+        } else {
+          filePath = projectPath + "/css/" + file.name;
+        }
+        filePath = filePath.replace(/\\/g, "/").replace(/\/+/g, "/");
+
+        var matchResult = {
+          filePath: filePath,
+          fileName: file.name,
+          relativePath: file.relativePath || file.name,
+          lineNumber: i + 1,
+          lineContent: line.trim(),
+          isInMediaQuery: isInMediaQuery
+        };
+
+        if (!firstMatch) firstMatch = matchResult;
+        if (preferMediaQuery && isInMediaQuery && !mediaMatch) mediaMatch = matchResult;
+
+        if (!preferMediaQuery) break; // 通常モード：最初のマッチで次のファイルへ
+      }
+
+      braceDepth -= closeBraces;
+      while (mediaStack.length > 0 && braceDepth <= mediaStack[mediaStack.length - 1]) {
+        mediaStack.pop();
+      }
+    }
+
+    var fileMatch = (preferMediaQuery && mediaMatch) ? mediaMatch : firstMatch;
+    if (fileMatch) matches.push(fileMatch);
+  }
+
+  return matches;
+}
+
+// cascade順（後に読み込まれたCSSが優先）でベストマッチを選択
+function pickBestMatch(matches, orderedRelativePaths) {
+  if (matches.length === 0) return null;
+  if (matches.length === 1 || orderedRelativePaths.length === 0) return matches[0];
+
+  var bestMatch = matches[0];
+  var bestOrder = orderedRelativePaths.indexOf(matches[0].relativePath);
+
+  for (var i = 1; i < matches.length; i++) {
+    var order = orderedRelativePaths.indexOf(matches[i].relativePath);
+    // cascade順で後ろにあるものを優先（-1 = 未登録は最低優先）
+    if (order > bestOrder) {
+      bestOrder = order;
+      bestMatch = matches[i];
+    }
+  }
+
+  return bestMatch;
 }
 
 // AIアドバイス用: セレクタのCSSルール全体を抽出（最大3件）
