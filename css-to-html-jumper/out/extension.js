@@ -665,6 +665,36 @@ function callGeminiApi(apiKey, modelPath, postData) {
 /**
  * Stage1: 見出し一覧をGeminiに送り、関連セクションのインデックスを返す
  */
+/**
+ * クエリを3つの言い換えに展開する（動的クエリ拡張）
+ */
+async function expandQuery(query, apiKey, modelPath) {
+    const prompt = `以下の検索クエリが持つ「異なる解釈」を3つ出してください。
+同じ意味の言い換えではなく、クエリが指し得る異なる対象・文脈を考えること。
+
+例: 「カテゴリPHP」の場合
+→ ["get_the_category等のPHP関数", "category.phpテンプレートファイル", "WordPressカテゴリページの仕組み"]
+例: 「画像が表示されない」の場合
+→ ["CSS background-imageが効かない", "HTMLのimgタグのパスが間違い", "WordPressアイキャッチ画像が出ない"]
+
+元クエリ: 「${query}」
+JSON文字列配列のみ返す`;
+    const postData = JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 256, responseMimeType: 'application/json' }
+    });
+    try {
+        const raw = await callGeminiApi(apiKey, modelPath, postData);
+        const parsed = JSON.parse(raw);
+        const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+        const arr = JSON.parse(text.trim());
+        if (Array.isArray(arr)) {
+            return arr.filter((s) => typeof s === 'string').slice(0, 3);
+        }
+    }
+    catch { }
+    return [];
+}
 async function selectRelevantSections(query, sections, apiKey, modelPath, lines = []) {
     // 新しいメモ（ファイル末尾）を優先するため逆順で送る（インデックスは元の位置を維持）
     const headingList = [...sections].reverse().map((s) => {
@@ -674,17 +704,35 @@ async function selectRelevantSections(query, sections, apiKey, modelPath, lines 
             .slice(0, 3)
             .map(l => `  ${l.trim()}`)
             .join('\n');
-        return snippet ? `${i}: ${s.heading}\n${snippet}` : `${i}: ${s.heading}`;
+        // ### サブ見出しをリストに含める（インデックスは親 ## のまま）
+        const subHeadings = lines.slice(s.lineStart + 1, s.lineEnd)
+            .filter(l => l.startsWith('### '))
+            .map(l => `  └ ${l}`)
+            .join('\n');
+        let text = `${i}: ${s.heading}`;
+        if (snippet) {
+            text += `\n${snippet}`;
+        }
+        if (subHeadings) {
+            text += `\n${subHeadings}`;
+        }
+        return text;
     }).join('\n');
-    const prompt = `以下の見出し一覧から「${query}」に意味的に関連する見出しのインデックスを選んでください。
+    const queryText = query.map((q, i) => `解釈${i + 1}: 「${q}」`).join('\n');
+    const prompt = `以下の見出し一覧から、検索クエリのいずれかの解釈に意味的に関連する見出しのインデックスを選んでください。
 
 【見出し一覧】
 ${headingList}
 
+【検索クエリ（いずれかの解釈に関連すればOK）】
+${queryText}
+
 【指示】
 - 単語の一致だけでなく、意味・目的・同義語・関連語でも判断する
-- 最大5件、関連度の高いものだけ選ぶ
+- **複数の解釈がある場合はそれぞれの解釈に対応するセクションを選ぶ**（解釈ごとに少なくとも1件）
+- 最大7件、関連度の高いものだけ選ぶ
 - **同じ関数・コマンド・概念を扱うセクションは1つだけ選ぶ**（同系統の重複禁止）
+- **CSS・HTML・JavaScript・PHP・Python など異なる言語・カテゴリがある場合は分散して選ぶ**（同じ言語だけで5枠を埋めない）
 - インデックス番号の配列のみ返す（例: [0, 3, 7]）`;
     const postData = JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
@@ -723,9 +771,12 @@ async function searchWithGemini(query, memoContent) {
     }
     const modelPath = 'gemini-3.1-flash-lite-preview';
     const lines = memoContent.split('\n');
+    // クエリ展開: 元クエリ + 3つの言い換えを生成
+    const expandedQueries = await expandQuery(query, apiKey, modelPath);
+    const allQueries = [query, ...expandedQueries];
     // Stage1: 見出し一覧をGeminiに送ってセマンティックに絞り込む
     const sections = parseSections(memoContent);
-    const selectedIndices = await selectRelevantSections(query, sections, apiKey, modelPath, lines);
+    const selectedIndices = await selectRelevantSections(allQueries, sections, apiKey, modelPath, lines);
     // マッチなし → 終了（全件フォールバック禁止・料金節約）
     if (selectedIndices.length === 0) {
         return { aiAnswer: '', results: [] };
@@ -744,16 +795,21 @@ async function searchWithGemini(query, memoContent) {
         summaryLines.push('---');
     }
     const summary = summaryLines.join('\n');
+    // クエリ展開の結果もStage2に渡す（多角的に選ばせるため）
+    const queryInterpretations = allQueries.length > 1
+        ? `\n\n【クエリの複数解釈】\n${allQueries.map((q, i) => `解釈${i}: ${q}`).join('\n')}\n→ 異なる解釈がある場合、それぞれの解釈に対応する結果を最低1件ずつ含めること`
+        : '';
     const prompt = `以下のメモファイルから「${query}」に関連する行を検索してください。
 
 【メモファイル】（関連セクションの全行、行番号付き）
 ${summary}
 
 【検索クエリ】
-${query}
+${query}${queryInterpretations}
 
 【指示】
 - **意味理解を最優先**: 検索クエリの意図を理解し、その目的を達成するコードや説明を探す
+- **異なる解釈への分散**: クエリに複数の解釈がある場合、**同じ解釈の結果だけで3件を埋めない**。各解釈から最低1件選ぶ
 - **固有名詞・プラットフォームを最重視**: クエリに「WordPress」「React」「Python」等の固有名詞があれば、**その単語が実際に含まれるセクションのみ**を最優先で選ぶ。含まれないセクションは関連度が高くても下位にすること
 - **コードブロックを理解する**: \`\`\`で囲まれたコード例があれば、その機能・目的を解析する
   例: 「配列をソート」→ sort(), sorted() 等のメソッド使用例やソートアルゴリズムの説明を探す
@@ -769,6 +825,7 @@ ${query}
 - **必ず異なるセクション（トピック）から選ぶ**（連続した行番号NG、離れた箇所から）
 - 見出し行（##で始まる）やコードブロックの開始行を優先（ジャンプ先として正確なため）
 - 類似内容・同じセクションの重複は絶対に避ける
+- **同じ解釈・同じトピックの結果を複数選ばない**（異なる角度の結果を優先する）
 
 【出力形式】
 JSONオブジェクトで返す。説明文は不要。
