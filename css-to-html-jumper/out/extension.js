@@ -1363,30 +1363,6 @@ async function handleMemoSearch() {
         if (selected.line !== -1) {
             lastMemoResultIndex = lastMemoResults.findIndex(r => r.line === selected.line);
             await jumpToLine(selected.line);
-            // セクション抽出 → Geminiが質問に答えてメモ追記
-            const { start: sectionStart, end: sectionEnd } = getSectionBounds(selected.line - 1);
-            const sectionContent = memoLines.slice(sectionStart, Math.min(sectionStart + 60, sectionEnd)).join('\n');
-            const geminiCfg = vscode.workspace.getConfiguration('cssToHtmlJumper');
-            const apiKey2 = geminiCfg.get('geminiApiKey', '');
-            if (apiKey2) {
-                const prompt = `以下のメモを参考に「${query}」に答えてください。\nルール：挨拶・締め言葉なし。箇条書き・コードで簡潔に。中学生でもわかる言葉で。メモにない情報は自分の知識で補う。\n\n## 参考メモ\n${sectionContent}`;
-                try {
-                    const raw2 = await callGeminiApi(apiKey2, 'gemini-3.1-flash-lite-preview', JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }));
-                    const parsed2 = JSON.parse(raw2);
-                    const parts2 = parsed2?.candidates?.[0]?.content?.parts || [];
-                    const answerText = (parts2.find((p) => !p.thought && p.text) || parts2[0])?.text || '';
-                    if (answerText) {
-                        const fullSection = memoLines.slice(sectionStart, sectionEnd).join('\n');
-                        if (!fullSection.includes(`### ${query}`)) {
-                            const edit = new vscode.WorkspaceEdit();
-                            edit.insert(memoDoc.uri, new vscode.Position(sectionEnd, 0), `\n### ${query}\n${answerText}\n`);
-                            await vscode.workspace.applyEdit(edit);
-                            await memoDoc.save();
-                        }
-                    }
-                }
-                catch (e2) { /* API失敗時はスキップ */ }
-            }
         }
         else if (aiAnswer) {
             // AI回答アイテム選択 → 関連セクションに追記
