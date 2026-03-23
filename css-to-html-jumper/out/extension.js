@@ -14,6 +14,60 @@ const overviewGenerator_1 = require("./overviewGenerator");
 const phpProperties_1 = require("./phpProperties");
 const phpCompletionProvider_1 = require("./phpCompletionProvider");
 const jsCompletionProvider_1 = require("./jsCompletionProvider");
+let memoSuggestIndex = [];
+function buildMemoIndex(memoFilePath) {
+    if (!memoFilePath || !fs.existsSync(memoFilePath)) {
+        return;
+    }
+    const lines = fs.readFileSync(memoFilePath, 'utf8').split('\n');
+    const sections = [];
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        if (/^#{2,3} /.test(line)) {
+            const heading = line.replace(/^#{2,3} /, '').trim();
+            const sectionLine = i;
+            let description = '';
+            let code = '';
+            let j = i + 1;
+            // 見出し直後のテキスト行を取得
+            while (j < lines.length && /^#{2,3} /.test(lines[j]) === false) {
+                const l = lines[j].trim();
+                if (l && !description && !l.startsWith('#') && !l.startsWith('```') && !l.startsWith('-')) {
+                    description = l;
+                }
+                if (lines[j].startsWith('```') && !code) {
+                    j++;
+                    const codeLines = [];
+                    while (j < lines.length && !lines[j].startsWith('```')) {
+                        if (lines[j].trim()) {
+                            codeLines.push(lines[j]);
+                        }
+                        j++;
+                    }
+                    code = codeLines.join('\n');
+                }
+                j++;
+                if (j < lines.length && /^#{2,3} /.test(lines[j])) {
+                    break;
+                }
+            }
+            if (heading) {
+                sections.push({
+                    heading,
+                    description: description.slice(0, 80),
+                    codePreview: code.split('\n')[0] || '',
+                    code,
+                    line: sectionLine,
+                });
+            }
+            i = j;
+            continue;
+        }
+        i++;
+    }
+    memoSuggestIndex = sections;
+}
 // ========================================
 // メモ検索履歴（最新10件）
 // ========================================
@@ -149,6 +203,7 @@ async function showEvaluationQuickPick(hasFactCheckError = false, isRepeat = fal
     if (hasFactCheckError) {
         items.push({ label: '📝 メモを修正する', description: 'AIがメモの誤りを自動修正してmemo.mdも更新', action: 'correct' });
     }
+    items.push({ label: '🟢 暗記リストに追加→次へ', description: '保存してすぐ次の問題へ', action: 'memorize' });
     items.push({ label: '🔍 深掘り質問', description: 'なぜ・応用・例外・比較・具体例をAIが生成してメモに追記', action: 'deepdive' });
     items.push({ label: '✅ 終了', description: '', action: 'exit' });
     const afterAnswer = await vscode.window.showQuickPick(items, {
@@ -215,6 +270,162 @@ async function processEvaluation(evaluation) {
     hideEvaluationStatusBar();
     // 次の問題へ（false = lastTopModeを使いトップ画面スキップ、空なら通常ランダム）
     await handleQuiz(false);
+}
+// ========================================
+// 暗記リスト取得（クイズ一覧マーカー用）
+// ========================================
+function getMemorizeList() {
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const memoFilePath = config.get('memoFilePath', '');
+    if (!memoFilePath || !fs.existsSync(memoFilePath)) {
+        return new Set();
+    }
+    const content = fs.readFileSync(memoFilePath, 'utf8');
+    const section = content.match(/## 🧠 暗記リスト([\s\S]*?)(?=\n## |$)/);
+    if (!section) {
+        return new Set();
+    }
+    return new Set(section[1].split('\n')
+        .filter(line => line.startsWith('- '))
+        .map(line => line.slice(2).trim()));
+}
+// ========================================
+// 暗記リスト追加関数
+// ========================================
+async function addToMemorizeList() {
+    if (!pendingQuizEvaluation) {
+        return;
+    }
+    const { quiz } = pendingQuizEvaluation;
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const memoFilePath = config.get('memoFilePath', '');
+    if (!memoFilePath || !fs.existsSync(memoFilePath)) {
+        vscode.window.showErrorMessage('メモファイルが見つかりません（設定: cssToHtmlJumper.memoFilePath）');
+        return;
+    }
+    const memoContent = fs.readFileSync(memoFilePath, 'utf8');
+    const entry = `- ${quiz.title}`;
+    const section = '## 🧠 暗記リスト';
+    let newContent;
+    if (memoContent.includes(section)) {
+        // セクションが既にある → セクション直下に追記（重複スキップ）
+        if (memoContent.includes(entry)) {
+            vscode.window.showInformationMessage('⚠ すでに暗記リストに追加済みです');
+            return;
+        }
+        newContent = memoContent.replace(section, `${section}\n${entry}`);
+    }
+    else {
+        // セクションがない → ファイル末尾に追加
+        newContent = `${memoContent.trimEnd()}\n\n${section}\n${entry}\n`;
+    }
+    fs.writeFileSync(memoFilePath, newContent, 'utf8');
+    vscode.window.showInformationMessage(`🧠 暗記リストに追加しました: ${quiz.title}`);
+}
+// ========================================
+// メモサジェスト（Ctrl+M）
+// ========================================
+async function handleMemoSuggest() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        return;
+    }
+    const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const geminiApiKey = config.get('geminiApiKey', '');
+    const memoFilePath = config.get('memoFilePath', '');
+    if (!memoFilePath) {
+        vscode.window.showErrorMessage('メモファイルが設定されていません（cssToHtmlJumper.memoFilePath）');
+        return;
+    }
+    if (!geminiApiKey) {
+        vscode.window.showErrorMessage('Gemini APIキーが設定されていません（cssToHtmlJumper.geminiApiKey）');
+        return;
+    }
+    if (memoSuggestIndex.length === 0) {
+        buildMemoIndex(memoFilePath);
+        if (memoSuggestIndex.length === 0) {
+            vscode.window.showWarningMessage('メモのインデックスが空です');
+            return;
+        }
+    }
+    // カーソル位置の単語＋周辺コード（前後3行）を取得
+    const position = editor.selection.active;
+    const wordRange = editor.document.getWordRangeAtPosition(position);
+    const selectedText = editor.document.getText(editor.selection);
+    const query = selectedText.trim() || (wordRange ? editor.document.getText(wordRange) : '');
+    if (!query) {
+        vscode.window.showWarningMessage('検索する単語にカーソルを合わせてからCtrl+Mを押してください');
+        return;
+    }
+    // 周辺コード（前3行＋現在行＋後3行）
+    const doc = editor.document;
+    const startLine = Math.max(0, position.line - 3);
+    const endLine = Math.min(doc.lineCount - 1, position.line + 3);
+    const contextLines = [];
+    for (let l = startLine; l <= endLine; l++) {
+        contextLines.push(doc.lineAt(l).text);
+    }
+    const surroundingCode = contextLines.join('\n');
+    // コンパクトインデックスを作成（見出し＋説明だけ、コードは渡さない）
+    const compactIndex = memoSuggestIndex
+        .map((s, i) => `[${i}] ${s.heading}${s.description ? ' / ' + s.description : ''}`)
+        .join('\n');
+    const prompt = `あなたはCSSコーディングのアドバイザーです。ユーザーが「${query}」を書いており、周辺コードは以下です。\n\`\`\`\n${surroundingCode}\n\`\`\`\n\n以下のメモインデックスから関連性の高い順に最大5個選び、提案文となぜそうするかの理由を返してください。関連がなければ「none」とだけ返してください。\n形式: 番号: 提案文20文字以内 | 理由25文字以内\n例: 0: カスタムプロパティで管理する | 値が1箇所で変更できるため\n\n${compactIndex}`;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `💡 「${query}」の関連メモを検索中...` }, async () => {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+        });
+        const json = await res.json();
+        const text = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+        if (!text || text === 'none') {
+            vscode.window.showInformationMessage(`「${query}」に関連するメモが見つかりませんでした`);
+            return;
+        }
+        // "0: 提案文 | 理由" 形式をパース
+        const lineRegex = /^(\d+)\s*[:：]\s*(.+)$/;
+        const parsed = text.split('\n')
+            .map((line) => line.trim())
+            .map((line) => {
+            const m = line.match(lineRegex);
+            if (!m) {
+                return null;
+            }
+            const idx = parseInt(m[1], 10);
+            if (isNaN(idx) || idx >= memoSuggestIndex.length) {
+                return null;
+            }
+            const parts = m[2].split('|');
+            return { idx, summary: parts[0].trim(), reason: (parts[1] || '').trim() };
+        })
+            .filter((x) => x !== null);
+        if (parsed.length === 0) {
+            vscode.window.showInformationMessage(`「${query}」に関連するメモが見つかりませんでした`);
+            return;
+        }
+        const items = parsed.map(({ idx, summary, reason }) => {
+            const s = memoSuggestIndex[idx];
+            const detailParts = [reason, s.codePreview].filter(Boolean);
+            return {
+                label: `💡 ${summary}`,
+                detail: detailParts.length ? `  ${detailParts.join('  /  ')}` : '',
+                code: s.code,
+            };
+        });
+        const picked = await vscode.window.showQuickPick(items, {
+            placeHolder: `「${query}」の関連メモ（選択するとコードを挿入）`,
+            matchOnDescription: true,
+            ignoreFocusOut: false,
+        });
+        if (!picked || !picked.code) {
+            return;
+        }
+        // カーソル位置にコードを挿入
+        editor.edit(editBuilder => {
+            editBuilder.insert(editor.selection.active, picked.code);
+        });
+    });
 }
 // ========================================
 // メモ自動修正関数
@@ -1728,6 +1939,7 @@ async function handleQuiz(showFilterPick = false) {
                     await handleQuiz(true);
                     return;
                 }
+                const memoMemorizeSet = getMemorizeList();
                 const memoItems = filtered.map(h => {
                     const hist = quizHistoryMap.get(h.title);
                     let mark = '';
@@ -1739,8 +1951,9 @@ async function handleQuiz(showFilterPick = false) {
                     if (!mark && hist?.questionText && !hist?.lastAnsweredDate) {
                         mark = '🆕 ';
                     }
+                    const memorizeMark = memoMemorizeSet.has(h.title) ? '🟢 ' : '';
                     return {
-                        label: mark + displayLabel,
+                        label: mark + memorizeMark + displayLabel,
                         description: `${h.date || ''}  ${h.category || ''}`,
                         heading: h,
                     };
@@ -1765,6 +1978,7 @@ async function handleQuiz(showFilterPick = false) {
                 let showHidden = false;
                 function buildListItems() {
                     const items = [];
+                    const memorizeSet = getMemorizeList();
                     const visible = recentHistory.filter(([_, h]) => showHidden ? h.hiddenFromList : !h.hiddenFromList);
                     if (visible.length === 0) {
                         items.push({ label: showHidden ? '（非表示の項目なし）' : '（過去1週間の履歴なし）', description: '' });
@@ -1777,8 +1991,9 @@ async function handleQuiz(showFilterPick = false) {
                                 const lastEval = history.evaluations?.[history.evaluations.length - 1];
                                 answeredMark = lastEval === 3 ? '✓ ' : '↺ ';
                             }
+                            const memorizeMark = memorizeSet.has(title) ? '🟢 ' : '';
                             items.push({
-                                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + (history.questionText || title),
+                                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + memorizeMark + (history.questionText || title),
                                 description: `${date}  ${history.aiCategory || ''}`,
                                 quizTitle: title,
                                 buttons: [history.hiddenFromList ? SHOW_BTN : HIDE_BTN],
@@ -2297,6 +2512,11 @@ ${categoryList.join(' / ')}
                         hideEvaluationStatusBar();
                         return;
                     }
+                    if (afterAnswerRepeat.action === 'memorize') {
+                        await addToMemorizeList();
+                        await processEvaluation({ eval: 2 });
+                        return;
+                    }
                     if (afterAnswerRepeat.action === 'deepdive') {
                         await generateDeepDiveQuestion();
                         return;
@@ -2526,6 +2746,11 @@ vertical-align
             if (afterAnswer.action === 'correct') {
                 // メモ修正
                 await correctMemo();
+                return;
+            }
+            if (afterAnswer.action === 'memorize') {
+                await addToMemorizeList();
+                await processEvaluation({ eval: 2 });
                 return;
             }
             if (afterAnswer.action === 'deepdive') {
@@ -4548,6 +4773,7 @@ ${explanation}
         if (userInput.trim()) {
             presetItems.unshift({ label: '💬 直接質問', prompt: '', showBeside: false });
         }
+        presetItems.push({ label: '🎮 問題を出す', prompt: '', showBeside: false });
         presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
         presetItems.push({ label: '🗑 レビューコメントを削除', prompt: '', showBeside: false });
         const result = await new Promise((resolve) => {
@@ -4689,6 +4915,22 @@ ${fullText}`;
                         showBeside: false, useGemini: false, isDeleteReview: true
                     });
                 }
+                else if (selected && selected.label.includes('問題を出す')) {
+                    resolve({
+                        question: '',
+                        isSvg: false,
+                        isSkeleton: false,
+                        isStructural: false,
+                        isHtmlGeneration: false,
+                        isMemoSearch: false,
+                        isQuiz: false,
+                        isFreeQuestion: false,
+                        isSectionQuestion: false,
+                        showBeside: false,
+                        useGemini: false,
+                        isCodingChallenge: true
+                    });
+                }
                 else if (selected && selected.label.includes('複数ファイルを選択')) {
                     resolve({
                         question: '',
@@ -4810,7 +5052,7 @@ ${fullText}`;
         if (!result) {
             return; // キャンセル
         }
-        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview } = result;
+        let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview, isCodingChallenge } = result;
         // ⚠ REVIEW: コメント一括削除（API呼び出し不要）
         if (isDeleteReview) {
             const docLines = editor.document.getText().split('\n');
@@ -4831,6 +5073,71 @@ ${fullText}`;
                 }
             });
             vscode.window.showInformationMessage(`✅ レビューコメントを${deleteNums.length}箇所削除しました`);
+            return;
+        }
+        // 🎮 問題を出す（選択テキストをメモとしてGeminiに渡しHTMLチャレンジ生成）
+        if (isCodingChallenge) {
+            const geminiApiKey = vscode.workspace.getConfiguration('cssToHtmlJumper').get('geminiApiKey', '');
+            if (!geminiApiKey) {
+                vscode.window.showErrorMessage('Gemini APIキーが設定されていません（cssToHtmlJumper.geminiApiKey）');
+                return;
+            }
+            // 選択なしの場合はカーソル位置のセクションを自動取得
+            let memoContent = code.trim();
+            if (!memoContent) {
+                const docLines = editor.document.getText().split('\n');
+                const cursorLine = editor.selection.active.line;
+                let sectionStart = cursorLine;
+                for (let i = cursorLine; i >= 0; i--) {
+                    if (/^##?\s/.test(docLines[i])) {
+                        sectionStart = i;
+                        break;
+                    }
+                }
+                let sectionEnd = docLines.length;
+                for (let i = sectionStart + 1; i < docLines.length; i++) {
+                    if (/^##?\s/.test(docLines[i])) {
+                        sectionEnd = i;
+                        break;
+                    }
+                }
+                memoContent = docLines.slice(sectionStart, sectionEnd).join('\n').trim();
+            }
+            if (!memoContent) {
+                vscode.window.showErrorMessage('セクション内容が見つかりません。テキストを選択するか、メモのセクション内にカーソルを置いてください');
+                return;
+            }
+            const challengePrompt = '以下のメモ内容を参考に、HTML+CSSの実践問題を1つ作成してください。\n\n'
+                + '【ルール】\n'
+                + '- 出力は1つのHTMLファイルのみ（```html ... ``` のコードブロックで囲む）\n'
+                + '- <style> タグをHTMLの中に含める（外部ファイル不要）\n'
+                + '- ファイル冒頭に <!-- 問題: ... --> コメントで問題文を書く\n'
+                + '- ファイル末尾に <!-- ヒント: ... --> コメントでヒントを書く\n'
+                + '- HTMLのスケルトンだけ作り、CSSは空のルールセット（プロパティなし）を用意する\n'
+                + '- ユーザーが自分でCSSを埋めて完成させる形にする\n'
+                + '- 問題はメモの内容に直結した実践的なもの（flex, grid, position等）\n\n'
+                + '【メモ内容】\n'
+                + memoContent;
+            await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '🎮 問題を生成中...', cancellable: false }, async () => {
+                try {
+                    const postData = JSON.stringify({ contents: [{ parts: [{ text: challengePrompt }] }] });
+                    const raw = await callGeminiApi(geminiApiKey, 'gemini-3.1-flash-lite-preview', postData);
+                    const parsed = JSON.parse(raw);
+                    const responseText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+                    // コードブロックからHTMLを抽出
+                    const htmlMatch = responseText.match(/```html\s*([\s\S]*?)```/);
+                    const htmlContent = htmlMatch ? htmlMatch[1].trim() : responseText.trim();
+                    if (!htmlContent) {
+                        vscode.window.showErrorMessage('問題の生成に失敗しました');
+                        return;
+                    }
+                    const doc = await vscode.workspace.openTextDocument({ content: htmlContent, language: 'html' });
+                    await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+                }
+                catch (e) {
+                    vscode.window.showErrorMessage(`問題生成エラー: ${e.message}`);
+                }
+            });
             return;
         }
         let codeToSend = code;
@@ -5444,6 +5751,11 @@ ${fullText}`;
         }
         if (afterAnswer.action === 'correct') {
             await correctMemo();
+            return;
+        }
+        if (afterAnswer.action === 'memorize') {
+            await addToMemorizeList();
+            await processEvaluation({ eval: 2 });
             return;
         }
         if (afterAnswer.action === 'deepdive') {
