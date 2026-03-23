@@ -4633,11 +4633,15 @@ ${explanation}
 ## ⑧ 仮クラス名
 - aaa / test / tmp / xxx 等の仮名クラスが残っていないか
 
-## ⑨ AIっぽいコメント（削除推奨）
-- 「← 追加」「← 変更」等の変更履歴コメント
-- 「★ これを追加！」等の指示・命令系コメント
-- 動作・理由を長々説明するコメント
-- 日付コメント（CSS/JSに日付を書く習慣は普通ない）
+## ⑨ AIっぽいコメント【必ず全コメントを1つずつ確認・絶対スキップしない】
+以下のパターンに当てはまるコメントを全部列挙すること。1つでも見つかったら全て指摘する。
+- 作業記録系（何をしたか・どう変えたかを書いたもの）
+  例: /* 復活させる */ /* height は削除 */ /* コメント外す */ /* space-between → center に変更 */ /* ここを追加 */ /* 削除した */
+- 変更履歴系: 「← 追加」「← 変更」「← 修正」等の矢印コメント
+- 指示・命令系: 「★ これを追加！」「// TODO」「// FIXME」等
+- 過剰説明系: 1行のCSSに3行以上のコメントがついている
+- 日付コメント: /* 2024-01-01 */ 等
+良いコメントの基準: 「なぜこの値か」「なぜこのプロパティが必要か」を説明するもの。「何をしたか」を説明するものは全て削除推奨。
 
 ## ⑩ 日本語コメントの誤字・文法
 - 誤字脱字・助詞の誤りがないか
@@ -4653,7 +4657,7 @@ ${explanation}
 
 ---
 【出力フォーマット】
-問題がある観点のみ出力（問題なしの観点はスキップ）。
+問題がある観点のみ出力（問題なしの観点はスキップ）。ただし⑨は必ず全コメントを確認して1件でもあれば列挙すること。
 行番号は使わない。各指摘は以下の2行形式で出力:
   ⚠ \`[ファイル内に存在するコードをそのまま短く抜粋（1行・改変しない）]\` → 問題の内容（1行で簡潔に）
     修正例: \`[修正後コード]\`（1行・短く）
@@ -6809,6 +6813,27 @@ ${selectedText}
     // ========================================
     // CSS品質チェック（重複・矛盾・マージ提案）
     // ========================================
+    // ========================================
+    // css-jumper-ignore Quick Fix（電球アイコン）
+    // ========================================
+    context.subscriptions.push(vscode.languages.registerCodeActionsProvider([{ language: 'css' }, { language: 'php' }, { language: 'html' }], {
+        provideCodeActions(document, _range, context) {
+            const actions = [];
+            for (const diag of context.diagnostics) {
+                if (diag.source !== 'CSS Jumper') {
+                    continue;
+                }
+                const action = new vscode.CodeAction('CSS Jumper: この警告を無視する (/* css-jumper-ignore */)', vscode.CodeActionKind.QuickFix);
+                action.edit = new vscode.WorkspaceEdit();
+                const line = diag.range.start.line;
+                const indent = document.lineAt(line).text.match(/^(\s*)/)?.[1] ?? '';
+                action.edit.insert(document.uri, new vscode.Position(line, 0), `${indent}/* css-jumper-ignore */\n`);
+                action.diagnostics = [diag];
+                actions.push(action);
+            }
+            return actions;
+        }
+    }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }));
     const cssDupDiag = vscode.languages.createDiagnosticCollection('cssDuplicate');
     context.subscriptions.push(cssDupDiag);
     let cssDupTimer;
@@ -6868,6 +6893,16 @@ ${selectedText}
 async function deactivate() {
 }
 // ========================================
+// css-jumper-ignore コメントチェック
+// ========================================
+function hasIgnoreComment(doc, offset) {
+    const pos = doc.positionAt(offset);
+    if (pos.line === 0) {
+        return false;
+    }
+    return doc.lineAt(pos.line - 1).text.includes('css-jumper-ignore');
+}
+// ========================================
 // クラス不一致チェック ヘルパー（CSS → HTML/PHP）
 // CSSのセレクタがHTML/PHPで使われているか確認
 // ========================================
@@ -6882,6 +6917,7 @@ async function runClassMismatchCheck(doc, diagCollection) {
 // CSSファイル用：セレクタがHTML/PHPで使われているか確認
 async function runCssToHtmlCheck(doc, diagCollection) {
     const cssText = doc.getText();
+    const cssFilePath = doc.uri.fsPath;
     const diagnostics = [];
     const skipPatterns = /^(hover|focus|active|visited|first-child|last-child|nth-child|not|before|after|root|checked|disabled|placeholder|from|to|jpg|jpeg|png|gif|svg|webp|mp4|mp3|pdf|woff|woff2|ttf|eot)$/;
     // url(...) の中身をあらかじめ除外するためにブランク化
@@ -6900,7 +6936,7 @@ async function runCssToHtmlCheck(doc, diagCollection) {
         diagCollection.set(doc.uri, []);
         return;
     }
-    const usedClasses = await collectUsedClassesFromHtmlPhp();
+    const usedClasses = await collectUsedClassesFromHtmlPhp(cssFilePath);
     if (usedClasses.size === 0) {
         diagCollection.set(doc.uri, []);
         return;
@@ -6908,6 +6944,10 @@ async function runCssToHtmlCheck(doc, diagCollection) {
     const warned = new Set();
     for (const { name, offset } of cssClasses) {
         if (usedClasses.has(name) || warned.has(name)) {
+            continue;
+        }
+        if (hasIgnoreComment(doc, offset)) {
+            warned.add(name);
             continue;
         }
         warned.add(name);
@@ -6988,11 +7028,58 @@ async function runPhpToCssCheck(doc, diagCollection) {
     diagCollection.set(doc.uri, diagnostics);
 }
 // ワークスペースのHTML/PHPから使用クラスを収集
-async function collectUsedClassesFromHtmlPhp() {
+async function collectUsedClassesFromHtmlPhp(cssFilePath) {
     const usedClasses = new Set();
-    // HTML/PHPからclass属性を収集
+    const scannedPaths = new Set();
+    // ① CSSファイルの近くにあるHTML/PHPを優先検索（親フォルダ・3階層上まで）
+    if (cssFilePath) {
+        let dir = path.dirname(cssFilePath);
+        for (let i = 0; i < 4; i++) {
+            try {
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const entry of entries) {
+                    if (!entry.isFile()) {
+                        continue;
+                    }
+                    if (!/\.(html|php)$/i.test(entry.name)) {
+                        continue;
+                    }
+                    const filePath = path.join(dir, entry.name);
+                    if (scannedPaths.has(filePath)) {
+                        continue;
+                    }
+                    scannedPaths.add(filePath);
+                    try {
+                        const content = fs.readFileSync(filePath, 'utf-8');
+                        const classAttrRegex = /class=["']([^"'>]*)["']/g;
+                        let hm;
+                        while ((hm = classAttrRegex.exec(content)) !== null) {
+                            const val = hm[1];
+                            if (val.includes('<?')) {
+                                continue;
+                            }
+                            for (const cls of val.split(/\s+/).filter(Boolean)) {
+                                usedClasses.add(cls);
+                            }
+                        }
+                    }
+                    catch { /* ignore */ }
+                }
+            }
+            catch { /* ignore */ }
+            const parent = path.dirname(dir);
+            if (parent === dir) {
+                break;
+            } // ドライブルートに達した
+            dir = parent;
+        }
+    }
+    // ② ワークスペース全体も検索（補完）
     const htmlFiles = await vscode.workspace.findFiles('**/*.{html,php}', '**/node_modules/**', 50);
     for (const fileUri of htmlFiles) {
+        if (scannedPaths.has(fileUri.fsPath)) {
+            continue;
+        } // ①で読み込み済みはスキップ
         try {
             const content = fs.readFileSync(fileUri.fsPath, 'utf-8');
             const classAttrRegex = /class=["']([^"'>]*)["']/g;
@@ -7113,7 +7200,7 @@ function runCssDupCheck(doc, diagCollection) {
     const ruleRegex = /([^{}@][^{}]*?)\{([^{}]*)\}/g;
     let m;
     while ((m = ruleRegex.exec(text)) !== null) {
-        const selector = m[1].trim();
+        const selector = m[1].replace(/\/\*[\s\S]*?\*\//g, '').trim();
         if (keyframeStopRegex.test(selector)) {
             continue;
         }
@@ -7129,7 +7216,8 @@ function runCssDupCheck(doc, diagCollection) {
             const line = doc.positionAt(offset).line;
             props.set(propName, { value: propValue, line, offset });
         }
-        const selectorOffset = m.index + (m[1].length - m[1].trimStart().length); // 先頭の空白・改行をスキップ
+        const leadingMatch = m[1].match(/^(\s*(?:\/\*[\s\S]*?\*\/\s*)*)/); // 先頭の空白・コメントをスキップ
+        const selectorOffset = m.index + (leadingMatch ? leadingMatch[0].length : 0);
         rules.push({ selector, props, selectorLine: doc.positionAt(selectorOffset).line, selectorOffset });
     }
     // ① 同じルール内のプロパティ重複チェック（同じファイルを走査する前に重複チェック）
@@ -7195,6 +7283,9 @@ function runCssDupCheck(doc, diagCollection) {
         }
         // 最初の定義に警告
         const first = locations[0];
+        if (hasIgnoreComment(doc, first.offset)) {
+            continue;
+        }
         const start = doc.positionAt(first.offset);
         const end = doc.positionAt(first.offset + sel.length);
         const lines = locations.map(l => `行${l.line + 1}`).join(', ');
@@ -7224,6 +7315,9 @@ function runCssDupCheck(doc, diagCollection) {
         // 該当ルールに情報警告を追加
         for (const rule of rules) {
             if (!selectors.includes(rule.selector)) {
+                continue;
+            }
+            if (hasIgnoreComment(doc, rule.selectorOffset)) {
                 continue;
             }
             const start = doc.positionAt(rule.selectorOffset);
