@@ -2695,8 +2695,33 @@ ${categoryList.join(' / ')}
           console.log('[Quiz][DEBUG] ジャンプ検索:', { questionText, jumpLine });
 
 
-          // 2回目以降: 保存済み回答をWebviewで表示
-          const storedAnswer = quizHistoryMap.get(quiz.title)?.geminiAnswer || answerContent;
+          const existingTab = vscode.window.tabGroups.all
+            .flatMap(group => group.tabs)
+            .find(tab =>
+              tab.input instanceof vscode.TabInputText &&
+              tab.input.uri.fsPath === answerFilePath
+            );
+          const targetViewColumn = existingTab ? existingTab.group.viewColumn : vscode.ViewColumn.Two;
+
+          const answerEditor = await vscode.window.showTextDocument(quizAnswerDoc, {
+            viewColumn: targetViewColumn,
+            preview: false,
+            preserveFocus: false
+          });
+
+          if (jumpLine !== -1) {
+            const jumpPosition = new vscode.Position(jumpLine, 0);
+            answerEditor.selection = new vscode.Selection(jumpPosition, jumpPosition);
+            const revealPos = new vscode.Position(Math.max(0, jumpLine - 2), 0);
+            answerEditor.revealRange(new vscode.Range(revealPos, revealPos), vscode.TextEditorRevealType.AtTop);
+            const jumpDecorationType = vscode.window.createTextEditorDecorationType({
+              backgroundColor: 'rgba(255, 255, 0, 0.4)',
+              isWholeLine: true
+            });
+            const endLine = Math.min(quizAnswerDoc.lineCount - 1, jumpLine + 5);
+            answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, endLine + 1, 0)]);
+            setTimeout(() => jumpDecorationType.dispose(), 3000);
+          }
 
           pendingQuizEvaluation = {
             quiz: quiz,
@@ -2707,9 +2732,8 @@ ${categoryList.join(' / ')}
             fromList: !!preSelectedQuiz,
           };
 
-          // Webviewで回答表示・評価選択
-          const webviewChoiceRepeat = await showQuizAnswerWebview(questionText, storedAnswer, quiz.category || 'その他', true);
-          const afterAnswerRepeat = mapWebviewChoice(webviewChoiceRepeat);
+          // 評価（2回目以降：文言を変える・削除しない）
+          const afterAnswerRepeat = await showEvaluationQuickPick(false, true);
           if (!afterAnswerRepeat) {
             showEvaluationStatusBar();
             return;
@@ -2720,7 +2744,6 @@ ${categoryList.join(' / ')}
           }
           if (afterAnswerRepeat.action === 'memorize') {
             await addToMemorizeList();
-            await processEvaluation({ eval: 2 });
             return;
           }
           if (afterAnswerRepeat.action === 'deepdive') {
@@ -2908,6 +2931,38 @@ vertical-align
       await quizAnswerDoc.save();
       console.log('[Quiz] クイズ回答.md に保存完了');
 
+      // 既存タブを探す
+      const existingTab2 = vscode.window.tabGroups.all
+        .flatMap(group => group.tabs)
+        .find(tab =>
+          tab.input instanceof vscode.TabInputText &&
+          tab.input.uri.fsPath === answerFilePath
+        );
+      const targetViewColumn2 = existingTab2 ? existingTab2.group.viewColumn : vscode.ViewColumn.Two;
+
+      const answerEditor = await vscode.window.showTextDocument(quizAnswerDoc, {
+        viewColumn: targetViewColumn2,
+        preview: false,
+        preserveFocus: false
+      });
+
+      // 最新Q&Aに自動スクロール
+      const lastLine = quizAnswerDoc.lineCount - 1;
+      const lastPosition = new vscode.Position(lastLine, 0);
+      answerEditor.selection = new vscode.Selection(lastPosition, lastPosition);
+      answerEditor.revealRange(new vscode.Range(lastLine, 0, lastLine, 0), vscode.TextEditorRevealType.InCenter);
+
+      // 新しく追加された回答範囲をハイライト（1.5秒）
+      const highlightRange = new vscode.Range(
+        new vscode.Position(newAnswerStartLine, 0),
+        new vscode.Position(quizAnswerDoc.lineCount - 1, 0)
+      );
+      const answerDecorationType = vscode.window.createTextEditorDecorationType({
+        backgroundColor: 'rgba(255, 255, 0, 0.3)'
+      });
+      answerEditor.setDecorations(answerDecorationType, [highlightRange]);
+      setTimeout(() => answerDecorationType.dispose(), 1500);
+
       // 評価待ちデータを保存
       pendingQuizEvaluation = {
         quiz: quiz,
@@ -2918,20 +2973,18 @@ vertical-align
         fromList: !!preSelectedQuiz,
       };
 
-      // questionText + geminiAnswer を履歴に保存
+      // questionText を履歴に保存（次回の重複検出用）
       const historyForQ = quizHistoryMap.get(quiz.title);
       if (historyForQ) {
         historyForQ.questionText = questionText;
-        historyForQ.geminiAnswer = claudeAnswer;
         saveQuizHistory();
       }
 
       // ファクトチェックエラー検出
       const hasFactCheckError = claudeAnswer.includes('⚠ ファクトチェック');
 
-      // Webviewで回答表示・評価選択
-      const webviewChoice = await showQuizAnswerWebview(questionText, claudeAnswer, quiz.category || 'その他', false);
-      const afterAnswer = mapWebviewChoice(webviewChoice);
+      // 答え確認後の評価選択
+      const afterAnswer = await showEvaluationQuickPick(hasFactCheckError);
 
       if (!afterAnswer) {
         // キャンセル → ステータスバーに評価待ち表示
@@ -2953,7 +3006,6 @@ vertical-align
 
       if (afterAnswer.action === 'memorize') {
         await addToMemorizeList();
-        await processEvaluation({ eval: 2 });
         return;
       }
 
