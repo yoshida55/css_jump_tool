@@ -7573,6 +7573,10 @@ async function collectDefinedClassesFromCss() {
 // ========================================
 // CSS品質チェック ヘルパー
 // ========================================
+/** offset が属する行の末尾位置を返す（ヒントを行末に表示するため） */
+function lineEndPos(doc, offset) {
+    return doc.lineAt(doc.positionAt(offset).line).range.end;
+}
 function runCssDupCheck(doc) {
     const text = doc.getText();
     const decorations = [];
@@ -7630,7 +7634,7 @@ function runCssDupCheck(doc) {
                 const prev = seen.get(propName);
                 // 前の定義に警告
                 const prevStart = doc.positionAt(prev.offset);
-                const prevEnd = doc.positionAt(prev.offset + propName.length);
+                const prevEnd = lineEndPos(doc, prev.offset);
                 decorations.push({
                     range: new vscode.Range(prevStart, prevEnd),
                     renderOptions: { after: { contentText: `  ⚠ "${propName}" が同じルール内で重複しています（後の "${propValue}" が有効）` } }
@@ -7652,7 +7656,7 @@ function runCssDupCheck(doc) {
                 // longhandがshorthandより前にある場合は上書きされる
                 if (longInfo.offset < shortInfo.offset) {
                     const start = doc.positionAt(longInfo.offset);
-                    const end = doc.positionAt(longInfo.offset + longhand.length);
+                    const end = lineEndPos(doc, longInfo.offset);
                     decorations.push({
                         range: new vscode.Range(start, end),
                         renderOptions: { after: { contentText: `  ⚠ "${longhand}" は後の "${shorthand}" に上書きされます` } }
@@ -7680,7 +7684,7 @@ function runCssDupCheck(doc) {
             continue;
         }
         const start = doc.positionAt(first.offset);
-        const end = doc.positionAt(first.offset + sel.length);
+        const end = lineEndPos(doc, first.offset);
         const lines = locations.map(l => `行${l.line + 1}`).join(', ');
         decorations.push({
             range: new vscode.Range(start, end),
@@ -7715,7 +7719,7 @@ function runCssDupCheck(doc) {
                 continue;
             }
             const start = doc.positionAt(rule.selectorOffset);
-            const end = doc.positionAt(rule.selectorOffset + rule.selector.length);
+            const end = lineEndPos(doc, rule.selectorOffset);
             const others = selectors.filter(s => s !== rule.selector).join(', ');
             decorations.push({
                 range: new vscode.Range(start, end),
@@ -7736,7 +7740,7 @@ function runCssDupCheck(doc) {
         if (props.has('z-index') && (!hasPosition || positionValue === 'static')) {
             const info = props.get('z-index');
             const start = doc.positionAt(info.offset);
-            const end = doc.positionAt(info.offset + 'z-index'.length);
+            const end = lineEndPos(doc, info.offset);
             decorations.push({
                 range: new vscode.Range(start, end),
                 renderOptions: { after: { contentText: `  ⚠ "z-index" は "position: static"（デフォルト）のままでは効きません。position: relative/absolute/fixed のいずれかが必要です` } }
@@ -7749,7 +7753,7 @@ function runCssDupCheck(doc) {
             if (!hasAxisX || !hasAxisY) {
                 const info = props.get('position');
                 const start = doc.positionAt(info.offset);
-                const end = doc.positionAt(info.offset + positionValue.length);
+                const end = lineEndPos(doc, info.offset);
                 const missing = [];
                 if (!hasAxisY) {
                     missing.push('top か bottom');
@@ -7770,7 +7774,7 @@ function runCssDupCheck(doc) {
             if (!hasCols && !hasRows) {
                 const info = props.get('display');
                 const start = doc.positionAt(info.offset);
-                const end = doc.positionAt(info.offset + 'display'.length);
+                const end = lineEndPos(doc, info.offset);
                 decorations.push({
                     range: new vscode.Range(start, end),
                     renderOptions: { after: { contentText: `  "display: grid" には "grid-template-columns" か "grid-template-rows" が必要です` } }
@@ -7800,7 +7804,7 @@ function runCssDupCheck(doc) {
         // 最初のpxに警告を1つだけ出す
         const offset = pxOffsets[0];
         const start = doc.positionAt(offset);
-        const end = doc.positionAt(offset + 2);
+        const end = lineEndPos(doc, offset);
         decorations.push({
             range: new vscode.Range(start, end),
             renderOptions: { after: { contentText: `  [参考] px と rem が混在しています（${pxOffsets.length}箇所px / ${remOffsets.length}箇所rem）。どちらかに統一すると管理しやすくなります` } }
@@ -7822,7 +7826,7 @@ function runCssDupCheck(doc) {
         }
         const offset = vu.index + 4; // "var(" の後
         const start = doc.positionAt(offset);
-        const end = doc.positionAt(offset + varName.length);
+        const end = lineEndPos(doc, offset);
         decorations.push({
             range: new vscode.Range(start, end),
             renderOptions: { after: { contentText: `  ⚠ CSS変数 "${varName}" が定義されていません（:root に定義が必要です）` } }
@@ -7841,7 +7845,7 @@ function runCssDupCheck(doc) {
         if (!fs.existsSync(absPath)) {
             const offset = um.index + um[0].indexOf(um[1]);
             const start = doc.positionAt(offset);
-            const end = doc.positionAt(offset + imgPath.length);
+            const end = lineEndPos(doc, offset);
             decorations.push({
                 range: new vscode.Range(start, end),
                 renderOptions: { after: { contentText: `  ⚠ 画像ファイルが見つかりません: "${imgPath}"` } }
@@ -7898,7 +7902,7 @@ function runCssDupCheck(doc) {
             const normalValue = normalRuleMap.get(key);
             if (normalValue !== undefined && normalValue === propInfo.value) {
                 const start = doc.positionAt(propInfo.offset);
-                const end = doc.positionAt(propInfo.offset + propName.length);
+                const end = lineEndPos(doc, propInfo.offset);
                 decorations.push({
                     range: new vscode.Range(start, end),
                     renderOptions: { after: { contentText: `  "${propName}: ${propInfo.value}" は通常ルールと同じ値です。@media内では不要な可能性があります` } }
