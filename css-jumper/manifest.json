@@ -10,7 +10,8 @@
     "scripting",
     "clipboardWrite",
     "tabs",
-    "nativeMessaging"
+    "nativeMessaging",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>",

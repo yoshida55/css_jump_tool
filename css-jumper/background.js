@@ -1324,3 +1324,115 @@ function findCssContent(cssFiles, className, id) {
   
   return relatedContent.join("\n\n") || "/* CSS定義が見つかりませんでした */";
 }
+
+// ========================================
+// Adobe XD API インターセプト
+// xd.adobe.com を開いたとき cdn-sharing.adobecc.com へのリクエストを横取りして
+// フォント情報＋テキストを蓄積する
+// ========================================
+var xdDesignData = {}; // { componentId: { texts:[], items:[{text,fontSize,fontWeight}] } }
+
+chrome.webRequest.onCompleted.addListener(
+  function (details) {
+    var compMatch = details.url.match(/component_id=([^&]+)/);
+    if (!compMatch) { return; }
+    var componentId = compMatch[1];
+
+    // 同じコンポーネントは2回取得しない
+    if (xdDesignData[componentId]) { return; }
+
+    // サービスワーカーから同じURLを再フェッチしてレスポンスボディを取得
+    fetch(details.url)
+      .then(function (r) { return r.arrayBuffer(); })
+      .then(function (buffer) {
+        var text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+        parseXdComponent(componentId, text);
+      })
+      .catch(function (e) { console.log('[CSS Jumper XD] fetch error:', e); });
+  },
+  { urls: ['https://cdn-sharing.adobecc.com/*'] }
+);
+
+function parseXdComponent(componentId, raw) {
+  var items = [];
+  var seen = new Set();
+
+  // テキスト文字列の候補キー: rawText / text / content / characters
+  var textRe = /"(?:rawText|characters|content)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  var texts = [];
+  var tm;
+  while ((tm = textRe.exec(raw)) !== null) {
+    var t = tm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\t/g, ' ').trim();
+    if (t.length >= 2 && !/^\d+(\.\d+)?$/.test(t) && !t.startsWith('http')) {
+      texts.push(t);
+    }
+  }
+
+  // フォントサイズ（8〜200の範囲のみ）
+  var sizeRe = /"fontSize"\s*:\s*(\d+(?:\.\d+)?)/g;
+  var sizes = [];
+  var sm;
+  while ((sm = sizeRe.exec(raw)) !== null) {
+    var s = parseFloat(sm[1]);
+    if (s >= 8 && s <= 200) { sizes.push(s); }
+  }
+
+  // フォントウェイト・スタイル
+  var weightRe = /"(?:fontStyle|postscriptName)"\s*:\s*"([^"]+)"/g;
+  var weights = [];
+  var wm;
+  while ((wm = weightRe.exec(raw)) !== null) { weights.push(wm[1]); }
+
+  // テキストとフォント情報を1件ずつペアにする（順番で対応）
+  var maxLen = Math.max(texts.length, sizes.length);
+  for (var i = 0; i < maxLen; i++) {
+    var key = (texts[i] || '') + '|' + (sizes[i] || '') + '|' + (weights[i] || '');
+    if (seen.has(key)) { continue; }
+    seen.add(key);
+      // "YuGothic-Bold" → fontFamily: "YuGothic", fontWeight: "Bold" に分離
+    var rawWeight = weights[i] || '';
+    var fontFamily = '';
+    var weightLabel = 'Regular';
+
+    // ハイフン区切りの場合（例: YuGothic-Bold, Helvetica-Bold）
+    var hyphenMatch = rawWeight.match(/^(.+?)[-_](Bold|Regular|Light|Medium|Thin|Black|Heavy|Semibold|Italic)$/i);
+    if (hyphenMatch) {
+      fontFamily    = hyphenMatch[1].trim();
+      weightLabel   = hyphenMatch[2];
+    } else if (/bold/i.test(rawWeight)) {
+      weightLabel = 'Bold';
+      fontFamily  = rawWeight.replace(/bold/i, '').replace(/[-_,\s]+$/, '').trim();
+    } else if (/^(Regular|Light|Medium|Thin|Black|Heavy|Italic)$/i.test(rawWeight)) {
+      weightLabel = rawWeight;
+    } else if (rawWeight) {
+      // ウェイトキーワードを含まない → フォントファミリー名とみなす
+      fontFamily  = rawWeight;
+      weightLabel = 'Regular';
+    }
+
+    items.push({
+      text       : texts[i]   || '',
+      fontSize   : sizes[i]   ? sizes[i] + 'px' : '',
+      fontFamily : fontFamily,
+      fontWeight : weightLabel
+    });
+  }
+
+  if (items.length) {
+    xdDesignData[componentId] = items;
+    console.log('[CSS Jumper XD] 取得:', componentId, items.length + '件');
+  }
+}
+
+// content.js からのデータ要求に応答
+chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+  if (msg.type === 'GET_XD_DATA') {
+    // 全コンポーネントのitemsをフラットに結合して返す
+    var all = [];
+    Object.values(xdDesignData).forEach(function (items) {
+      items.forEach(function (item) { if (item.text) { all.push(item); } });
+    });
+    sendResponse({ items: all });
+    return true;
+  }
+});

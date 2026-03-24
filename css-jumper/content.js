@@ -4355,3 +4355,162 @@ function onLayoutMouseMove(e) {
   layoutHighlight.style.width = rect.width + "px";
   layoutHighlight.style.height = rect.height + "px";
 }
+
+// ========================================
+// Adobe XD テキスト＋フォント情報取得（試験実装）
+// Alt+X で起動 / もう一度で閉じる
+// ========================================
+(function () {
+  if (!location.hostname.includes('xd.adobe.com')) { return; }
+
+  var xdPanel = null;
+
+  // 「スタイル」セクションのラベル要素を見つけ、
+  // その後続テキストからフォント情報を抽出する
+  function extractFromStyleSection() {
+    var result = { fontFamily: '', fontWeight: '', fontSize: '' };
+
+    // 「スタイル」という文字を含む要素を探す（条件を緩めに）
+    var allEls = document.querySelectorAll('*');
+    var styleLabel = null;
+    for (var i = 0; i < allEls.length; i++) {
+      var el = allEls[i];
+      var t = el.textContent.trim();
+      if (t === 'スタイル' || t.startsWith('スタイル')) {
+        styleLabel = el;
+        break;
+      }
+    }
+    if (!styleLabel) { result._debug = '「スタイル」ラベル要素が見つかりません'; return result; }
+    result._debug = '「スタイル」発見: ' + styleLabel.tagName + ' / ' + (styleLabel.className || 'no-class');
+
+    // 「スタイル」の親コンテナのテキストを収集
+    var container = styleLabel.parentElement;
+    // 親を2〜3階層たどって十分な範囲のテキストを取る
+    for (var d = 0; d < 3; d++) {
+      if (container && container.parentElement) { container = container.parentElement; }
+    }
+    var txt = container ? (container.innerText || '') : '';
+
+    // フォントファミリー＋ウェイト: 「Yu Gothic Regular」のような行を1行ずつ検索
+    var weightRe = /\b(Regular|Bold|Light|Medium|Semibold|Semi Bold|Thin|Black|Heavy|Italic)\b/;
+    var lines = txt.split('\n');
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li].trim();
+      var wm = line.match(weightRe);
+      if (wm) {
+        result.fontWeight = wm[1];
+        result.fontFamily = line.replace(wm[1], '').trim();
+        break;
+      }
+    }
+
+    // フォントサイズ: 「サイズ 48px」または単体の数値+px
+    var sizeMatch = txt.match(/サイズ\s+(\d+(?:\.\d+)?)\s*px/);
+    if (sizeMatch) {
+      result.fontSize = sizeMatch[1] + 'px';
+    } else {
+      // 「サイズ」ラベルがない場合、8〜200の範囲のpx値を探す
+      var nums = txt.match(/\b(\d+(?:\.\d+)?)\s*px\b/g) || [];
+      var filtered = nums.filter(function(v){ var n=parseFloat(v); return n>=8 && n<=200; });
+      if (filtered.length) { result.fontSize = filtered[0]; }
+    }
+
+    return result;
+  }
+
+  // 「コンテンツ」セクションのテキストを取得
+  function extractContentText() {
+    var allEls = document.querySelectorAll('*');
+    var contentLabel = null;
+    for (var i = 0; i < allEls.length; i++) {
+      var el = allEls[i];
+      var t = el.textContent.trim();
+      if (t === 'コンテンツ' || t.startsWith('コンテンツ')) {
+        contentLabel = el;
+        break;
+      }
+    }
+    if (!contentLabel) { return ''; }
+
+    // コンテンツラベルの次の兄弟か、親コンテナの次の要素からテキストを取る
+    var container = contentLabel.parentElement;
+    for (var d = 0; d < 2; d++) {
+      if (container && container.parentElement) { container = container.parentElement; }
+    }
+    // コンテナのテキストから「コンテンツ」ラベル自体を除いた部分
+    var txt = container ? (container.innerText || '') : '';
+    // 「コンテンツ」「テキスト :」などのラベル文字を除去
+    txt = txt.replace(/^コンテンツ\s*/,'').replace(/^テキスト\s*[:：]\s*/,'').trim();
+    // 改行で分割して最初の意味のある行
+    var lines = txt.split('\n').map(function(l){return l.trim();}).filter(function(l){return l.length > 1;});
+    return lines[0] || '';
+  }
+
+  function extractXdTypography() {
+    if (xdPanel) { xdPanel.remove(); xdPanel = null; return; }
+
+    // background.js に蓄積されたデータを取得
+    chrome.runtime.sendMessage({ type: 'GET_XD_DATA' }, function (response) {
+      var items = (response && response.items) || [];
+
+      // ---- 表示パネル ----
+      xdPanel = document.createElement('div');
+      Object.assign(xdPanel.style, {
+        position: 'fixed', top: '60px', right: '20px', zIndex: '2147483647',
+        background: '#1e1e2e', color: '#cdd6f4', padding: '16px 18px',
+        borderRadius: '10px', fontFamily: 'monospace', fontSize: '12px',
+        lineHeight: '1.6', maxWidth: '520px', maxHeight: '80vh', overflowY: 'auto',
+        boxShadow: '0 6px 30px rgba(0,0,0,0.6)', border: '1px solid #45475a'
+      });
+
+      var html = '<div style="font-weight:bold;color:#89b4fa;font-size:14px;margin-bottom:10px">'
+               + '🎨 Adobe XD デザインデータ（' + items.length + '件）</div>';
+
+      if (items.length === 0) {
+        html += '<div style="color:#f38ba8">⚠ データなし。ページをリロードしてから試してください。</div>';
+      } else {
+        html += '<table style="border-collapse:collapse;width:100%">'
+              + '<tr style="color:#6c7086;font-size:10px;border-bottom:1px solid #313244">'
+              + '<td style="padding:2px 8px 4px 0">テキスト</td>'
+              + '<td style="padding:2px 8px 4px 0">サイズ</td>'
+              + '<td style="padding:2px 8px 4px 0">フォント</td>'
+              + '<td style="padding:2px 0 4px 0">ウェイト</td></tr>';
+        items.forEach(function (it) {
+          var weightColor = it.fontWeight === 'Bold' ? '#f38ba8' : '#6c7086';
+          html += '<tr>'
+            + '<td style="color:#cba6f7;padding:2px 8px 2px 0;max-width:160px;overflow:hidden;white-space:nowrap">'
+            + it.text.replace(/</g,'&lt;').substring(0, 22) + '</td>'
+            + '<td style="color:#a6e3a1;padding:2px 8px 2px 0">' + (it.fontSize || '—') + '</td>'
+            + '<td style="color:#89dceb;padding:2px 8px 2px 0">' + (it.fontFamily || '—') + '</td>'
+            + '<td style="color:' + weightColor + ';font-weight:' + (it.fontWeight === 'Bold' ? 'bold' : 'normal') + '">'
+            + (it.fontWeight || '—') + '</td>'
+            + '</tr>';
+        });
+        html += '</table>';
+      }
+
+      var json = JSON.stringify(items, null, 2);
+      html += '<button id="xd_copy_btn" style="margin-top:12px;padding:6px 14px;background:#313244;'
+            + 'color:#cdd6f4;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
+            + '📋 JSON をコピー（Claude Code 用）</button>';
+      html += '<div style="color:#45475a;font-size:11px;margin-top:8px">Alt+X で閉じる</div>';
+
+      xdPanel.innerHTML = html;
+      document.body.appendChild(xdPanel);
+
+      document.getElementById('xd_copy_btn').addEventListener('click', function () {
+        navigator.clipboard.writeText(json).then(function () {
+          document.getElementById('xd_copy_btn').textContent = '✅ コピーしました！';
+        });
+      });
+    });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey && (e.key === 'x' || e.key === 'X')) {
+      e.preventDefault();
+      extractXdTypography();
+    }
+  });
+})();
