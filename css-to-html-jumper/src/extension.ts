@@ -98,6 +98,7 @@ interface QuizHistory {
   hiddenFromList?: boolean; // リスト一覧から非表示（ランダム出題には影響しない）
   lastAnsweredDate?: string; // 最後に回答した日付（YYYY-MM-DD）✓マーク用
   geminiAnswer?: string;     // Geminiが生成した回答（Webview再表示用）
+  stagingLevel?: 1 | 2 | 3;  // 暗記ステージ（1=暗記すべき, 2=もう少し, 3=完全に理解）
 }
 
 let quizHistoryMap: Map<string, QuizHistory> = new Map();
@@ -259,6 +260,11 @@ async function showEvaluationQuickPick(hasFactCheckError: boolean = false, isRep
     items.push({ label: '📝 メモを修正する', description: 'AIがメモの誤りを自動修正してmemo.mdも更新', action: 'correct' });
   }
 
+  items.push({ label: '', kind: vscode.QuickPickItemKind.Separator } as any);
+  items.push({ label: '🧠 Staging 1: 暗記すべきこと→次へ', description: '要暗記としてStaging 1に登録', action: 'staging1' });
+  items.push({ label: '🔵 Staging 2: もう少しで覚えられそう→次へ', description: 'あと少しでStaging 2に登録', action: 'staging2' });
+  items.push({ label: '⭐ Staging 3: 完全に理解した→次へ', description: '完全習得としてStaging 3に登録', action: 'staging3' });
+  items.push({ label: '', kind: vscode.QuickPickItemKind.Separator } as any);
   items.push({ label: '🟢 暗記リストに追加→次へ', description: '保存してすぐ次の問題へ', action: 'memorize' });
   items.push({ label: '🔍 深掘り質問', description: 'なぜ・応用・例外・比較・具体例をAIが生成してメモに追記', action: 'deepdive' });
   items.push({ label: '✅ 終了', description: '', action: 'exit' });
@@ -391,6 +397,38 @@ async function addToMemorizeList() {
 
   fs.writeFileSync(memoFilePath, newContent, 'utf8');
   vscode.window.showInformationMessage(`🧠 暗記リストに追加しました: ${quiz.title}`);
+}
+
+// ========================================
+// Stagingレベル設定関数
+// ========================================
+async function addToStaging(level: 1 | 2 | 3) {
+  if (!pendingQuizEvaluation) { return; }
+  const { quiz } = pendingQuizEvaluation;
+
+  const existing = quizHistoryMap.get(quiz.title);
+  if (existing) {
+    existing.stagingLevel = level;
+  } else {
+    quizHistoryMap.set(quiz.title, {
+      title: quiz.title,
+      line: quiz.line,
+      lastReviewed: Date.now(),
+      reviewCount: 0,
+      stagingLevel: level,
+    });
+  }
+  saveQuizHistory();
+
+  const labels: Record<number, string> = { 1: '🧠 Staging 1（暗記すべきこと）', 2: '🔵 Staging 2（もう少しで）', 3: '⭐ Staging 3（完全に理解）' };
+  vscode.window.showInformationMessage(`${labels[level]} に登録しました: ${quiz.title}`);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const hist = quizHistoryMap.get(quiz.title);
+  if (hist) { hist.lastAnsweredDate = todayStr; saveQuizHistory(); }
+
+  hideEvaluationStatusBar();
+  await handleQuiz(false);
 }
 
 // ========================================
@@ -2175,24 +2213,36 @@ async function handleQuiz(showFilterPick = false) {
       const _yesterdayStr = `${_yesterday.getFullYear()}-${_pad2(_yesterday.getMonth() + 1)}-${_pad2(_yesterday.getDate())}`;
       const _weekAgo = new Date(_now); _weekAgo.setDate(_weekAgo.getDate() - 6);
       const _weekAgoStr = `${_weekAgo.getFullYear()}-${_pad2(_weekAgo.getMonth() + 1)}-${_pad2(_weekAgo.getDate())}`;
+      const _monthAgo = new Date(_now); _monthAgo.setDate(_monthAgo.getDate() - 29);
+      const _monthAgoStr = `${_monthAgo.getFullYear()}-${_pad2(_monthAgo.getMonth() + 1)}-${_pad2(_monthAgo.getDate())}`;
 
       let selectedMode = '';
 
       if (showFilterPick) {
         // Ctrl+Shift+7 で新規起動 → トップ画面を表示
         type TopItem = vscode.QuickPickItem & { mode?: string };
-        const todayCount = headings.filter(h => h.date === _todayStr).length;
-        const yesterdayCount = headings.filter(h => h.date === _yesterdayStr).length;
-        const weekCount = headings.filter(h => h.date && h.date >= _weekAgoStr).length;
+        const unstagedHeadings = headings.filter(h => !stagedTitles.has(h.title));
+        const todayCount = unstagedHeadings.filter(h => h.date === _todayStr).length;
+        const yesterdayCount = unstagedHeadings.filter(h => h.date === _yesterdayStr).length;
+        const weekCount = unstagedHeadings.filter(h => h.date && h.date >= _weekAgoStr).length;
+        const monthCount = unstagedHeadings.filter(h => h.date && h.date >= _monthAgoStr).length;
         const historyCount = [...quizHistoryMap.values()].filter(h => h.lastReviewed >= _now - 7 * 24 * 60 * 60 * 1000).length;
+        const staging1Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 1).length;
+        const staging2Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 2).length;
+        const staging3Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 3).length;
 
         const topItems: TopItem[] = [
           { label: `📅 今日のメモから出題`, description: `${todayCount}件`, mode: 'today' },
           { label: `📅 昨日のメモから出題`, description: `${yesterdayCount}件`, mode: 'yesterday' },
           { label: `📅 今週のメモから出題`, description: `${weekCount}件`, mode: 'week' },
+          { label: `📅 ここ1ヶ月のメモから出題`, description: `${monthCount}件`, mode: 'month' },
           { label: '', kind: vscode.QuickPickItemKind.Separator },
           { label: `📚 クイズ履歴から選ぶ（1週間）`, description: `${historyCount}件`, mode: 'history' },
           { label: '🎲 ランダムで出題', description: '通常モード', mode: 'random' },
+          { label: '', kind: vscode.QuickPickItemKind.Separator },
+          { label: `🧠 暗記すべきこと`, description: `Staging 1  ${staging1Count}件`, mode: 'staging1' },
+          { label: `🔵 もう少しで覚えられそう`, description: `Staging 2  ${staging2Count}件`, mode: 'staging2' },
+          { label: `⭐ 完全に理解した`, description: `Staging 3  ${staging3Count}件`, mode: 'staging3' },
         ];
 
         const topPicked = await vscode.window.showQuickPick(topItems as vscode.QuickPickItem[], {
@@ -2201,22 +2251,27 @@ async function handleQuiz(showFilterPick = false) {
         if (!topPicked) { return; }
         selectedMode = topPicked.mode || '';
         if (selectedMode && selectedMode !== 'random') {
-          lastTopMode = selectedMode; // 次回の評価後に再利用
+          lastTopMode = selectedMode; // 次回の評価後に再利用（staging1/2/3も保持）
         }
       } else {
         // 評価後 → トップ画面スキップ、前回のモードをそのまま使用
         selectedMode = lastTopMode;
       }
 
+      // stagingLevel が設定済みの問題はすべて日付フィルターから除外（Stagingへ移動扱い）
+      const stagedTitles = new Set([...quizHistoryMap.values()].filter(h => h.stagingLevel).map(h => h.title));
+
       if (selectedMode === 'random' || selectedMode === '') {
         // そのまま下のランダムロジックへ
 
-      } else if (selectedMode === 'today' || selectedMode === 'yesterday' || selectedMode === 'week') {
+      } else if (selectedMode === 'today' || selectedMode === 'yesterday' || selectedMode === 'week' || selectedMode === 'month') {
         // メモ一覧から選ぶ
         const filtered = headings.filter(h => {
           if (!h.date) { return false; }
+          if (stagedTitles.has(h.title)) { return false; } // staging済みは除外
           if (selectedMode === 'today') { return h.date === _todayStr; }
           if (selectedMode === 'yesterday') { return h.date === _yesterdayStr; }
+          if (selectedMode === 'month') { return h.date >= _monthAgoStr; }
           return h.date >= _weekAgoStr;
         });
         if (filtered.length === 0) {
@@ -2334,6 +2389,47 @@ async function handleQuiz(showFilterPick = false) {
             return;
           }
         }
+
+      } else if (selectedMode === 'staging1' || selectedMode === 'staging2' || selectedMode === 'staging3') {
+        // Stagingリストから選ぶ
+        const stagingLevelNum = selectedMode === 'staging1' ? 1 : selectedMode === 'staging2' ? 2 : 3;
+        const stagingTitles = new Set(
+          [...quizHistoryMap.entries()]
+            .filter(([_, h]) => h.stagingLevel === stagingLevelNum)
+            .map(([title]) => title)
+        );
+        const stagingFiltered = headings.filter(h => stagingTitles.has(h.title));
+
+        if (stagingFiltered.length === 0) {
+          const labels: Record<number, string> = { 1: '🧠 Staging 1（暗記すべきこと）', 2: '🔵 Staging 2（もう少しで）', 3: '⭐ Staging 3（完全に理解）' };
+          vscode.window.showInformationMessage(`${labels[stagingLevelNum]} にまだ項目がありません。`);
+          lastTopMode = '';
+          await handleQuiz(true);
+          return;
+        }
+
+        type StagingItem = vscode.QuickPickItem & { heading: typeof headings[0] };
+        const stagingItems: StagingItem[] = stagingFiltered.map(h => {
+          const hist = quizHistoryMap.get(h.title);
+          let mark = '';
+          if (hist?.lastAnsweredDate) {
+            const lastEval = hist.evaluations?.[hist.evaluations.length - 1];
+            mark = lastEval === 3 ? '✓ ' : '↺ ';
+          }
+          const displayLabel = hist?.questionText || h.title;
+          return {
+            label: mark + displayLabel,
+            description: `${h.date || ''}  ${h.category || ''}`,
+            heading: h,
+          };
+        });
+
+        const stagingPicked = await vscode.window.showQuickPick(stagingItems as vscode.QuickPickItem[], {
+          placeHolder: '出題する問題を選んでください',
+          matchOnDescription: true,
+        }) as StagingItem | undefined;
+        if (!stagingPicked) { return; }
+        preSelectedQuiz = stagingPicked.heading;
       }
     }
 
@@ -2746,6 +2842,18 @@ ${categoryList.join(' / ')}
             await addToMemorizeList();
             return;
           }
+          if (afterAnswerRepeat.action === 'staging1') {
+            await addToStaging(1);
+            return;
+          }
+          if (afterAnswerRepeat.action === 'staging2') {
+            await addToStaging(2);
+            return;
+          }
+          if (afterAnswerRepeat.action === 'staging3') {
+            await addToStaging(3);
+            return;
+          }
           if (afterAnswerRepeat.action === 'deepdive') {
             await generateDeepDiveQuestion();
             return;
@@ -3006,6 +3114,21 @@ vertical-align
 
       if (afterAnswer.action === 'memorize') {
         await addToMemorizeList();
+        return;
+      }
+
+      if (afterAnswer.action === 'staging1') {
+        await addToStaging(1);
+        return;
+      }
+
+      if (afterAnswer.action === 'staging2') {
+        await addToStaging(2);
+        return;
+      }
+
+      if (afterAnswer.action === 'staging3') {
+        await addToStaging(3);
         return;
       }
 
@@ -4355,6 +4478,28 @@ ${explanation}
         const word = document.getText(wordRange);
         const line = document.lineAt(position.line).text;
 
+        // @media ブロックの中かどうかをチェック
+        function isInsideMediaQuery(doc: vscode.TextDocument, pos: vscode.Position): boolean {
+          let depth = 0;
+          let inMedia = false;
+          for (let i = 0; i <= pos.line; i++) {
+            const l = doc.lineAt(i).text;
+            if (/@media\b/.test(l)) { inMedia = true; }
+            if (inMedia) {
+              for (const ch of l) {
+                if (ch === '{') { depth++; }
+                if (ch === '}') {
+                  depth--;
+                  if (depth <= 0) { inMedia = false; depth = 0; }
+                }
+              }
+            }
+          }
+          return inMedia;
+        }
+
+        if (!isInsideMediaQuery(document, position)) { return null; }
+
         // CSSプロパティかどうかをチェック（プロパティ名: 値 の形式）
         const propertyMatch = line.match(new RegExp(`(^|\\s|;)${word}\\s*:`));
         if (!propertyMatch) {
@@ -5278,9 +5423,9 @@ ${explanation}
   例: /* 復活させる */ /* height は削除 */ /* コメント外す */ /* space-between → center に変更 */ /* ここを追加 */ /* 削除した */
 - 変更履歴系: 「← 追加」「← 変更」「← 修正」等の矢印コメント
 - 指示・命令系: 「★ これを追加！」「// TODO」「// FIXME」等
-- 過剰説明系: 1行のCSSに3行以上のコメントがついている
+- 過剰説明系: AIが書いたような冗長な長文説明（「このプロパティは〜を実現します。また〜することで...」のような文体、または1つのプロパティに5行以上のコメント）
 - 日付コメント: /* 2024-01-01 */ 等
-良いコメントの基準: 「なぜこの値か」「なぜこのプロパティが必要か」を説明するもの。「何をしたか」を説明するものは全て削除推奨。
+良いコメントの基準（これらは指摘しない）: 「なぜこの値か」「なぜこのプロパティが必要か」「何をする設定か」を1〜2行で簡潔に説明するもの。例: /* opacity でふわっとさせるための設定 */ のような短い説明は問題なし。「何をしたか（作業記録）」を説明するものが削除推奨。
 
 ## ⑩ 日本語コメントの誤字・文法
 - 誤字脱字・助詞の誤りがないか
@@ -5464,6 +5609,32 @@ ${fullText}`;
     }
 
     let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview, isCodingChallenge } = result;
+
+    // isInlineReview + CSSファイルの場合、HTMLファイルを追加で選択させる
+    let reviewHtmlUri: vscode.Uri | null = null;
+    if (isInlineReview && editor.document.languageId === 'css') {
+      const htmlFiles = await vscode.workspace.findFiles('**/*.html', '{**/node_modules/**,**/.git/**}');
+      const htmlItems = htmlFiles.map(f => ({
+        label: vscode.workspace.asRelativePath(f),
+        description: f.fsPath,
+        uri: f
+      })).sort((a, b) => a.label.localeCompare(b.label));
+
+      const selectedHtml = await vscode.window.showQuickPick(
+        [{ label: '(スキップ)', description: 'HTMLなしでCSSのみレビュー', uri: null as any }, ...htmlItems],
+        { placeHolder: '一緒にレビューするHTMLファイルを選んでください（Escでスキップ）' }
+      );
+
+      if (selectedHtml && selectedHtml.label !== '(スキップ)' && selectedHtml.uri) {
+        reviewHtmlUri = selectedHtml.uri;
+        const htmlContent = fs.readFileSync(selectedHtml.uri.fsPath, 'utf8');
+        question = question
+          .replace('以下のCSSファイルをレビューしてください。', '以下のCSSファイルとHTMLファイルをレビューしてください。')
+          .replace('【ファイル内容】', '【CSSファイル内容】')
+          .replace('---\n【出力フォーマット】\n', '---\n【出力フォーマット】\n各指摘の先頭に【CSS】または【HTML】を付けて、どちらのファイルの問題かを明示してください。\n')
+          + `\n\n【HTMLファイル内容】\n${htmlContent}`;
+      }
+    }
 
     // ⚠ REVIEW: コメント一括削除（API呼び出し不要）
     if (isDeleteReview) {
@@ -6007,12 +6178,21 @@ ${fullText}`;
           const docText = editor.document.getText();
           const docLines = docText.split('\n');
 
+          // HTML ファイルの行データを用意（指定がある場合）
+          let htmlDocLines: string[] = [];
+          let htmlDoc: vscode.TextDocument | null = null;
+          if (reviewHtmlUri) {
+            htmlDoc = await vscode.workspace.openTextDocument(reviewHtmlUri);
+            htmlDocLines = htmlDoc.getText().split('\n');
+          }
+
           interface ReviewItem { code: string; comment: string; }
           const reviewItems: ReviewItem[] = [];
 
           for (let i = 0; i < responseLines.length; i++) {
             const line = responseLines[i];
-            if (!line.trim().startsWith('⚠')) { continue; }
+            // 【CSS】/【HTML】プレフィックスが付く場合も含めて ⚠ を検出
+            if (!line.includes('⚠') || !line.includes('`')) { continue; }
             const codeMatch = line.match(/`([^`]+)`/);
             if (!codeMatch) { continue; }
             const code = codeMatch[1].trim();
@@ -6034,16 +6214,31 @@ ${fullText}`;
             });
             await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
           } else {
-            const edits: { line: number; comment: string }[] = [];
+            const cssEdits: { line: number; comment: string }[] = [];
+            const htmlEdits: { line: number; comment: string }[] = [];
+
             for (const item of reviewItems) {
+              // まず CSS ファイルで検索
+              let foundInCss = false;
               for (let i = 0; i < docLines.length; i++) {
                 if (docLines[i].includes(item.code)) {
-                  edits.push({ line: i, comment: item.comment });
+                  cssEdits.push({ line: i, comment: item.comment });
+                  foundInCss = true;
                   break;
                 }
               }
+              // CSS で見つからなければ HTML ファイルで検索
+              if (!foundInCss && htmlDocLines.length > 0) {
+                for (let i = 0; i < htmlDocLines.length; i++) {
+                  if (htmlDocLines[i].includes(item.code)) {
+                    htmlEdits.push({ line: i, comment: item.comment });
+                    break;
+                  }
+                }
+              }
             }
-            if (edits.length === 0) {
+
+            if (cssEdits.length === 0 && htmlEdits.length === 0) {
               // マッチ失敗 → フォールバックで別タブ表示
               const doc = await vscode.workspace.openTextDocument({
                 content: `✨ レビュー結果\n${'='.repeat(40)}\n\n${cleanAnswer}`,
@@ -6051,19 +6246,40 @@ ${fullText}`;
               });
               await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
             } else {
-              edits.sort((a, b) => b.line - a.line); // 下から挿入（行番号ズレ防止）
-              await editor.edit(editBuilder => {
-                for (const edit of edits) {
-                  const lineText = editor.document.lineAt(edit.line).text;
+              // CSS ファイルへの挿入
+              if (cssEdits.length > 0) {
+                cssEdits.sort((a, b) => b.line - a.line);
+                await editor.edit(editBuilder => {
+                  for (const edit of cssEdits) {
+                    const lineText = editor.document.lineAt(edit.line).text;
+                    const indent = (lineText.match(/^(\s*)/) || ['', ''])[1];
+                    const pos = new vscode.Position(edit.line, 0);
+                    const commentLine = lang === 'html'
+                      ? `${indent}<!-- ⚠ REVIEW: ${edit.comment} -->\n`
+                      : `${indent}// ⚠ REVIEW: ${edit.comment}\n`;
+                    editBuilder.insert(pos, commentLine);
+                  }
+                });
+              }
+
+              // HTML ファイルへの挿入（WorkspaceEdit でフォーカスを変えずに挿入）
+              if (htmlDoc && htmlEdits.length > 0) {
+                htmlEdits.sort((a, b) => b.line - a.line);
+                const workspaceEdit = new vscode.WorkspaceEdit();
+                for (const edit of htmlEdits) {
+                  const lineText = htmlDoc.lineAt(edit.line).text;
                   const indent = (lineText.match(/^(\s*)/) || ['', ''])[1];
                   const pos = new vscode.Position(edit.line, 0);
-                  const commentLine = lang === 'html'
-                    ? `${indent}<!-- ⚠ REVIEW: ${edit.comment} -->\n`
-                    : `${indent}// ⚠ REVIEW: ${edit.comment}\n`;
-                  editBuilder.insert(pos, commentLine);
+                  workspaceEdit.insert(htmlDoc.uri, pos, `${indent}<!-- ⚠ REVIEW: ${edit.comment} -->\n`);
                 }
-              });
-              vscode.window.showInformationMessage(`✅ ${edits.length}件のレビューコメントを挿入しました`);
+                await vscode.workspace.applyEdit(workspaceEdit);
+              }
+
+              const total = cssEdits.length + htmlEdits.length;
+              const msg = htmlEdits.length > 0
+                ? `✅ ${total}件挿入（CSS: ${cssEdits.length}件 / HTML: ${htmlEdits.length}件）`
+                : `✅ ${cssEdits.length}件のレビューコメントを挿入しました`;
+              vscode.window.showInformationMessage(msg);
             }
           }
         } else if (showBeside) {
@@ -7776,46 +7992,62 @@ ${selectedText}
     )
   );
 
-  const cssDupDiag = vscode.languages.createDiagnosticCollection('cssDuplicate');
-  context.subscriptions.push(cssDupDiag);
+  const cssHintDecType = vscode.window.createTextEditorDecorationType({
+    after: { color: 'rgba(150, 150, 100, 0.85)', fontStyle: 'italic', margin: '0 0 0 1em' }
+  });
+  context.subscriptions.push(cssHintDecType);
+  const cssHintDecMap = new Map<string, vscode.DecorationOptions[]>();
+  let cssHintsEnabled = true;
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('cssToHtmlJumper.toggleCssHints', () => {
+      cssHintsEnabled = !cssHintsEnabled;
+      for (const editor of vscode.window.visibleTextEditors) {
+        if (editor.document.languageId === 'css') {
+          editor.setDecorations(cssHintDecType, cssHintsEnabled
+            ? (cssHintDecMap.get(editor.document.uri.toString()) ?? [])
+            : []
+          );
+        }
+      }
+      vscode.window.setStatusBarMessage(
+        cssHintsEnabled ? '$(eye) CSS ヒント: ON' : '$(eye-closed) CSS ヒント: OFF',
+        2000
+      );
+    })
+  );
 
   let cssDupTimer: ReturnType<typeof setTimeout> | undefined;
   function scheduleCssDupCheck(doc: vscode.TextDocument) {
     if (doc.languageId !== 'css') { return; }
     if (cssDupTimer) { clearTimeout(cssDupTimer); }
-    cssDupTimer = setTimeout(() => runCssDupCheck(doc, cssDupDiag), 800);
+    cssDupTimer = setTimeout(() => {
+      const decs = runCssDupCheck(doc);
+      cssHintDecMap.set(doc.uri.toString(), decs);
+      if (!cssHintsEnabled) { return; }
+      for (const editor of vscode.window.visibleTextEditors) {
+        if (editor.document.uri.toString() === doc.uri.toString()) {
+          editor.setDecorations(cssHintDecType, decs);
+        }
+      }
+    }, 800);
   }
 
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(scheduleCssDupCheck),
     vscode.workspace.onDidChangeTextDocument(e => scheduleCssDupCheck(e.document)),
-    vscode.workspace.onDidSaveTextDocument(scheduleCssDupCheck)
+    vscode.workspace.onDidSaveTextDocument(scheduleCssDupCheck),
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor && editor.document.languageId === 'css') {
+        editor.setDecorations(cssHintDecType, cssHintsEnabled
+          ? (cssHintDecMap.get(editor.document.uri.toString()) ?? [])
+          : []
+        );
+      }
+    })
   );
   if (vscode.window.activeTextEditor) {
     scheduleCssDupCheck(vscode.window.activeTextEditor.document);
-  }
-
-  // ========================================
-  // クラス不一致チェック（CSS → HTML/PHP）
-  // CSSに書いたセレクタがHTMLで使われていない場合に警告
-  // ========================================
-  const classMismatchDiag = vscode.languages.createDiagnosticCollection('classMismatch');
-  context.subscriptions.push(classMismatchDiag);
-
-  let classMismatchTimer: ReturnType<typeof setTimeout> | undefined;
-  function scheduleClassMismatchCheck(doc: vscode.TextDocument) {
-    if (doc.languageId !== 'css' && doc.languageId !== 'php') { return; }
-    if (classMismatchTimer) { clearTimeout(classMismatchTimer); }
-    classMismatchTimer = setTimeout(() => runClassMismatchCheck(doc, classMismatchDiag), 800);
-  }
-
-  context.subscriptions.push(
-    vscode.workspace.onDidOpenTextDocument(scheduleClassMismatchCheck),
-    vscode.workspace.onDidChangeTextDocument(e => scheduleClassMismatchCheck(e.document)),
-    vscode.workspace.onDidSaveTextDocument(scheduleClassMismatchCheck)
-  );
-  if (vscode.window.activeTextEditor) {
-    scheduleClassMismatchCheck(vscode.window.activeTextEditor.document);
   }
 
   // ========================================
@@ -7853,213 +8085,6 @@ function hasIgnoreComment(doc: vscode.TextDocument, offset: number): boolean {
   return doc.lineAt(pos.line - 1).text.includes('css-jumper-ignore');
 }
 
-// ========================================
-// クラス不一致チェック ヘルパー（CSS → HTML/PHP）
-// CSSのセレクタがHTML/PHPで使われているか確認
-// ========================================
-async function runClassMismatchCheck(
-  doc: vscode.TextDocument,
-  diagCollection: vscode.DiagnosticCollection
-) {
-  if (doc.languageId === 'css') {
-    await runCssToHtmlCheck(doc, diagCollection);
-  } else if (doc.languageId === 'php') {
-    await runPhpToCssCheck(doc, diagCollection);
-  }
-}
-
-// CSSファイル用：セレクタがHTML/PHPで使われているか確認
-async function runCssToHtmlCheck(
-  doc: vscode.TextDocument,
-  diagCollection: vscode.DiagnosticCollection
-) {
-  const cssText = doc.getText();
-  const cssFilePath = doc.uri.fsPath;
-  const diagnostics: vscode.Diagnostic[] = [];
-
-  const skipPatterns = /^(hover|focus|active|visited|first-child|last-child|nth-child|not|before|after|root|checked|disabled|placeholder|from|to|jpg|jpeg|png|gif|svg|webp|mp4|mp3|pdf|woff|woff2|ttf|eot)$/;
-  // url(...) の中身をあらかじめ除外するためにブランク化
-  const cssTextClean = cssText.replace(/url\([^)]*\)/gi, match => ' '.repeat(match.length));
-  const selRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
-  const cssClasses: { name: string; offset: number }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = selRegex.exec(cssTextClean)) !== null) {
-    const name = m[1];
-    if (skipPatterns.test(name)) { continue; }
-    cssClasses.push({ name, offset: m.index + 1 });
-  }
-
-  if (cssClasses.length === 0) { diagCollection.set(doc.uri, []); return; }
-
-  const usedClasses = await collectUsedClassesFromHtmlPhp(cssFilePath);
-  if (usedClasses.size === 0) { diagCollection.set(doc.uri, []); return; }
-
-  const warned = new Set<string>();
-  for (const { name, offset } of cssClasses) {
-    if (usedClasses.has(name) || warned.has(name)) { continue; }
-    if (hasIgnoreComment(doc, offset)) { warned.add(name); continue; }
-    warned.add(name);
-    const start = doc.positionAt(offset);
-    const end = doc.positionAt(offset + name.length);
-    const diag = new vscode.Diagnostic(
-      new vscode.Range(start, end),
-      `".${name}" はHTML/PHPで使われていません（タイポ？未使用？）`,
-      vscode.DiagnosticSeverity.Warning
-    );
-    diag.source = 'CSS Jumper';
-    diagnostics.push(diag);
-  }
-  diagCollection.set(doc.uri, diagnostics);
-}
-
-// PHPファイル用：class属性のクラスがCSSに定義されているか確認
-async function runPhpToCssCheck(
-  doc: vscode.TextDocument,
-  diagCollection: vscode.DiagnosticCollection
-) {
-  const text = doc.getText();
-  const diagnostics: vscode.Diagnostic[] = [];
-
-  // class="..." からクラス名と位置を収集（PHP動的クラスはスキップ）
-  const classAttrRegex = /class=["']([^"'>]*)["']/g;
-  const usedClasses: { name: string; offset: number }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = classAttrRegex.exec(text)) !== null) {
-    const val = m[1];
-    if (val.includes('<?')) { continue; }
-    const valStart = m.index + m[0].indexOf(val);
-    let pos = 0;
-    for (const cls of val.split(/\s+/).filter(Boolean)) {
-      const idx = val.indexOf(cls, pos);
-      usedClasses.push({ name: cls, offset: valStart + idx });
-      pos = idx + cls.length;
-    }
-  }
-
-  if (usedClasses.length === 0) { diagCollection.set(doc.uri, []); return; }
-
-  // CSSファイルからクラス定義を詳細収集（ファイル情報・media判定付き）
-  const definitions = await collectClassDefinitionsFromCss();
-  if (definitions.size === 0) { diagCollection.set(doc.uri, []); return; }
-
-  const warned = new Set<string>();
-  for (const { name, offset } of usedClasses) {
-    if (warned.has(name)) { continue; }
-    warned.add(name);
-
-    const defs = definitions.get(name);
-    const start = doc.positionAt(offset);
-    const end = doc.positionAt(offset + name.length);
-
-    if (!defs || defs.length === 0) {
-      // CSSに定義なし
-      const diag = new vscode.Diagnostic(
-        new vscode.Range(start, end),
-        `クラス "${name}" はCSSに定義されていません`,
-        vscode.DiagnosticSeverity.Warning
-      );
-      diag.source = 'CSS Jumper';
-      diagnostics.push(diag);
-    } else {
-      // 重複チェック：同じmedia条件（外 or 内）で複数ファイルに定義されているか
-      const nonMediaFiles = [...new Set(defs.filter(d => !d.isInMediaQuery).map(d => d.filePath))];
-      const mediaFiles    = [...new Set(defs.filter(d =>  d.isInMediaQuery).map(d => d.filePath))];
-
-      if (nonMediaFiles.length > 1) {
-        // 通常CSS（@media外）で複数ファイルに重複
-        const fileNames = [...new Set(defs.filter(d => !d.isInMediaQuery).map(d => d.fileName))].join(', ');
-        const diag = new vscode.Diagnostic(
-          new vscode.Range(start, end),
-          `"${name}" は複数のCSSファイルで定義されています（${fileNames}）`,
-          vscode.DiagnosticSeverity.Information
-        );
-        diag.source = 'CSS Jumper';
-        diagnostics.push(diag);
-      } else if (mediaFiles.length > 1) {
-        // @media内でも複数ファイルに重複
-        const fileNames = [...new Set(defs.filter(d => d.isInMediaQuery).map(d => d.fileName))].join(', ');
-        const diag = new vscode.Diagnostic(
-          new vscode.Range(start, end),
-          `"${name}" は複数のCSSファイルで定義されています（${fileNames}）`,
-          vscode.DiagnosticSeverity.Information
-        );
-        diag.source = 'CSS Jumper';
-        diagnostics.push(diag);
-      }
-    }
-  }
-  diagCollection.set(doc.uri, diagnostics);
-}
-
-// ワークスペースのHTML/PHPから使用クラスを収集
-async function collectUsedClassesFromHtmlPhp(cssFilePath?: string): Promise<Set<string>> {
-  const usedClasses = new Set<string>();
-  const scannedPaths = new Set<string>();
-
-  // ① CSSファイルの近くにあるHTML/PHPを優先検索（親フォルダ・3階層上まで）
-  if (cssFilePath) {
-    let dir = path.dirname(cssFilePath);
-    for (let i = 0; i < 4; i++) {
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isFile()) { continue; }
-          if (!/\.(html|php)$/i.test(entry.name)) { continue; }
-          const filePath = path.join(dir, entry.name);
-          if (scannedPaths.has(filePath)) { continue; }
-          scannedPaths.add(filePath);
-          try {
-            const content = fs.readFileSync(filePath, 'utf-8');
-            const classAttrRegex = /class=["']([^"'>]*)["']/g;
-            let hm: RegExpExecArray | null;
-            while ((hm = classAttrRegex.exec(content)) !== null) {
-              const val = hm[1];
-              if (val.includes('<?')) { continue; }
-              for (const cls of val.split(/\s+/).filter(Boolean)) { usedClasses.add(cls); }
-            }
-          } catch { /* ignore */ }
-        }
-      } catch { /* ignore */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) { break; } // ドライブルートに達した
-      dir = parent;
-    }
-  }
-
-  // ② ワークスペース全体も検索（補完）
-  const htmlFiles = await vscode.workspace.findFiles('**/*.{html,php}', '**/node_modules/**', 50);
-  for (const fileUri of htmlFiles) {
-    if (scannedPaths.has(fileUri.fsPath)) { continue; } // ①で読み込み済みはスキップ
-    try {
-      const content = fs.readFileSync(fileUri.fsPath, 'utf-8');
-      const classAttrRegex = /class=["']([^"'>]*)["']/g;
-      let hm: RegExpExecArray | null;
-      while ((hm = classAttrRegex.exec(content)) !== null) {
-        const val = hm[1];
-        if (val.includes('<?')) { continue; }
-        for (const cls of val.split(/\s+/).filter(Boolean)) { usedClasses.add(cls); }
-      }
-    } catch { /* ignore */ }
-  }
-
-  // JSファイルから動的クラス操作を収集
-  // classList.add/remove/toggle/replace, className, addClass, $('...') など
-  const jsFiles = await vscode.workspace.findFiles('**/*.{js,ts}', '**/node_modules/**', 30);
-  const jsClassRegex = /classList\.\w+\(['"]([^'"]+)['"]\)|className\s*[=+]+\s*['"]([^'"]+)['"]|addClass\(['"]([^'"]+)['"]\)|removeClass\(['"]([^'"]+)['"]\)|toggleClass\(['"]([^'"]+)['"]\)/g;
-  for (const fileUri of jsFiles) {
-    try {
-      const content = fs.readFileSync(fileUri.fsPath, 'utf-8');
-      let jm: RegExpExecArray | null;
-      while ((jm = jsClassRegex.exec(content)) !== null) {
-        const val = jm[1] || jm[2] || jm[3] || jm[4] || jm[5] || '';
-        for (const cls of val.split(/\s+/).filter(Boolean)) { usedClasses.add(cls); }
-      }
-    } catch { /* ignore */ }
-  }
-
-  return usedClasses;
-}
-
 // ワークスペースのCSSから定義済みクラスを収集
 async function collectDefinedClassesFromCss(): Promise<Set<string>> {
   const defined = new Set<string>();
@@ -8077,68 +8102,12 @@ async function collectDefinedClassesFromCss(): Promise<Set<string>> {
   return defined;
 }
 
-// クラス定義情報（ファイル名・メディアクエリ内かどうか）
-interface ClassDefinition {
-  fileName: string;
-  filePath: string;
-  isInMediaQuery: boolean;
-}
-
-// ワークスペースのCSSからクラス定義を詳細収集（ファイル情報・media判定付き）
-async function collectClassDefinitionsFromCss(): Promise<Map<string, ClassDefinition[]>> {
-  const definitions = new Map<string, ClassDefinition[]>();
-  const cssFiles = await vscode.workspace.findFiles('**/*.css', '**/node_modules/**', 20);
-
-  for (const fileUri of cssFiles) {
-    try {
-      const css = fs.readFileSync(fileUri.fsPath, 'utf-8');
-      const cssNoComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
-      const fileName = path.basename(fileUri.fsPath);
-      const lines = cssNoComments.split('\n');
-
-      let braceDepth = 0;
-      const mediaStack: number[] = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const openBraces = (line.match(/{/g) || []).length;
-        const closeBraces = (line.match(/}/g) || []).length;
-
-        if (/@media\s/.test(line)) { mediaStack.push(braceDepth); }
-        braceDepth += openBraces;
-
-        const isInMediaQuery = mediaStack.length > 0 && braceDepth > mediaStack[mediaStack.length - 1];
-
-        const selRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
-        let sm: RegExpExecArray | null;
-        while ((sm = selRegex.exec(line)) !== null) {
-          const className = sm[1];
-          if (!definitions.has(className)) { definitions.set(className, []); }
-          const existing = definitions.get(className)!;
-          // 同じファイル・同じmedia条件の組み合わせは1件だけ記録
-          const alreadyExists = existing.some(d => d.filePath === fileUri.fsPath && d.isInMediaQuery === isInMediaQuery);
-          if (!alreadyExists) {
-            existing.push({ fileName, filePath: fileUri.fsPath, isInMediaQuery });
-          }
-        }
-
-        braceDepth -= closeBraces;
-        while (mediaStack.length > 0 && braceDepth <= mediaStack[mediaStack.length - 1]) {
-          mediaStack.pop();
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  return definitions;
-}
-
 // ========================================
 // CSS品質チェック ヘルパー
 // ========================================
-function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.DiagnosticCollection) {
+function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
   const text = doc.getText();
-  const diagnostics: vscode.Diagnostic[] = [];
+  const decorations: vscode.DecorationOptions[] = [];
 
   // shorthand → longhand の上書き対応表
   const shorthandMap: Record<string, string[]> = {
@@ -8195,13 +8164,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
         // 前の定義に警告
         const prevStart = doc.positionAt(prev.offset);
         const prevEnd = doc.positionAt(prev.offset + propName.length);
-        const diag = new vscode.Diagnostic(
-          new vscode.Range(prevStart, prevEnd),
-          `"${propName}" が同じルール内で重複しています（後の "${propValue}" が有効）`,
-          vscode.DiagnosticSeverity.Warning
-        );
-        diag.source = 'CSS Jumper';
-        diagnostics.push(diag);
+        decorations.push({
+          range: new vscode.Range(prevStart, prevEnd),
+          renderOptions: { after: { contentText: `  ⚠ "${propName}" が同じルール内で重複しています（後の "${propValue}" が有効）` } }
+        });
       }
       seen.set(propName, { value: propValue, line: doc.positionAt(offset).line, offset });
     }
@@ -8217,13 +8183,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
         if (longInfo.offset < shortInfo.offset) {
           const start = doc.positionAt(longInfo.offset);
           const end = doc.positionAt(longInfo.offset + longhand.length);
-          const diag = new vscode.Diagnostic(
-            new vscode.Range(start, end),
-            `"${longhand}" は後の "${shorthand}" に上書きされます`,
-            vscode.DiagnosticSeverity.Warning
-          );
-          diag.source = 'CSS Jumper';
-          diagnostics.push(diag);
+          decorations.push({
+            range: new vscode.Range(start, end),
+            renderOptions: { after: { contentText: `  ⚠ "${longhand}" は後の "${shorthand}" に上書きされます` } }
+          });
         }
       }
     }
@@ -8244,13 +8207,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
     const start = doc.positionAt(first.offset);
     const end = doc.positionAt(first.offset + sel.length);
     const lines = locations.map(l => `行${l.line + 1}`).join(', ');
-    const diag = new vscode.Diagnostic(
-      new vscode.Range(start, end),
-      `"${sel}" が${locations.length}箇所に定義されています（${lines}）。まとめられます`,
-      vscode.DiagnosticSeverity.Information
-    );
-    diag.source = 'CSS Jumper';
-    diagnostics.push(diag);
+    decorations.push({
+      range: new vscode.Range(start, end),
+      renderOptions: { after: { contentText: `  [参考] "${sel}" が${locations.length}箇所に定義されています（${lines}）。まとめられます` } }
+    });
   }
 
   // ④ 同じプロパティセットを持つセレクタのマージ提案
@@ -8273,13 +8233,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
       const start = doc.positionAt(rule.selectorOffset);
       const end = doc.positionAt(rule.selectorOffset + rule.selector.length);
       const others = selectors.filter(s => s !== rule.selector).join(', ');
-      const diag = new vscode.Diagnostic(
-        new vscode.Range(start, end),
-        `[参考] "${rule.selector}" は "${others}" と同じプロパティです。まとめられます`,
-        vscode.DiagnosticSeverity.Information
-      );
-      diag.source = 'CSS Jumper';
-      diagnostics.push(diag);
+      decorations.push({
+        range: new vscode.Range(start, end),
+        renderOptions: { after: { contentText: `  [参考] "${rule.selector}" は "${others}" と同じプロパティです。まとめられます` } }
+      });
     }
   }
 
@@ -8298,13 +8255,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
       const info = props.get('z-index')!;
       const start = doc.positionAt(info.offset);
       const end = doc.positionAt(info.offset + 'z-index'.length);
-      const diag = new vscode.Diagnostic(
-        new vscode.Range(start, end),
-        `"z-index" は "position: static"（デフォルト）のままでは効きません。position: relative/absolute/fixed のいずれかが必要です`,
-        vscode.DiagnosticSeverity.Warning
-      );
-      diag.source = 'CSS Jumper';
-      diagnostics.push(diag);
+      decorations.push({
+        range: new vscode.Range(start, end),
+        renderOptions: { after: { contentText: `  ⚠ "z-index" は "position: static"（デフォルト）のままでは効きません。position: relative/absolute/fixed のいずれかが必要です` } }
+      });
     }
 
     // position: absolute/fixed/sticky には座標が必要
@@ -8318,13 +8272,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
         const missing = [];
         if (!hasAxisY) { missing.push('top か bottom'); }
         if (!hasAxisX) { missing.push('left か right'); }
-        const diag = new vscode.Diagnostic(
-          new vscode.Range(start, end),
-          `"position: ${positionValue}" には ${missing.join(' と ')} も必要です`,
-          vscode.DiagnosticSeverity.Information
-        );
-        diag.source = 'CSS Jumper';
-        diagnostics.push(diag);
+        decorations.push({
+          range: new vscode.Range(start, end),
+          renderOptions: { after: { contentText: `  "position: ${positionValue}" には ${missing.join(' と ')} も必要です` } }
+        });
       }
     }
 
@@ -8336,13 +8287,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
         const info = props.get('display')!;
         const start = doc.positionAt(info.offset);
         const end = doc.positionAt(info.offset + 'display'.length);
-        const diag = new vscode.Diagnostic(
-          new vscode.Range(start, end),
-          `"display: grid" には "grid-template-columns" か "grid-template-rows" が必要です`,
-          vscode.DiagnosticSeverity.Information
-        );
-        diag.source = 'CSS Jumper';
-        diagnostics.push(diag);
+        decorations.push({
+          range: new vscode.Range(start, end),
+          renderOptions: { after: { contentText: `  "display: grid" には "grid-template-columns" か "grid-template-rows" が必要です` } }
+        });
       }
     }
   }
@@ -8366,13 +8314,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
     const offset = pxOffsets[0];
     const start = doc.positionAt(offset);
     const end = doc.positionAt(offset + 2);
-    const diag = new vscode.Diagnostic(
-      new vscode.Range(start, end),
-      `px と rem が混在しています（${pxOffsets.length}箇所px / ${remOffsets.length}箇所rem）。どちらかに統一すると管理しやすくなります`,
-      vscode.DiagnosticSeverity.Information
-    );
-    diag.source = 'CSS Jumper';
-    diagnostics.push(diag);
+    decorations.push({
+      range: new vscode.Range(start, end),
+      renderOptions: { after: { contentText: `  [参考] px と rem が混在しています（${pxOffsets.length}箇所px / ${remOffsets.length}箇所rem）。どちらかに統一すると管理しやすくなります` } }
+    });
   }
 
   // ⑦ CSS変数（var(--xxx)）の未定義チェック
@@ -8389,13 +8334,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
     const offset = vu.index + 4; // "var(" の後
     const start = doc.positionAt(offset);
     const end = doc.positionAt(offset + varName.length);
-    const diag = new vscode.Diagnostic(
-      new vscode.Range(start, end),
-      `CSS変数 "${varName}" が定義されていません（:root に定義が必要です）`,
-      vscode.DiagnosticSeverity.Warning
-    );
-    diag.source = 'CSS Jumper';
-    diagnostics.push(diag);
+    decorations.push({
+      range: new vscode.Range(start, end),
+      renderOptions: { after: { contentText: `  ⚠ CSS変数 "${varName}" が定義されていません（:root に定義が必要です）` } }
+    });
   }
 
   // ⑦ 画像パスの存在チェック（url(...)）
@@ -8410,13 +8352,10 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
       const offset = um.index + um[0].indexOf(um[1]);
       const start = doc.positionAt(offset);
       const end = doc.positionAt(offset + imgPath.length);
-      const diag = new vscode.Diagnostic(
-        new vscode.Range(start, end),
-        `画像ファイルが見つかりません: "${imgPath}"`,
-        vscode.DiagnosticSeverity.Warning
-      );
-      diag.source = 'CSS Jumper';
-      diagnostics.push(diag);
+      decorations.push({
+        range: new vscode.Range(start, end),
+        renderOptions: { after: { contentText: `  ⚠ 画像ファイルが見つかりません: "${imgPath}"` } }
+      });
     }
   }
 
@@ -8464,18 +8403,15 @@ function runCssDupCheck(doc: vscode.TextDocument, diagCollection: vscode.Diagnos
       if (normalValue !== undefined && normalValue === propInfo.value) {
         const start = doc.positionAt(propInfo.offset);
         const end = doc.positionAt(propInfo.offset + propName.length);
-        const diag = new vscode.Diagnostic(
-          new vscode.Range(start, end),
-          `"${propName}: ${propInfo.value}" は通常ルールと同じ値です。@media内では不要な可能性があります`,
-          vscode.DiagnosticSeverity.Information
-        );
-        diag.source = 'CSS Jumper';
-        diagnostics.push(diag);
+        decorations.push({
+          range: new vscode.Range(start, end),
+          renderOptions: { after: { contentText: `  "${propName}: ${propInfo.value}" は通常ルールと同じ値です。@media内では不要な可能性があります` } }
+        });
       }
     }
   }
 
-  diagCollection.set(doc.uri, diagnostics);
+  return decorations;
 }
 
 // ========================================

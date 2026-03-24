@@ -30,6 +30,11 @@
     ],
     "commands": [
       {
+        "command": "cssToHtmlJumper.toggleCssHints",
+        "title": "CSS ヒント表示をトグル（ON/OFF）",
+        "category": "CSS to HTML"
+      },
+      {
         "command": "cssToHtmlJumper.findUsage",
         "title": "HTMLで使用箇所を検索",
         "category": "CSS to HTML"
@@ -147,6 +152,11 @@
       ]
     },
     "keybindings": [
+      {
+        "command": "cssToHtmlJumper.toggleCssHints",
+        "key": "ctrl+shift+s",
+        "when": "editorLangId == css"
+      },
       {
         "command": "cssToHtmlJumper.showPhpDoc",
         "key": "ctrl+shift+j",

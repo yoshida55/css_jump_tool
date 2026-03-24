@@ -263,6 +263,7 @@ code --install-extension css-to-html-jumper-1.10.0.vsix --force
 | Alt+Click          | CSSセレクタ→HTML                                 | Definition Provider                                                                                |
 | ブラウザハイライト | CSS/HTMLでセレクタ選択                           | ブラウザで該当要素をハイライト（3秒後自動消去）                                                    |
 | **HTMLハイライト** | **Chrome拡張からのジャンプ時**                   | **VS CodeでHTML該当行を黄色ハイライト（3秒）**                                                     |
+| **CSSヒントトグル** | **`Ctrl+Shift+S`（CSSファイル）**               | **@media重複・プロパティ重複等のヒント表示ON/OFF。編集中に邪魔なとき使う**                         |
 | SVGリンク挿入      | `Ctrl+Alt+S`                                     | AHK保存済みSVGへの相対パスリンクをmdに挿入                                                         |
 | **🤖 AI Hover**    | **JS/TSの関数名にホバー**                        | **Gemini 2.5 Flashがファイル解析→意図・入出力・フローをツールチップ表示（2重キャッシュ）**         |
 | **🎇 JS Overview** | **JS/TSを右クリック→「JS Overview を自動生成」** | **Gemini 2.5 Flashがコード構造を解析→`*_overview.html`を生成、ハッシュ変化をステータスバーで通知** |
