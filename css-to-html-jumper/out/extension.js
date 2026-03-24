@@ -5,6 +5,7 @@ exports.deactivate = deactivate;
 const vscode = require("vscode");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const http = require("http");
 const https = require("https");
 const cssProperties_1 = require("./cssProperties");
@@ -5131,8 +5132,11 @@ ${fullText}`;
                         vscode.window.showErrorMessage('問題の生成に失敗しました');
                         return;
                     }
-                    const doc = await vscode.workspace.openTextDocument({ content: htmlContent, language: 'html' });
+                    const tmpPath = path.join(os.tmpdir(), 'css_challenge.html');
+                    fs.writeFileSync(tmpPath, htmlContent, 'utf8');
+                    const doc = await vscode.workspace.openTextDocument(tmpPath);
                     await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+                    await vscode.env.openExternal(vscode.Uri.file(tmpPath));
                 }
                 catch (e) {
                     vscode.window.showErrorMessage(`問題生成エラー: ${e.message}`);

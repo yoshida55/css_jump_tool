@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
+import * as os from 'os';
 import { cssProperties, analyzeValue } from './cssProperties';
 import { jsMethods } from './jsProperties';
 import { registerAiHoverProvider } from './aiHoverProvider';
@@ -96,6 +97,7 @@ interface QuizHistory {
   aiCategory?: string;     // Geminiが判定したカテゴリ
   hiddenFromList?: boolean; // リスト一覧から非表示（ランダム出題には影響しない）
   lastAnsweredDate?: string; // 最後に回答した日付（YYYY-MM-DD）✓マーク用
+  geminiAnswer?: string;     // Geminiが生成した回答（Webview再表示用）
 }
 
 let quizHistoryMap: Map<string, QuizHistory> = new Map();
@@ -1777,6 +1779,213 @@ ${titleList}
   }
 }
 
+// ========================================
+// クイズ Webview パネル
+// ========================================
+let quizWebviewPanel: vscode.WebviewPanel | undefined;
+let quizWebviewResolve: ((action: string) => void) | undefined;
+
+function mapWebviewChoice(choice: string): { eval?: number; action?: string } | null {
+  switch (choice) {
+    case 'easy':     return { eval: 3 };
+    case 'normal':   return { eval: 2 };
+    case 'hard':     return { eval: 1 };
+    case 'memorize': return { action: 'memorize' };
+    case 'deepdive': return { action: 'deepdive' };
+    case 'correct':  return { action: 'correct' };
+    case 'exit':     return { action: 'exit' };
+    default:         return null;
+  }
+}
+
+function getQuizWebviewHtml(question: string, rawAnswer: string, category: string, isRepeat: boolean): string {
+  // マークダウン → HTML 簡易変換
+  function renderAnswer(text: string): string {
+    const parts = text.split(/(```[\w]*\n[\s\S]*?```)/g);
+    return parts.map((part, idx) => {
+      if (idx % 2 === 1) {
+        const m = part.match(/```(\w*)\n([\s\S]*?)```/);
+        if (m) {
+          const code = m[2].replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return `<pre><code>${code}</code></pre>`;
+        }
+      }
+      const html = part
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/`([^`\n]+)`/g, '<code class="inline">$1</code>');
+      return `<span class="text-part">${html}</span>`;
+    }).join('');
+  }
+
+  const answerHtml = renderAnswer(rawAnswer);
+  const repeatBadge = isRepeat ? '<span class="badge badge-repeat">復習</span>' : '<span class="badge badge-first">初回</span>';
+
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--vscode-font-family, sans-serif);
+    font-size: 14px;
+    color: var(--vscode-foreground);
+    background: var(--vscode-editor-background);
+    padding: 20px;
+    max-width: 900px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .category {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+  }
+  .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: bold;
+  }
+  .badge-first  { background: #1a6b3a; color: #cfffdf; }
+  .badge-repeat { background: #2c4a8a; color: #cce0ff; }
+  .question {
+    font-size: 18px;
+    font-weight: bold;
+    padding: 14px 18px;
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    border-left: 4px solid var(--vscode-focusBorder, #007acc);
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 20px;
+  }
+  .answer-box {
+    background: var(--vscode-editorWidget-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, #444);
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 20px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .answer-box .text-part { white-space: pre-wrap; }
+  pre {
+    background: var(--vscode-textCodeBlock-background, #0a0a0a);
+    border-radius: 4px;
+    padding: 12px;
+    overflow-x: auto;
+    margin: 8px 0;
+    white-space: pre;
+  }
+  code { font-family: var(--vscode-editor-font-family, monospace); font-size: 13px; }
+  code.inline {
+    background: var(--vscode-textCodeBlock-background, #0a0a0a);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  strong { font-weight: bold; color: var(--vscode-charts-yellow, #daa520); }
+  .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 6px;
+  }
+  .eval-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: filter 0.15s;
+  }
+  button:hover { filter: brightness(1.2); }
+  .btn-easy   { background: #1a5c1a; color: #ccffcc; }
+  .btn-normal { background: #5a4a00; color: #fff3cc; }
+  .btn-hard   { background: #6a1a1a; color: #ffcccc; }
+  .btn-special {
+    background: var(--vscode-button-secondaryBackground, #3c3c3c);
+    color: var(--vscode-button-secondaryForeground, #ccc);
+  }
+  .divider { border: none; border-top: 1px solid var(--vscode-panel-border, #444); margin: 14px 0; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <span class="category">📂 ${category}</span>
+    ${repeatBadge}
+  </div>
+  <div class="question">🎯 ${question.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+  <div class="section-label">📝 答え</div>
+  <div class="answer-box">${answerHtml}</div>
+  <hr class="divider">
+  <div class="section-label">理解度を評価してください</div>
+  <div class="eval-buttons">
+    <button class="btn-easy"   onclick="send('easy')">😊 簡単</button>
+    <button class="btn-normal" onclick="send('normal')">😐 普通</button>
+    <button class="btn-hard"   onclick="send('hard')">😓 難しい</button>
+  </div>
+  <div class="eval-buttons">
+    <button class="btn-special" onclick="send('memorize')">🟢 暗記リストに追加</button>
+    <button class="btn-special" onclick="send('deepdive')">🔍 深掘り質問</button>
+    <button class="btn-special" onclick="send('exit')">✅ 終了</button>
+  </div>
+<script>
+  const vscode = acquireVsCodeApi();
+  function send(action) { vscode.postMessage({ action }); }
+</script>
+</body>
+</html>`;
+}
+
+function showQuizAnswerWebview(question: string, answer: string, category: string, isRepeat: boolean): Promise<string> {
+  return new Promise((resolve) => {
+    quizWebviewResolve = resolve;
+
+    if (!quizWebviewPanel) {
+      quizWebviewPanel = vscode.window.createWebviewPanel(
+        'quizAnswer',
+        '🎯 クイズ回答',
+        { viewColumn: vscode.ViewColumn.Two, preserveFocus: true },
+        { enableScripts: true, retainContextWhenHidden: true }
+      );
+
+      quizWebviewPanel.webview.onDidReceiveMessage(message => {
+        if (quizWebviewResolve) {
+          const cb = quizWebviewResolve;
+          quizWebviewResolve = undefined;
+          cb(message.action);
+        }
+      });
+
+      quizWebviewPanel.onDidDispose(() => {
+        quizWebviewPanel = undefined;
+        if (quizWebviewResolve) {
+          const cb = quizWebviewResolve;
+          quizWebviewResolve = undefined;
+          cb('exit');
+        }
+      });
+    }
+
+    quizWebviewPanel.webview.html = getQuizWebviewHtml(question, answer, category, isRepeat);
+    quizWebviewPanel.reveal(vscode.ViewColumn.Two, true);
+  });
+}
+
 /**
  * クイズのメイン処理
  * @param showFilterPick trueのときフィルタQuickPickを表示（デフォルトfalse）
@@ -2486,110 +2695,8 @@ ${categoryList.join(' / ')}
           console.log('[Quiz][DEBUG] ジャンプ検索:', { questionText, jumpLine });
 
 
-          const existingTab = vscode.window.tabGroups.all
-            .flatMap(group => group.tabs)
-            .find(tab =>
-              tab.input instanceof vscode.TabInputText &&
-              tab.input.uri.fsPath === answerFilePath
-            );
-          const targetViewColumn = existingTab ? existingTab.group.viewColumn : vscode.ViewColumn.Two;
-
-          const answerEditor = await vscode.window.showTextDocument(quizAnswerDoc, {
-            viewColumn: targetViewColumn,
-            preview: false,
-            preserveFocus: false
-          });
-
-          if (jumpLine !== -1) {
-            // questionText でヒット → 直接ジャンプ
-            const jumpPosition = new vscode.Position(jumpLine, 0);
-            answerEditor.selection = new vscode.Selection(jumpPosition, jumpPosition);
-            
-            // 少し上に余裕を持たせてスクロール（見出しが見えるように）
-            const revealPos = new vscode.Position(Math.max(0, jumpLine - 2), 0);
-            answerEditor.revealRange(new vscode.Range(revealPos, revealPos), vscode.TextEditorRevealType.AtTop);
-            
-            const jumpDecorationType = vscode.window.createTextEditorDecorationType({
-              backgroundColor: 'rgba(255, 255, 0, 0.4)',
-              isWholeLine: true
-            });
-            // 当該行から5行下をハイライト（isWholeLine:true で範囲が空でも確実に表示）
-            const endLine = Math.min(quizAnswerDoc.lineCount - 1, jumpLine + 5);
-            answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(jumpLine, 0, endLine + 1, 0)]);
-            setTimeout(() => jumpDecorationType.dispose(), 3000); // 3秒間に延長
-            console.log(`[Quiz][DEBUG] 既存回答にジャンプしました: L${jumpLine}`);
-          } else {
-            // questionTextの完全一致で見つからなかった場合のフォールバック検索
-            console.log('[Quiz] jumpLine=-1 → title等のキーワードでファイル内を検索します');
-            let foundLine = -1;
-            
-            // 検索用のキーワードを作成（短い単語や記号を除去したクエリ）
-            // questionTextがある場合はそれをベースに、ない場合はtitleをベースにする
-            const baseText = questionText || quiz.title;
-            const searchWords = baseText.split(/[\s　、。！？\?()（）]/).filter(w => w.length > 2);
-            if (searchWords.length === 0) searchWords.push(baseText); // 短い単語しかない場合のフォールバック
-            
-            // "**Q:" で始まる行の中から、キーワードを最も多く含む行を探す
-            let bestMatchScore = 0;
-            for (let i = 0; i < lines.length; i++) {
-              if (lines[i].startsWith('**Q:')) {
-                const qText = lines[i].toLowerCase();
-                let score = 0;
-                // キーワードの一致数でスコア化
-                for (const word of searchWords) {
-                  if (qText.includes(word.toLowerCase())) {
-                    score += 10;
-                  }
-                }
-                
-                if (score > bestMatchScore && score > 0) {
-                  bestMatchScore = score;
-                  foundLine = i;
-                }
-              }
-            }
-
-            if (foundLine !== -1) {
-              console.log(`[Quiz] キーワード検索でマッチしました: L${foundLine} (スコア: ${bestMatchScore})`);
-              const jumpPosition = new vscode.Position(foundLine, 0);
-              answerEditor.selection = new vscode.Selection(jumpPosition, jumpPosition);
-              answerEditor.revealRange(new vscode.Range(jumpPosition, jumpPosition), vscode.TextEditorRevealType.InCenter);
-              const jumpDecorationType = vscode.window.createTextEditorDecorationType({
-                backgroundColor: 'rgba(255, 255, 0, 0.3)'
-              });
-              answerEditor.setDecorations(jumpDecorationType, [new vscode.Range(foundLine, 0, foundLine + 5, 0)]);
-              setTimeout(() => jumpDecorationType.dispose(), 1500);
-
-              // 検索して見つかった実際の問題文で履歴を更新しておく（次回から即座にヒットさせるため）
-              const matchQ = lines[foundLine].match(/^\*\*Q:\s*(.*?)\s*\*\*$/);
-              if (matchQ && matchQ[1]) {
-                const historyForQ = quizHistoryMap.get(quiz.title);
-                if (historyForQ) {
-                  historyForQ.questionText = matchQ[1];
-                  saveQuizHistory();
-                  console.log(`[Quiz] 履歴のquestionTextを補完・更新しました: ${matchQ[1]}`);
-                }
-              }
-
-            } else {
-              // それでも見つからない場合の最終手段 (VS Codeの検索機能)
-              console.log('[Quiz] キーワード検索でも見つからず → findWithArgs で自動検索:', quiz.title);
-              const searchKeyword = searchWords[0] || quiz.title.substring(0, 15);
-              await vscode.commands.executeCommand('editor.actions.findWithArgs', {
-                searchString: searchKeyword,
-                isRegex: false,
-                isCaseSensitive: false
-              });
-              // findWithArgs はデコレーションを使わないため、ファイル末尾を黄色ハイライトしてガイド
-              const lastVisibleLine = Math.max(0, quizAnswerDoc.lineCount - 1);
-              const fallbackDecorationType = vscode.window.createTextEditorDecorationType({
-                backgroundColor: 'rgba(255, 165, 0, 0.3)', // オレンジ（見つからなかった時）
-                isWholeLine: true
-              });
-              answerEditor.setDecorations(fallbackDecorationType, [new vscode.Range(lastVisibleLine, 0, lastVisibleLine, 0)]);
-              setTimeout(() => fallbackDecorationType.dispose(), 3000);
-            }
-          }
+          // 2回目以降: 保存済み回答をWebviewで表示
+          const storedAnswer = quizHistoryMap.get(quiz.title)?.geminiAnswer || answerContent;
 
           pendingQuizEvaluation = {
             quiz: quiz,
@@ -2600,8 +2707,9 @@ ${categoryList.join(' / ')}
             fromList: !!preSelectedQuiz,
           };
 
-          // 評価（2回目以降：文言を変える・削除しない）
-          const afterAnswerRepeat = await showEvaluationQuickPick(false, true);
+          // Webviewで回答表示・評価選択
+          const webviewChoiceRepeat = await showQuizAnswerWebview(questionText, storedAnswer, quiz.category || 'その他', true);
+          const afterAnswerRepeat = mapWebviewChoice(webviewChoiceRepeat);
           if (!afterAnswerRepeat) {
             showEvaluationStatusBar();
             return;
@@ -2800,46 +2908,6 @@ vertical-align
       await quizAnswerDoc.save();
       console.log('[Quiz] クイズ回答.md に保存完了');
 
-      // 既存タブを探す
-      const existingTab = vscode.window.tabGroups.all
-        .flatMap(group => group.tabs)
-        .find(tab =>
-          tab.input instanceof vscode.TabInputText &&
-          tab.input.uri.fsPath === answerFilePath
-        );
-
-      console.log('[Quiz] 既存タブ検索:', existingTab ? `見つかった (viewColumn: ${existingTab.group.viewColumn})` : '見つからない');
-      console.log('[Quiz] answerFilePath:', answerFilePath);
-
-      // 右エリアに表示（既存タブがあればそれを使う）
-      console.log('[Quiz] 回答ドキュメントを右エリアに表示...');
-      const targetViewColumn = existingTab ? existingTab.group.viewColumn : vscode.ViewColumn.Two;
-      console.log('[Quiz] 使用するviewColumn:', targetViewColumn, existingTab ? '(既存タブ)' : '(新規:固定右エリア)');
-
-      const answerEditor = await vscode.window.showTextDocument(quizAnswerDoc, {
-        viewColumn: targetViewColumn,
-        preview: false,
-        preserveFocus: false
-      });
-      console.log('[Quiz] 回答表示完了');
-
-      // 最新Q&Aに自動スクロール
-      const lastLine = quizAnswerDoc.lineCount - 1;
-      const lastPosition = new vscode.Position(lastLine, 0);
-      answerEditor.selection = new vscode.Selection(lastPosition, lastPosition);
-      answerEditor.revealRange(new vscode.Range(lastLine, 0, lastLine, 0), vscode.TextEditorRevealType.InCenter);
-
-      // 新しく追加された回答範囲をハイライト（1.5秒）
-      const highlightRange = new vscode.Range(
-        new vscode.Position(newAnswerStartLine, 0),
-        new vscode.Position(quizAnswerDoc.lineCount - 1, 0)
-      );
-      const answerDecorationType = vscode.window.createTextEditorDecorationType({
-        backgroundColor: 'rgba(255, 255, 0, 0.3)'
-      });
-      answerEditor.setDecorations(answerDecorationType, [highlightRange]);
-      setTimeout(() => answerDecorationType.dispose(), 1500);
-
       // 評価待ちデータを保存
       pendingQuizEvaluation = {
         quiz: quiz,
@@ -2850,18 +2918,20 @@ vertical-align
         fromList: !!preSelectedQuiz,
       };
 
-      // questionText を履歴に保存（次回の重複検出用）
+      // questionText + geminiAnswer を履歴に保存
       const historyForQ = quizHistoryMap.get(quiz.title);
       if (historyForQ) {
         historyForQ.questionText = questionText;
+        historyForQ.geminiAnswer = claudeAnswer;
         saveQuizHistory();
       }
 
       // ファクトチェックエラー検出
       const hasFactCheckError = claudeAnswer.includes('⚠ ファクトチェック');
 
-      // 答え確認後の評価選択
-      const afterAnswer = await showEvaluationQuickPick(hasFactCheckError);
+      // Webviewで回答表示・評価選択
+      const webviewChoice = await showQuizAnswerWebview(questionText, claudeAnswer, quiz.category || 'その他', false);
+      const afterAnswer = mapWebviewChoice(webviewChoice);
 
       if (!afterAnswer) {
         // キャンセル → ステータスバーに評価待ち表示
@@ -5417,8 +5487,11 @@ ${fullText}`;
             vscode.window.showErrorMessage('問題の生成に失敗しました');
             return;
           }
-          const doc = await vscode.workspace.openTextDocument({ content: htmlContent, language: 'html' });
+          const tmpPath = path.join(os.tmpdir(), 'css_challenge.html');
+          fs.writeFileSync(tmpPath, htmlContent, 'utf8');
+          const doc = await vscode.workspace.openTextDocument(tmpPath);
           await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+          await vscode.env.openExternal(vscode.Uri.file(tmpPath));
         } catch (e: any) {
           vscode.window.showErrorMessage(`問題生成エラー: ${e.message}`);
         }
