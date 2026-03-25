@@ -3994,6 +3994,41 @@ export function activate(context: vscode.ExtensionContext) {
             res.end(JSON.stringify({ error: 'Invalid JSON' }));
           }
         });
+      } else if (req.url === '/save-xd-json' && req.method === 'POST') {
+        // Chrome拡張からXDデザインデータをJSONファイルとして保存
+        // 保存先: 現在のワークスペースフォルダ/xd_data/
+        let body = '';
+        req.on('data', (chunk: any) => body += chunk.toString());
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            const json = data.json;
+            const filename = data.filename || 'xd_design.json';
+            if (!json) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'Missing json' }));
+              return;
+            }
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!workspaceFolder) {
+              res.writeHead(500);
+              res.end(JSON.stringify({ error: 'No workspace folder open' }));
+              return;
+            }
+            const fs = require('fs');
+            const path = require('path');
+            const saveDir = path.join(workspaceFolder, 'xd_data');
+            if (!fs.existsSync(saveDir)) { fs.mkdirSync(saveDir, { recursive: true }); }
+            const filePath = path.join(saveDir, filename);
+            fs.writeFileSync(filePath, json, 'utf8');
+            console.log('CSS to HTML Jumper: XD JSONを保存しました', filePath);
+            res.writeHead(200);
+            res.end(JSON.stringify({ ok: true, filePath }));
+          } catch (e: any) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
+          }
+        });
       } else if (req.url === '/explain-and-jump' && req.method === 'POST') {
         // Ctrl+クリック → CSS説明表示 + ジャンプ
         let body = '';

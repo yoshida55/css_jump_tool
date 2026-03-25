@@ -4364,6 +4364,10 @@ function onLayoutMouseMove(e) {
   if (!location.hostname.includes('xd.adobe.com')) { return; }
 
   var xdPanel = null;
+  var xdCaptured = [];   // 蓄積データ
+  var xdLastKey  = '';   // 直前キャプチャのキー（重複防止）
+  var captureTimer = null;
+  var statusBadge = null; // 件数バッジ
 
   // 「スタイル」セクションのラベル要素を見つけ、
   // その後続テキストからフォント情報を抽出する
@@ -4447,63 +4451,134 @@ function onLayoutMouseMove(e) {
     return lines[0] || '';
   }
 
+  // 右パネルから現在の要素データをキャプチャして蓄積
+  function captureCurrentElement() {
+    var text  = extractContentText();
+    var style = extractFromStyleSection();
+    if (!text || !style.fontSize) { return; }
+
+    var key = text + '|' + style.fontSize;
+    if (key === xdLastKey) { return; } // 同じ要素は無視
+    xdLastKey = key;
+
+    // 同じテキストのエントリがあれば上書き、なければ追加
+    var idx = -1;
+    for (var i = 0; i < xdCaptured.length; i++) {
+      if (xdCaptured[i].text === text) { idx = i; break; }
+    }
+    var item = { text: text, fontSize: style.fontSize, fontFamily: style.fontFamily, fontWeight: style.fontWeight };
+    if (idx >= 0) { xdCaptured[idx] = item; } else { xdCaptured.push(item); }
+
+    // 件数バッジを更新
+    updateStatusBadge();
+  }
+
+  // 画面左上に件数バッジを表示
+  function updateStatusBadge() {
+    if (!statusBadge) {
+      statusBadge = document.createElement('div');
+      Object.assign(statusBadge.style, {
+        position: 'fixed', top: '16px', left: '16px', zIndex: '2147483647',
+        background: '#89b4fa', color: '#1e1e2e', padding: '4px 10px',
+        borderRadius: '20px', fontFamily: 'monospace', fontSize: '12px',
+        fontWeight: 'bold', pointerEvents: 'none'
+      });
+      document.body.appendChild(statusBadge);
+    }
+    statusBadge.textContent = '📸 ' + xdCaptured.length + '件キャプチャ済 (Alt+X で確認)';
+  }
+
+  // MutationObserver で右パネルの変化を監視
+  var observer = new MutationObserver(function() {
+    clearTimeout(captureTimer);
+    captureTimer = setTimeout(captureCurrentElement, 400);
+  });
+  // DOMが準備できたら監視開始
+  function startObserver() {
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startObserver);
+  } else {
+    startObserver();
+  }
+
   function extractXdTypography() {
     if (xdPanel) { xdPanel.remove(); xdPanel = null; return; }
 
-    // background.js に蓄積されたデータを取得
-    chrome.runtime.sendMessage({ type: 'GET_XD_DATA' }, function (response) {
-      var items = (response && response.items) || [];
+    var items = xdCaptured; // 蓄積データを使用
 
-      // ---- 表示パネル ----
-      xdPanel = document.createElement('div');
-      Object.assign(xdPanel.style, {
-        position: 'fixed', top: '60px', right: '20px', zIndex: '2147483647',
-        background: '#1e1e2e', color: '#cdd6f4', padding: '16px 18px',
-        borderRadius: '10px', fontFamily: 'monospace', fontSize: '12px',
-        lineHeight: '1.6', maxWidth: '520px', maxHeight: '80vh', overflowY: 'auto',
-        boxShadow: '0 6px 30px rgba(0,0,0,0.6)', border: '1px solid #45475a'
+    xdPanel = document.createElement('div');
+    Object.assign(xdPanel.style, {
+      position: 'fixed', top: '60px', left: '20px', zIndex: '2147483647',
+      background: '#1e1e2e', color: '#cdd6f4', padding: '16px 18px',
+      borderRadius: '10px', fontFamily: 'monospace', fontSize: '12px',
+      lineHeight: '1.6', maxWidth: '520px', maxHeight: '80vh', overflowY: 'auto',
+      boxShadow: '0 6px 30px rgba(0,0,0,0.6)', border: '1px solid #45475a'
+    });
+
+    var html = '<div style="font-weight:bold;color:#89b4fa;font-size:14px;margin-bottom:10px">'
+             + '🎨 Adobe XD デザインデータ（' + items.length + '件）</div>';
+
+    if (items.length === 0) {
+      html += '<div style="color:#f38ba8">⚠ データなし。XDで要素をクリックしてください。</div>';
+    } else {
+      html += '<table style="border-collapse:collapse;width:100%">'
+            + '<tr style="color:#6c7086;font-size:10px;border-bottom:1px solid #313244">'
+            + '<td style="padding:2px 8px 4px 0">テキスト</td>'
+            + '<td style="padding:2px 8px 4px 0">サイズ</td>'
+            + '<td style="padding:2px 8px 4px 0">フォント</td>'
+            + '<td style="padding:2px 0 4px 0">ウェイト</td></tr>';
+      items.forEach(function (it) {
+        var weightColor = it.fontWeight === 'Bold' ? '#f38ba8' : '#6c7086';
+        html += '<tr>'
+          + '<td style="color:#cba6f7;padding:2px 8px 2px 0;max-width:160px;overflow:hidden;white-space:nowrap">'
+          + it.text.replace(/</g,'&lt;').substring(0, 22) + '</td>'
+          + '<td style="color:#a6e3a1;padding:2px 8px 2px 0">' + (it.fontSize || '—') + '</td>'
+          + '<td style="color:#89dceb;padding:2px 8px 2px 0">' + (it.fontFamily || '—') + '</td>'
+          + '<td style="color:' + weightColor + ';font-weight:' + (it.fontWeight === 'Bold' ? 'bold' : 'normal') + '">'
+          + (it.fontWeight || '—') + '</td>'
+          + '</tr>';
       });
+      html += '</table>';
+    }
 
-      var html = '<div style="font-weight:bold;color:#89b4fa;font-size:14px;margin-bottom:10px">'
-               + '🎨 Adobe XD デザインデータ（' + items.length + '件）</div>';
+    var now = new Date();
+    var ts = now.getFullYear() + ('0'+(now.getMonth()+1)).slice(-2) + ('0'+now.getDate()).slice(-2)
+           + '_' + ('0'+now.getHours()).slice(-2) + ('0'+now.getMinutes()).slice(-2) + ('0'+now.getSeconds()).slice(-2);
+    var filename = 'xd_design_' + ts + '.json';
+    var json = JSON.stringify(items, null, 2);
 
-      if (items.length === 0) {
-        html += '<div style="color:#f38ba8">⚠ データなし。ページをリロードしてから試してください。</div>';
-      } else {
-        html += '<table style="border-collapse:collapse;width:100%">'
-              + '<tr style="color:#6c7086;font-size:10px;border-bottom:1px solid #313244">'
-              + '<td style="padding:2px 8px 4px 0">テキスト</td>'
-              + '<td style="padding:2px 8px 4px 0">サイズ</td>'
-              + '<td style="padding:2px 8px 4px 0">フォント</td>'
-              + '<td style="padding:2px 0 4px 0">ウェイト</td></tr>';
-        items.forEach(function (it) {
-          var weightColor = it.fontWeight === 'Bold' ? '#f38ba8' : '#6c7086';
-          html += '<tr>'
-            + '<td style="color:#cba6f7;padding:2px 8px 2px 0;max-width:160px;overflow:hidden;white-space:nowrap">'
-            + it.text.replace(/</g,'&lt;').substring(0, 22) + '</td>'
-            + '<td style="color:#a6e3a1;padding:2px 8px 2px 0">' + (it.fontSize || '—') + '</td>'
-            + '<td style="color:#89dceb;padding:2px 8px 2px 0">' + (it.fontFamily || '—') + '</td>'
-            + '<td style="color:' + weightColor + ';font-weight:' + (it.fontWeight === 'Bold' ? 'bold' : 'normal') + '">'
-            + (it.fontWeight || '—') + '</td>'
-            + '</tr>';
-        });
-        html += '</table>';
-      }
+    html += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'
+          + '<button id="xd_copy_btn" style="padding:6px 14px;background:#313244;'
+          + 'color:#cdd6f4;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
+          + '📋 コピー（Claude Code用）</button>'
+          + '<button id="xd_save_btn" style="padding:6px 14px;background:#313244;'
+          + 'color:#a6e3a1;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
+          + '💾 保存（' + filename + '）</button>'
+          + '<button id="xd_clear_btn" style="padding:6px 14px;background:#313244;'
+          + 'color:#f38ba8;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
+          + '🗑 クリア</button></div>';
+    html += '<div style="color:#45475a;font-size:11px;margin-top:8px">Alt+X で閉じる</div>';
 
-      var json = JSON.stringify(items, null, 2);
-      html += '<button id="xd_copy_btn" style="margin-top:12px;padding:6px 14px;background:#313244;'
-            + 'color:#cdd6f4;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
-            + '📋 JSON をコピー（Claude Code 用）</button>';
-      html += '<div style="color:#45475a;font-size:11px;margin-top:8px">Alt+X で閉じる</div>';
+    xdPanel.innerHTML = html;
+    document.body.appendChild(xdPanel);
 
-      xdPanel.innerHTML = html;
-      document.body.appendChild(xdPanel);
-
-      document.getElementById('xd_copy_btn').addEventListener('click', function () {
-        navigator.clipboard.writeText(json).then(function () {
-          document.getElementById('xd_copy_btn').textContent = '✅ コピーしました！';
-        });
+    document.getElementById('xd_copy_btn').addEventListener('click', function () {
+      navigator.clipboard.writeText(json).then(function () {
+        document.getElementById('xd_copy_btn').textContent = '✅ コピーしました！';
       });
+    });
+    document.getElementById('xd_save_btn').addEventListener('click', function () {
+      chrome.runtime.sendMessage({ type: 'SAVE_XD_JSON', json: json, filename: filename }, function() {
+        document.getElementById('xd_save_btn').textContent = '✅ 保存しました！';
+      });
+    });
+    document.getElementById('xd_clear_btn').addEventListener('click', function () {
+      xdCaptured = [];
+      xdLastKey = '';
+      if (statusBadge) { statusBadge.remove(); statusBadge = null; }
+      xdPanel.remove(); xdPanel = null;
     });
   }
 

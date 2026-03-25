@@ -1357,44 +1357,69 @@ function parseXdComponent(componentId, raw) {
   var items = [];
   var seen = new Set();
 
-  // テキスト文字列の候補キー: rawText / text / content / characters
+  // テキスト文字列の候補キー: rawText / text / content / characters（位置も記録）
   var textRe = /"(?:rawText|characters|content)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-  var texts = [];
+  var textMatches = [];
   var tm;
   while ((tm = textRe.exec(raw)) !== null) {
     var t = tm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\t/g, ' ').trim();
     if (t.length >= 2 && !/^\d+(\.\d+)?$/.test(t) && !t.startsWith('http')) {
-      texts.push(t);
+      textMatches.push({ text: t, pos: tm.index });
     }
   }
 
-  // フォントサイズ（8〜200の範囲のみ）
+  // フォントサイズ（8〜200の範囲のみ、位置も記録）
   var sizeRe = /"fontSize"\s*:\s*(\d+(?:\.\d+)?)/g;
-  var sizes = [];
+  var sizeMatches = [];
   var sm;
   while ((sm = sizeRe.exec(raw)) !== null) {
     var s = parseFloat(sm[1]);
-    if (s >= 8 && s <= 200) { sizes.push(s); }
+    if (s >= 8 && s <= 200) { sizeMatches.push({ val: s, pos: sm.index }); }
   }
 
-  // フォントウェイト・スタイル
+  // フォントウェイト・スタイル（位置も記録）
   var weightRe = /"(?:fontStyle|postscriptName)"\s*:\s*"([^"]+)"/g;
-  var weights = [];
+  var weightMatches = [];
   var wm;
-  while ((wm = weightRe.exec(raw)) !== null) { weights.push(wm[1]); }
+  while ((wm = weightRe.exec(raw)) !== null) {
+    weightMatches.push({ val: wm[1], pos: wm.index });
+  }
 
-  // テキストとフォント情報を1件ずつペアにする（順番で対応）
-  var maxLen = Math.max(texts.length, sizes.length);
-  for (var i = 0; i < maxLen; i++) {
-    var key = (texts[i] || '') + '|' + (sizes[i] || '') + '|' + (weights[i] || '');
+  // テキストの直前にあるものを優先して返すヘルパー
+  // JSONでは fontSize → rawText の順で出現するため、直前（before）を優先
+  function findNearest(matches, targetPos) {
+    var bestBefore = null; var bestBeforeDist = Infinity;
+    var bestAfter = null; var bestAfterDist = Infinity;
+    for (var j = 0; j < matches.length; j++) {
+      var diff = targetPos - matches[j].pos; // 正=matchが前、負=matchが後
+      if (diff > 0 && diff < bestBeforeDist) {
+        bestBeforeDist = diff;
+        bestBefore = matches[j].val;
+      } else if (diff <= 0 && (-diff) < bestAfterDist) {
+        bestAfterDist = -diff;
+        bestAfter = matches[j].val;
+      }
+    }
+    // 直前が1000文字以内にあれば優先、なければ直後
+    if (bestBefore !== null && bestBeforeDist <= 1000) { return bestBefore; }
+    if (bestAfter !== null) { return bestAfter; }
+    return bestBefore;
+  }
+
+  // 各テキストに最も近いfontSizeとウェイトをペアにする
+  for (var i = 0; i < textMatches.length; i++) {
+    var nearestSize = findNearest(sizeMatches, textMatches[i].pos);
+    var nearestWeight = findNearest(weightMatches, textMatches[i].pos);
+
+    var key = textMatches[i].text + '|' + nearestSize + '|' + nearestWeight;
     if (seen.has(key)) { continue; }
     seen.add(key);
-      // "YuGothic-Bold" → fontFamily: "YuGothic", fontWeight: "Bold" に分離
-    var rawWeight = weights[i] || '';
+
+    // "YuGothic-Bold" → fontFamily: "YuGothic", fontWeight: "Bold" に分離
+    var rawWeight = nearestWeight || '';
     var fontFamily = '';
     var weightLabel = 'Regular';
 
-    // ハイフン区切りの場合（例: YuGothic-Bold, Helvetica-Bold）
     var hyphenMatch = rawWeight.match(/^(.+?)[-_](Bold|Regular|Light|Medium|Thin|Black|Heavy|Semibold|Italic)$/i);
     if (hyphenMatch) {
       fontFamily    = hyphenMatch[1].trim();
@@ -1405,14 +1430,13 @@ function parseXdComponent(componentId, raw) {
     } else if (/^(Regular|Light|Medium|Thin|Black|Heavy|Italic)$/i.test(rawWeight)) {
       weightLabel = rawWeight;
     } else if (rawWeight) {
-      // ウェイトキーワードを含まない → フォントファミリー名とみなす
       fontFamily  = rawWeight;
       weightLabel = 'Regular';
     }
 
     items.push({
-      text       : texts[i]   || '',
-      fontSize   : sizes[i]   ? sizes[i] + 'px' : '',
+      text       : textMatches[i].text,
+      fontSize   : nearestSize ? nearestSize + 'px' : '',
       fontFamily : fontFamily,
       fontWeight : weightLabel
     });
@@ -1427,12 +1451,32 @@ function parseXdComponent(componentId, raw) {
 // content.js からのデータ要求に応答
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (msg.type === 'GET_XD_DATA') {
-    // 全コンポーネントのitemsをフラットに結合して返す
     var all = [];
     Object.values(xdDesignData).forEach(function (items) {
       items.forEach(function (item) { if (item.text) { all.push(item); } });
     });
     sendResponse({ items: all });
     return true;
+  }
+
+  // JSONファイルをVS Code拡張経由でプロジェクトフォルダに保存
+  // 保存先はVS Code側のワークスペースフォルダ/xd_data/で決定
+  if (msg.type === 'SAVE_XD_JSON') {
+    var json = msg.json || '[]';
+    var filename = msg.filename || 'xd_design.json';
+    fetch('http://127.0.0.1:3848/save-xd-json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ json: json, filename: filename })
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      sendResponse({ ok: true, filePath: savePath });
+    })
+    .catch(function(err) {
+      console.error('[CSS Jumper] SAVE_XD_JSON error:', err);
+      sendResponse({ ok: false, error: err.message });
+    });
+    return true; // 非同期応答
   }
 });
