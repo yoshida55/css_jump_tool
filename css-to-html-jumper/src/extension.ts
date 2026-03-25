@@ -265,7 +265,6 @@ async function showEvaluationQuickPick(hasFactCheckError: boolean = false, isRep
   items.push({ label: '🔵 Staging 2: もう少しで覚えられそう→次へ', description: 'あと少しでStaging 2に登録', action: 'staging2' });
   items.push({ label: '⭐ Staging 3: 完全に理解した→次へ', description: '完全習得としてStaging 3に登録', action: 'staging3' });
   items.push({ label: '', kind: vscode.QuickPickItemKind.Separator } as any);
-  items.push({ label: '🟢 暗記リストに追加→次へ', description: '保存してすぐ次の問題へ', action: 'memorize' });
   items.push({ label: '🔍 深掘り質問', description: 'なぜ・応用・例外・比較・具体例をAIが生成してメモに追記', action: 'deepdive' });
   items.push({ label: '✅ 終了', description: '', action: 'exit' });
 
@@ -347,58 +346,6 @@ async function processEvaluation(evaluation: any) {
 }
 
 // ========================================
-// 暗記リスト取得（クイズ一覧マーカー用）
-// ========================================
-function getMemorizeList(): Set<string> {
-  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
-  const memoFilePath = config.get<string>('memoFilePath', '');
-  if (!memoFilePath || !fs.existsSync(memoFilePath)) { return new Set(); }
-  const content = fs.readFileSync(memoFilePath, 'utf8');
-  const section = content.match(/## 🧠 暗記リスト([\s\S]*?)(?=\n## |$)/);
-  if (!section) { return new Set(); }
-  return new Set(
-    section[1].split('\n')
-      .filter(line => line.startsWith('- '))
-      .map(line => line.slice(2).trim())
-  );
-}
-
-// ========================================
-// 暗記リスト追加関数
-// ========================================
-async function addToMemorizeList() {
-  if (!pendingQuizEvaluation) { return; }
-
-  const { quiz } = pendingQuizEvaluation;
-  const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
-  const memoFilePath = config.get<string>('memoFilePath', '');
-
-  if (!memoFilePath || !fs.existsSync(memoFilePath)) {
-    vscode.window.showErrorMessage('メモファイルが見つかりません（設定: cssToHtmlJumper.memoFilePath）');
-    return;
-  }
-
-  const memoContent = fs.readFileSync(memoFilePath, 'utf8');
-  const entry = `- ${quiz.title}`;
-  const section = '## 🧠 暗記リスト';
-
-  let newContent: string;
-  if (memoContent.includes(section)) {
-    // セクションが既にある → セクション直下に追記（重複スキップ）
-    if (memoContent.includes(entry)) {
-      vscode.window.showInformationMessage('⚠ すでに暗記リストに追加済みです');
-      return;
-    }
-    newContent = memoContent.replace(section, `${section}\n${entry}`);
-  } else {
-    // セクションがない → ファイル末尾に追加
-    newContent = `${memoContent.trimEnd()}\n\n${section}\n${entry}\n`;
-  }
-
-  fs.writeFileSync(memoFilePath, newContent, 'utf8');
-  vscode.window.showInformationMessage(`🧠 暗記リストに追加しました: ${quiz.title}`);
-}
-
 // ========================================
 // Stagingレベル設定関数
 // ========================================
@@ -1836,7 +1783,6 @@ function mapWebviewChoice(choice: string): { eval?: number; action?: string } | 
     case 'easy':     return { eval: 3 };
     case 'normal':   return { eval: 2 };
     case 'hard':     return { eval: 1 };
-    case 'memorize': return { action: 'memorize' };
     case 'deepdive': return { action: 'deepdive' };
     case 'correct':  return { action: 'correct' };
     case 'exit':     return { action: 'exit' };
@@ -1985,7 +1931,6 @@ function getQuizWebviewHtml(question: string, rawAnswer: string, category: strin
     <button class="btn-hard"   onclick="send('hard')">😓 難しい</button>
   </div>
   <div class="eval-buttons">
-    <button class="btn-special" onclick="send('memorize')">🟢 暗記リストに追加</button>
     <button class="btn-special" onclick="send('deepdive')">🔍 深掘り質問</button>
     <button class="btn-special" onclick="send('exit')">✅ 終了</button>
   </div>
@@ -2306,7 +2251,6 @@ async function handleQuiz(showFilterPick = false) {
           return;
         }
         type MemoItem = vscode.QuickPickItem & { heading: typeof headings[0] };
-        const memoMemorizeSet = getMemorizeList();
         const memoItems: MemoItem[] = filtered.map(h => {
           const hist = quizHistoryMap.get(h.title);
           let mark = '';
@@ -2315,10 +2259,9 @@ async function handleQuiz(showFilterPick = false) {
             mark = lastEval === 3 ? '✓ ' : '↺ ';
           }
           const stagingMark = hist?.stagingLevel === 1 ? '🧠 ' : hist?.stagingLevel === 2 ? '🔵 ' : hist?.stagingLevel === 3 ? '⭐ ' : '';
-          const memorizeMark = memoMemorizeSet.has(h.title) ? '🟢 ' : '';
           const displayLabel = hist?.questionText || h.title;
           return {
-            label: mark + memorizeMark + stagingMark + displayLabel,
+            label: mark + stagingMark + displayLabel,
             description: `${h.date || ''}  ${h.category || ''}`,
             heading: h,
           };
@@ -2347,7 +2290,6 @@ async function handleQuiz(showFilterPick = false) {
           return;
         }
         type MemoItem = vscode.QuickPickItem & { heading: typeof headings[0] };
-        const memoMemorizeSet = getMemorizeList();
         const memoItems: MemoItem[] = filtered.map(h => {
           const hist = quizHistoryMap.get(h.title);
           let mark = '';
@@ -2357,10 +2299,9 @@ async function handleQuiz(showFilterPick = false) {
           }
           const displayLabel = hist?.questionText || h.title;
           if (!mark && hist?.questionText && !hist?.lastAnsweredDate) { mark = '🆕 '; }
-          const memorizeMark = memoMemorizeSet.has(h.title) ? '🟢 ' : '';
           const stagingMark = hist?.stagingLevel === 1 ? '🧠 ' : hist?.stagingLevel === 2 ? '🔵 ' : hist?.stagingLevel === 3 ? '⭐ ' : '';
           return {
-            label: mark + memorizeMark + stagingMark + displayLabel,
+            label: mark + stagingMark + displayLabel,
             description: `${h.date || ''}  ${h.category || ''}`,
             heading: h,
           };
@@ -2386,7 +2327,6 @@ async function handleQuiz(showFilterPick = false) {
 
         function buildListItems(): ListItem[] {
           const items: ListItem[] = [];
-          const memorizeSet = getMemorizeList();
           const visible = recentHistory.filter(([_, h]) => showHidden ? h.hiddenFromList : !h.hiddenFromList);
           if (visible.length === 0) {
             items.push({ label: showHidden ? '（非表示の項目なし）' : '（過去1週間の履歴なし）', description: '' });
@@ -2398,10 +2338,9 @@ async function handleQuiz(showFilterPick = false) {
                 const lastEval = history.evaluations?.[history.evaluations.length - 1];
                 answeredMark = lastEval === 3 ? '✓ ' : '↺ ';
               }
-              const memorizeMark = memorizeSet.has(title) ? '🟢 ' : '';
               const stagingMark = history.stagingLevel === 1 ? '🧠 ' : history.stagingLevel === 2 ? '🔵 ' : history.stagingLevel === 3 ? '⭐ ' : '';
               items.push({
-                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + memorizeMark + stagingMark + (history.questionText || title),
+                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + stagingMark + (history.questionText || title),
                 description: `${date}  ${history.aiCategory || ''}`,
                 quizTitle: title,
                 buttons: [history.hiddenFromList ? SHOW_BTN : HIDE_BTN],
@@ -2847,16 +2786,22 @@ ${categoryList.join(' / ')}
           const existingContent = quizAnswerDoc.getText();
           const lines = existingContent.split('\n');
 
-          // 1. まずは完全一致検索（前後の余白だけ取り除く）
-          const jumpMarker = `**Q: ${questionText.trim()}**`;
-          let jumpLine = lines.findIndex(line => line.trim() === jumpMarker);
+          // 1. quiz-idマーカーで検索（Q:の文字を変えても壊れない・最優先）
+          const quizIdJumpMarker = `<!-- quiz-id: ${quiz.title} -->`;
+          let jumpLine = lines.findIndex(line => line.trim() === quizIdJumpMarker);
 
-          // 2. 完全一致がダメなら、部分一致（questionTextが含まれているか）
+          // 2. マーカーがなければ旧形式の完全一致検索（後方互換）
+          if (jumpLine === -1) {
+            const qMarker = `**Q: ${questionText.trim()}**`;
+            jumpLine = lines.findIndex(line => line.trim() === qMarker);
+          }
+
+          // 3. それもダメなら部分一致（最終フォールバック）
           if (jumpLine === -1) {
             jumpLine = lines.findIndex(line => line.includes(questionText.trim()));
           }
-          
-          console.log('[Quiz][DEBUG] ジャンプ検索:', { questionText, jumpLine });
+
+          console.log('[Quiz][DEBUG] ジャンプ検索:', { quizTitle: quiz.title, questionText, jumpLine });
 
 
           const existingTab = vscode.window.tabGroups.all
@@ -2904,12 +2849,6 @@ ${categoryList.join(' / ')}
           }
           if (afterAnswerRepeat.action === 'exit') {
             hideEvaluationStatusBar();
-            return;
-          }
-          if (afterAnswerRepeat.action === 'memorize') {
-            await addToMemorizeList();
-            hideEvaluationStatusBar();
-            await handleQuiz(false);
             return;
           }
           if (afterAnswerRepeat.action === 'staging1') {
@@ -3058,12 +2997,12 @@ vertical-align
         : '';
 
       const SEP = '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
-      const newEntryContent = `**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
+      const quizIdMarker = `<!-- quiz-id: ${quiz.title} -->`;
+      const newEntryContent = `${quizIdMarker}\n**Q: ${questionText}**\n\n${claudeAnswer}${imageLinkSection}`;
 
-      // 既存エントリをquestionTextで検索（Fix1でquestionText固定のため確実にヒットするはず）
+      // 既存エントリをquiz-idマーカーで検索（Q:の文字を変えても壊れない）
       const prevHistory = quizHistoryMap.get(quiz.title);
-      const prevQuestionText = prevHistory?.questionText;
-      const prevEntryMarker = prevQuestionText ? `**Q: ${prevQuestionText}**` : null;
+      const prevEntryMarker = `<!-- quiz-id: ${quiz.title} -->`;
       const existingIdx = prevEntryMarker ? currentContent.indexOf(prevEntryMarker) : -1;
 
       if (existingIdx !== -1) {
@@ -3179,13 +3118,6 @@ vertical-align
       if (afterAnswer.action === 'correct') {
         // メモ修正
         await correctMemo();
-        return;
-      }
-
-      if (afterAnswer.action === 'memorize') {
-        await addToMemorizeList();
-        hideEvaluationStatusBar();
-        await handleQuiz(false);
         return;
       }
 
@@ -6511,11 +6443,6 @@ ${fullText}`;
       return;
     }
 
-    if (afterAnswer.action === 'memorize') {
-      await addToMemorizeList();
-      await processEvaluation({ eval: 2 });
-      return;
-    }
 
     if (afterAnswer.action === 'deepdive') {
       await generateDeepDiveQuestion();
