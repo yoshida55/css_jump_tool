@@ -4372,7 +4372,7 @@ function onLayoutMouseMove(e) {
   // 「スタイル」セクションのラベル要素を見つけ、
   // その後続テキストからフォント情報を抽出する
   function extractFromStyleSection() {
-    var result = { fontFamily: '', fontWeight: '', fontSize: '' };
+    var result = { fontFamily: '', fontWeight: '', fontSize: '', lineHeight: '', color: '' };
 
     // 「スタイル」という文字を含む要素を探す（条件を緩めに）
     var allEls = document.querySelectorAll('*');
@@ -4418,6 +4418,32 @@ function onLayoutMouseMove(e) {
       var nums = txt.match(/\b(\d+(?:\.\d+)?)\s*px\b/g) || [];
       var filtered = nums.filter(function(v){ var n=parseFloat(v); return n>=8 && n<=200; });
       if (filtered.length) { result.fontSize = filtered[0]; }
+    }
+
+    // 行間: 「行間 1.5」「行間 24px」のパターン
+    var lhMatch = txt.match(/行間\s+([\d.]+(?:px)?)/);
+    if (lhMatch) { result.lineHeight = lhMatch[1]; }
+
+    // カラーコード: テキストから16進カラーコードを探す
+    var colorMatch = txt.match(/#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})\b/);
+    if (colorMatch) {
+      result.color = colorMatch[0].toUpperCase();
+    } else {
+      // テキストになければカラースウォッチのbackground-colorから取得
+      var swatches = container ? container.querySelectorAll('[style*="background-color"]') : [];
+      for (var si = 0; si < swatches.length; si++) {
+        var bg = swatches[si].style.backgroundColor;
+        if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+          var m = bg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+          if (m) {
+            result.color = '#' + ('0' + parseInt(m[1]).toString(16)).slice(-2)
+                               + ('0' + parseInt(m[2]).toString(16)).slice(-2)
+                               + ('0' + parseInt(m[3]).toString(16)).slice(-2);
+            result.color = result.color.toUpperCase();
+            break;
+          }
+        }
+      }
     }
 
     return result;
@@ -4466,7 +4492,7 @@ function onLayoutMouseMove(e) {
     for (var i = 0; i < xdCaptured.length; i++) {
       if (xdCaptured[i].text === text) { idx = i; break; }
     }
-    var item = { text: text, fontSize: style.fontSize, fontFamily: style.fontFamily, fontWeight: style.fontWeight };
+    var item = { text: text, fontSize: style.fontSize, fontFamily: style.fontFamily, fontWeight: style.fontWeight, lineHeight: style.lineHeight, color: style.color };
     if (idx >= 0) { xdCaptured[idx] = item; } else { xdCaptured.push(item); }
 
     // 件数バッジを更新
@@ -4528,16 +4554,23 @@ function onLayoutMouseMove(e) {
             + '<td style="padding:2px 8px 4px 0">テキスト</td>'
             + '<td style="padding:2px 8px 4px 0">サイズ</td>'
             + '<td style="padding:2px 8px 4px 0">フォント</td>'
-            + '<td style="padding:2px 0 4px 0">ウェイト</td></tr>';
+            + '<td style="padding:2px 8px 4px 0">ウェイト</td>'
+            + '<td style="padding:2px 8px 4px 0">行間</td>'
+            + '<td style="padding:2px 0 4px 0">色</td></tr>';
       items.forEach(function (it) {
         var weightColor = it.fontWeight === 'Bold' ? '#f38ba8' : '#6c7086';
+        var colorSwatch = it.color
+          ? '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + it.color + ';border:1px solid #45475a;margin-right:4px;vertical-align:middle"></span>' + it.color
+          : '—';
         html += '<tr>'
           + '<td style="color:#cba6f7;padding:2px 8px 2px 0;max-width:160px;overflow:hidden;white-space:nowrap">'
           + it.text.replace(/</g,'&lt;').substring(0, 22) + '</td>'
           + '<td style="color:#a6e3a1;padding:2px 8px 2px 0">' + (it.fontSize || '—') + '</td>'
           + '<td style="color:#89dceb;padding:2px 8px 2px 0">' + (it.fontFamily || '—') + '</td>'
-          + '<td style="color:' + weightColor + ';font-weight:' + (it.fontWeight === 'Bold' ? 'bold' : 'normal') + '">'
+          + '<td style="color:' + weightColor + ';font-weight:' + (it.fontWeight === 'Bold' ? 'bold' : 'normal') + ';padding:2px 8px 2px 0">'
           + (it.fontWeight || '—') + '</td>'
+          + '<td style="color:#fab387;padding:2px 8px 2px 0">' + (it.lineHeight || '—') + '</td>'
+          + '<td style="padding:2px 0 2px 0">' + colorSwatch + '</td>'
           + '</tr>';
       });
       html += '</table>';
@@ -4546,7 +4579,10 @@ function onLayoutMouseMove(e) {
     var now = new Date();
     var ts = now.getFullYear() + ('0'+(now.getMonth()+1)).slice(-2) + ('0'+now.getDate()).slice(-2)
            + '_' + ('0'+now.getHours()).slice(-2) + ('0'+now.getMinutes()).slice(-2) + ('0'+now.getSeconds()).slice(-2);
-    var filename = 'xd_design_' + ts + '.json';
+    // ページタイトルからファイル名を生成（"Xd " プレフィックスを除去、使えない文字を _ に置換）
+    var rawTitle = document.title.replace(/^Xd\s+/i, '').replace(/\s*[-–]\s*Adobe XD$/i, '').trim();
+    var safeTitle = rawTitle.replace(/[/\\:*?"<>|]/g, '_') || 'xd_design';
+    var filename = safeTitle + '_' + ts + '.json';
     var json = JSON.stringify(items, null, 2);
 
     html += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'
@@ -4556,10 +4592,14 @@ function onLayoutMouseMove(e) {
           + '<button id="xd_save_btn" style="padding:6px 14px;background:#313244;'
           + 'color:#a6e3a1;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
           + '💾 保存（' + filename + '）</button>'
+          + '<label id="xd_import_label" style="padding:6px 14px;background:#313244;'
+          + 'color:#89b4fa;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
+          + '📂 インポート<input type="file" id="xd_import_input" accept=".json" style="display:none"></label>'
           + '<button id="xd_clear_btn" style="padding:6px 14px;background:#313244;'
           + 'color:#f38ba8;border:1px solid #45475a;border-radius:6px;cursor:pointer;font-size:12px">'
           + '🗑 クリア</button></div>';
-    html += '<div style="color:#45475a;font-size:11px;margin-top:8px">Alt+X で閉じる</div>';
+    html += '<div id="xd_import_msg" style="color:#f38ba8;font-size:11px;margin-top:6px;min-height:16px"></div>';
+    html += '<div style="color:#45475a;font-size:11px;margin-top:4px">Alt+X で閉じる</div>';
 
     xdPanel.innerHTML = html;
     document.body.appendChild(xdPanel);
@@ -4573,6 +4613,31 @@ function onLayoutMouseMove(e) {
       chrome.runtime.sendMessage({ type: 'SAVE_XD_JSON', json: json, filename: filename }, function() {
         document.getElementById('xd_save_btn').textContent = '✅ 保存しました！';
       });
+    });
+    document.getElementById('xd_import_input').addEventListener('change', function (e) {
+      var file = e.target.files[0];
+      if (!file) { return; }
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        var msgEl = document.getElementById('xd_import_msg');
+        try {
+          var parsed = JSON.parse(ev.target.result);
+          // フォーマットチェック: 配列で、XD用フィールドを持つオブジェクトが含まれているか
+          if (!Array.isArray(parsed)) { throw new Error('配列ではありません'); }
+          var hasXdField = parsed.length === 0 || parsed.some(function(item) {
+            return item && ('text' in item || 'fontSize' in item || 'fontFamily' in item || 'fontWeight' in item);
+          });
+          if (!hasXdField) { throw new Error('XD用データが見つかりません'); }
+          xdCaptured = parsed;
+          xdLastKey = '';
+          updateStatusBadge();
+          xdPanel.remove(); xdPanel = null;
+          extractXdTypography(); // パネルを再描画
+        } catch (err) {
+          msgEl.textContent = '❌ 読み込み失敗：' + err.message;
+        }
+      };
+      reader.readAsText(file);
     });
     document.getElementById('xd_clear_btn').addEventListener('click', function () {
       xdCaptured = [];

@@ -1570,7 +1570,15 @@ async function handleMemoSearch() {
           qp.hide();
         }
       });
-      qp.onDidHide(() => { qp.dispose(); if (!accepted) { resolve(''); } });
+      qp.onDidHide(() => {
+        // ESCで閉じた時も入力テキストを履歴に保存（途中入力を拾う）
+        const lastTyped = qp.value.trim();
+        if (!accepted && lastTyped) {
+          memoSearchHistory = [lastTyped, ...memoSearchHistory.filter(h => h !== lastTyped)].slice(0, 10);
+        }
+        qp.dispose();
+        if (!accepted) { resolve(''); }
+      });
       // PHP補完用（カーソル末尾） → show()後にvalue設定
       // メモ検索用（全選択） → show()前にvalue設定
       if (currentWordForPhp) {
@@ -1597,8 +1605,8 @@ async function handleMemoSearch() {
     }
   }
 
-  // 前回の検索ワードを保持
-  memoSearchHistory = [query];
+  // 検索履歴に追加（最新10件・重複除去）
+  memoSearchHistory = [query, ...memoSearchHistory.filter(h => h !== query)].slice(0, 10);
 
   try {
     // メモファイル読み込み
@@ -1714,7 +1722,7 @@ async function handleBatchCategorize() {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const memoFilePath = config.get<string>('memoFilePath', '');
   const geminiApiKey = config.get<string>('geminiApiKey', '');
-  const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+  const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML', 'WordPress']);
 
   if (!memoFilePath) {
     vscode.window.showErrorMessage('メモファイルパスが設定されていません。');
@@ -2045,7 +2053,7 @@ async function handleQuiz(showFilterPick = false) {
     const lines = memoContent.split('\n');
 
     // 見出し（## / ### xxx）を抽出
-    const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+    const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML', 'WordPress']);
     const defaultCategory = categoryList.length > 0 ? categoryList[0] : 'その他';
     const headings: { line: number; title: string; content: string[]; category: string; date: string | null }[] = [];
     let parentH2Title = ''; // ### 見出しの親テーマ（直前の ## タイトル）を追跡
@@ -2092,9 +2100,9 @@ async function handleQuiz(showFilterPick = false) {
           }
         }
 
-        // Gemini判定カテゴリがあれば優先
+        // ファイルにタグがない場合のみGemini判定カテゴリを使用（ファイルタグが最優先）
         const savedAiCat = quizHistoryMap.get(title)?.aiCategory;
-        if (savedAiCat) {
+        if (!category && savedAiCat) {
           category = savedAiCat;
         } else if (!category) {
           category = defaultCategory;
@@ -2218,6 +2226,9 @@ async function handleQuiz(showFilterPick = false) {
 
       let selectedMode = '';
 
+      // stagingLevel が設定済みの問題はすべて日付フィルターから除外（Stagingへ移動扱い）
+      const stagedTitles = new Set([...quizHistoryMap.values()].filter(h => h.stagingLevel).map(h => h.title));
+
       if (showFilterPick) {
         // Ctrl+Shift+7 で新規起動 → トップ画面を表示
         type TopItem = vscode.QuickPickItem & { mode?: string };
@@ -2229,7 +2240,23 @@ async function handleQuiz(showFilterPick = false) {
         const historyCount = [...quizHistoryMap.values()].filter(h => h.lastReviewed >= _now - 7 * 24 * 60 * 60 * 1000).length;
         const staging1Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 1).length;
         const staging2Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 2).length;
+
+        // 統計: 総問題数・回答済み・今日・連続日数
+        const totalQuestions = headings.length;
+        const answeredTotal = [...quizHistoryMap.values()].filter(h => h.lastAnsweredDate).length;
+        const todayAnswered = [...quizHistoryMap.values()].filter(h => h.lastAnsweredDate === _todayStr).length;
+        const allAnsweredDates = new Set([...quizHistoryMap.values()].filter(h => h.lastAnsweredDate).map(h => h.lastAnsweredDate!));
+        let streak = 0;
+        const streakStart = new Date(_todayStr);
+        if (!allAnsweredDates.has(_todayStr)) { streakStart.setDate(streakStart.getDate() - 1); }
+        for (let si = 0; si < 365; si++) {
+          const d = new Date(streakStart); d.setDate(streakStart.getDate() - si);
+          if (allAnsweredDates.has(d.toISOString().slice(0, 10))) { streak++; } else { break; }
+        }
+        const streakLabel = streak > 0 ? `  🔥${streak}日連続` : '';
         const staging3Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 3).length;
+        const htmlCount = unstagedHeadings.filter(h => h.category?.toLowerCase() === 'html').length;
+        const wpCount = unstagedHeadings.filter(h => h.category?.toLowerCase() === 'wordpress').length;
 
         const topItems: TopItem[] = [
           { label: `📅 今日のメモから出題`, description: `${todayCount}件`, mode: 'today' },
@@ -2240,6 +2267,9 @@ async function handleQuiz(showFilterPick = false) {
           { label: `📚 クイズ履歴から選ぶ（1週間）`, description: `${historyCount}件`, mode: 'history' },
           { label: '🎲 ランダムで出題', description: '通常モード', mode: 'random' },
           { label: '', kind: vscode.QuickPickItemKind.Separator },
+          { label: `🌐 HTML のみ`, description: `${htmlCount}件`, mode: 'html-only' },
+          { label: `🟦 WordPress のみ`, description: `${wpCount}件`, mode: 'wordpress-only' },
+          { label: '', kind: vscode.QuickPickItemKind.Separator },
           { label: `🧠 暗記すべきこと`, description: `Staging 1  ${staging1Count}件`, mode: 'staging1' },
           { label: `🔵 もう少しで覚えられそう`, description: `Staging 2  ${staging2Count}件`, mode: 'staging2' },
           { label: `⭐ 完全に理解した`, description: `Staging 3  ${staging3Count}件`, mode: 'staging3' },
@@ -2247,6 +2277,7 @@ async function handleQuiz(showFilterPick = false) {
 
         const topPicked = await vscode.window.showQuickPick(topItems as vscode.QuickPickItem[], {
           placeHolder: '出題方法を選んでください',
+          title: `📊 ${totalQuestions}問中 ${answeredTotal}問回答済  |  今日 ${todayAnswered}問${streakLabel}`,
         }) as TopItem | undefined;
         if (!topPicked) { return; }
         selectedMode = topPicked.mode || '';
@@ -2258,11 +2289,46 @@ async function handleQuiz(showFilterPick = false) {
         selectedMode = lastTopMode;
       }
 
-      // stagingLevel が設定済みの問題はすべて日付フィルターから除外（Stagingへ移動扱い）
-      const stagedTitles = new Set([...quizHistoryMap.values()].filter(h => h.stagingLevel).map(h => h.title));
-
       if (selectedMode === 'random' || selectedMode === '') {
         // そのまま下のランダムロジックへ
+
+      } else if (selectedMode === 'html-only' || selectedMode === 'wordpress-only') {
+        // カテゴリ別一覧から選ぶ
+        const targetCat = selectedMode === 'wordpress-only' ? 'wordpress' : 'html';
+        const filtered = headings.filter(h => {
+          if (stagedTitles.has(h.title)) { return false; }
+          return h.category?.toLowerCase() === targetCat;
+        });
+        if (filtered.length === 0) {
+          vscode.window.showInformationMessage('該当するカテゴリのメモが見つかりませんでした。出題方法を選び直してください。');
+          lastTopMode = '';
+          await handleQuiz(true);
+          return;
+        }
+        type MemoItem = vscode.QuickPickItem & { heading: typeof headings[0] };
+        const memoMemorizeSet = getMemorizeList();
+        const memoItems: MemoItem[] = filtered.map(h => {
+          const hist = quizHistoryMap.get(h.title);
+          let mark = '';
+          if (hist?.lastAnsweredDate) {
+            const lastEval = hist.evaluations?.[hist.evaluations.length - 1];
+            mark = lastEval === 3 ? '✓ ' : '↺ ';
+          }
+          const stagingMark = hist?.stagingLevel === 1 ? '🧠 ' : hist?.stagingLevel === 2 ? '🔵 ' : hist?.stagingLevel === 3 ? '⭐ ' : '';
+          const memorizeMark = memoMemorizeSet.has(h.title) ? '🟢 ' : '';
+          const displayLabel = hist?.questionText || h.title;
+          return {
+            label: mark + memorizeMark + stagingMark + displayLabel,
+            description: `${h.date || ''}  ${h.category || ''}`,
+            heading: h,
+          };
+        });
+        const memoPicked = await vscode.window.showQuickPick(memoItems as vscode.QuickPickItem[], {
+          placeHolder: '出題する問題を選んでください',
+          matchOnDescription: true,
+        }) as MemoItem | undefined;
+        if (!memoPicked) { await handleQuiz(true); return; }
+        preSelectedQuiz = memoPicked.heading;
 
       } else if (selectedMode === 'today' || selectedMode === 'yesterday' || selectedMode === 'week' || selectedMode === 'month') {
         // メモ一覧から選ぶ
@@ -2292,8 +2358,9 @@ async function handleQuiz(showFilterPick = false) {
           const displayLabel = hist?.questionText || h.title;
           if (!mark && hist?.questionText && !hist?.lastAnsweredDate) { mark = '🆕 '; }
           const memorizeMark = memoMemorizeSet.has(h.title) ? '🟢 ' : '';
+          const stagingMark = hist?.stagingLevel === 1 ? '🧠 ' : hist?.stagingLevel === 2 ? '🔵 ' : hist?.stagingLevel === 3 ? '⭐ ' : '';
           return {
-            label: mark + memorizeMark + displayLabel,
+            label: mark + memorizeMark + stagingMark + displayLabel,
             description: `${h.date || ''}  ${h.category || ''}`,
             heading: h,
           };
@@ -2302,7 +2369,7 @@ async function handleQuiz(showFilterPick = false) {
           placeHolder: '出題する問題を選んでください',
           matchOnDescription: true,
         }) as MemoItem | undefined;
-        if (!memoPicked) { return; }
+        if (!memoPicked) { await handleQuiz(true); return; }
         preSelectedQuiz = memoPicked.heading;
 
       } else if (selectedMode === 'history') {
@@ -2332,8 +2399,9 @@ async function handleQuiz(showFilterPick = false) {
                 answeredMark = lastEval === 3 ? '✓ ' : '↺ ';
               }
               const memorizeMark = memorizeSet.has(title) ? '🟢 ' : '';
+              const stagingMark = history.stagingLevel === 1 ? '🧠 ' : history.stagingLevel === 2 ? '🔵 ' : history.stagingLevel === 3 ? '⭐ ' : '';
               items.push({
-                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + memorizeMark + (history.questionText || title),
+                label: answeredMark + (history.hiddenFromList ? '🙈 ' : '') + memorizeMark + stagingMark + (history.questionText || title),
                 description: `${date}  ${history.aiCategory || ''}`,
                 quizTitle: title,
                 buttons: [history.hiddenFromList ? SHOW_BTN : HIDE_BTN],
@@ -2381,12 +2449,12 @@ async function handleQuiz(showFilterPick = false) {
           qp.show();
         });
 
-        if (!picked) { return; }
+        if (!picked) { await handleQuiz(true); return; }
         if ((picked as ListItem).quizTitle) {
           preSelectedQuiz = headings.find(h => h.title === (picked as ListItem).quizTitle);
           if (!preSelectedQuiz) {
             vscode.window.showWarningMessage('メモから該当の問題が見つかりませんでした');
-            return;
+            await handleQuiz(true); return;
           }
         }
 
@@ -2428,7 +2496,7 @@ async function handleQuiz(showFilterPick = false) {
           placeHolder: '出題する問題を選んでください',
           matchOnDescription: true,
         }) as StagingItem | undefined;
-        if (!stagingPicked) { return; }
+        if (!stagingPicked) { await handleQuiz(true); return; }
         preSelectedQuiz = stagingPicked.heading;
       }
     }
@@ -2840,6 +2908,8 @@ ${categoryList.join(' / ')}
           }
           if (afterAnswerRepeat.action === 'memorize') {
             await addToMemorizeList();
+            hideEvaluationStatusBar();
+            await handleQuiz(false);
             return;
           }
           if (afterAnswerRepeat.action === 'staging1') {
@@ -2953,7 +3023,7 @@ vertical-align
       let categoryExists = false;
 
       // 既知のカテゴリ名リスト取得
-      const knownCategories = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+      const knownCategories = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML', 'WordPress']);
       knownCategories.push('全て', 'その他', '不動産', 'html');  // その他のカテゴリも追加
 
       // 最後の該当カテゴリ見出しを探す
@@ -3114,6 +3184,8 @@ vertical-align
 
       if (afterAnswer.action === 'memorize') {
         await addToMemorizeList();
+        hideEvaluationStatusBar();
+        await handleQuiz(false);
         return;
       }
 
@@ -4774,36 +4846,31 @@ ${explanation}
                 preview: false
               });
             } else if (existingTab) {
-              // 同じグループにある → CSSが隠れるのでスキップ（ハイライトなし）
-              return null;
+              // 同じグループにある → CSSが隠れるのでHTMLハイライトなし（ホバーツールチップは表示）
             } else {
-              // 未オープン → サイドで開く
-              const htmlDoc = await vscode.workspace.openTextDocument(firstResult.uri);
-              htmlEditor = await vscode.window.showTextDocument(htmlDoc, {
-                viewColumn: vscode.ViewColumn.Beside,
-                preserveFocus: true,
-                preview: true
-              });
+              // 未オープン → タブを開かない（何もしない）
             }
           }
 
-          // 該当行にスクロール
-          const targetLine = firstResult.line;
-          const targetRange = new vscode.Range(targetLine, 0, targetLine, 1000);
-          htmlEditor.revealRange(targetRange, vscode.TextEditorRevealType.InCenter);
+          // タブが開いている場合のみハイライト
+          if (htmlEditor) {
+            const targetLine = firstResult.line;
+            const targetRange = new vscode.Range(targetLine, 0, targetLine, 1000);
+            htmlEditor.revealRange(targetRange, vscode.TextEditorRevealType.InCenter);
 
-          // ハイライト適用
-          htmlEditor.setDecorations(htmlHighlightDecorationType, [targetRange]);
+            // ハイライト適用
+            htmlEditor.setDecorations(htmlHighlightDecorationType, [targetRange]);
 
-          // 前のタイマーをクリア
-          if (hoverHighlightTimer) {
-            clearTimeout(hoverHighlightTimer);
+            // 前のタイマーをクリア
+            if (hoverHighlightTimer) {
+              clearTimeout(hoverHighlightTimer);
+            }
+
+            // 2秒後にハイライトを消す
+            hoverHighlightTimer = setTimeout(() => {
+              htmlEditor?.setDecorations(htmlHighlightDecorationType, []);
+            }, 2000);
           }
-
-          // 2秒後にハイライトを消す
-          hoverHighlightTimer = setTimeout(() => {
-            htmlEditor?.setDecorations(htmlHighlightDecorationType, []);
-          }, 2000);
 
         } catch (e) {
           console.error('CSS to HTML Jumper: HTMLハイライトエラー', e);
@@ -6491,7 +6558,7 @@ ${fullText}`;
       categories.add('全て');
 
       // 登録カテゴリリスト取得
-      const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML']);
+      const categoryList = config.get<string[]>('quizCategories', ['CSS', 'JavaScript', 'Python', 'HTML', 'WordPress']);
 
       for (const line of lines) {
         const match = line.match(/^#{2,3}\s+(.+)/);

@@ -1459,23 +1459,13 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     return true;
   }
 
-  // JSONファイルをVS Code拡張経由でプロジェクトフォルダに保存
-  // 保存先はVS Code側のワークスペースフォルダ/xd_data/で決定
+  // JSONファイルをダウンロードフォルダに保存（chrome.downloads使用）
   if (msg.type === 'SAVE_XD_JSON') {
     var json = msg.json || '[]';
     var filename = msg.filename || 'xd_design.json';
-    fetch('http://127.0.0.1:3848/save-xd-json', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ json: json, filename: filename })
-    })
-    .then(function(res) { return res.json(); })
-    .then(function(data) {
-      sendResponse({ ok: true, filePath: savePath });
-    })
-    .catch(function(err) {
-      console.error('[CSS Jumper] SAVE_XD_JSON error:', err);
-      sendResponse({ ok: false, error: err.message });
+    var dataUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(json);
+    chrome.downloads.download({ url: dataUrl, filename: filename, saveAs: true }, function(downloadId) {
+      sendResponse({ ok: true, downloadId: downloadId });
     });
     return true; // 非同期応答
   }
