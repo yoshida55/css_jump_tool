@@ -1685,7 +1685,7 @@ async function handleBatchCategorize() {
     const lines = memoContent.split('\n');
 
     // 未分類の見出しを抽出
-    const uncategorized: { index: number; title: string }[] = [];
+    const uncategorized: { index: number; title: string; preview: string }[] = [];
     for (let i = 0; i < lines.length; i++) {
       const match = lines[i].match(/^#{2,3}\s+(.+)/);
       if (!match) { continue; }
@@ -1696,9 +1696,15 @@ async function handleBatchCategorize() {
           const isCat = categoryList.find(c => c.toLowerCase() === word.toLowerCase());
           return (isCat && idx === arr.length - 1) ? arr.slice(0, -1).join(' ') : acc + (acc ? ' ' : '') + word;
         }, '');
-      if (!quizHistoryMap.get(title)?.aiCategory) {
-        uncategorized.push({ index: uncategorized.length, title });
+      // 見出し以下3行をプレビューとして取得（次の見出しは除く）
+      const previewLines: string[] = [];
+      for (let j = i + 1; j < lines.length && previewLines.length < 3; j++) {
+        if (/^#{2,3}\s+/.test(lines[j])) { break; }
+        const l = lines[j].trim();
+        if (l) { previewLines.push(l); }
       }
+      const preview = previewLines.join(' / ');
+      uncategorized.push({ index: uncategorized.length, title, preview });
     }
 
     if (uncategorized.length === 0) {
@@ -1718,7 +1724,9 @@ async function handleBatchCategorize() {
       for (let i = 0; i < uncategorized.length; i += BATCH_SIZE) {
         const batch = uncategorized.slice(i, i + BATCH_SIZE);
         // ローカルインデックス（0始まり）でプロンプトを作成
-        const titleList = batch.map((h, localIdx) => `${localIdx}: ${h.title}`).join('\n');
+        const titleList = batch.map((h, localIdx) =>
+          h.preview ? `${localIdx}: ${h.title}（内容: ${h.preview}）` : `${localIdx}: ${h.title}`
+        ).join('\n');
 
         const prompt = `以下の見出し一覧を、カテゴリ候補に従って分類してください。
 
@@ -2045,9 +2053,9 @@ async function handleQuiz(showFilterPick = false) {
           }
         }
 
-        // ファイルにタグがない場合のみGemini判定カテゴリを使用（ファイルタグが最優先）
+        // aiCategoryが最優先（一括判定で修正済みの場合）、なければ末尾キーワード、それもなければデフォルト
         const savedAiCat = quizHistoryMap.get(title)?.aiCategory;
-        if (!category && savedAiCat) {
+        if (savedAiCat) {
           category = savedAiCat;
         } else if (!category) {
           category = defaultCategory;
@@ -5369,7 +5377,7 @@ ${explanation}
       quickPick.items = presetItems;
       quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
 
-      quickPick.onDidAccept(() => {
+      quickPick.onDidAccept(async () => {
         const inputValue = quickPick.value;
 
         // 末尾が s / S / ｓ / Ｓ / し → その場置換モード（プリセット不要）
@@ -5484,8 +5492,36 @@ ${explanation}
 【ファイル内容】
 ${fullText}`;
 
+          // XDデータJSONファイルを選択して添付（任意）
+          let finalPrompt = reviewPrompt;
+          const attach = await vscode.window.showQuickPick(
+            ['📂 XDデータを添付する', '⏭ スキップ'],
+            { placeHolder: 'デザインカンプ（XD）のJSONファイルを添付しますか？' }
+          );
+          if (attach && attach.startsWith('📂')) {
+            const uris = await vscode.window.showOpenDialog({
+              canSelectMany: false,
+              filters: { 'JSON': ['json'] },
+              title: 'XDデータJSONを選択'
+            });
+            if (uris && uris.length > 0) {
+              try {
+                const jsonText = fs.readFileSync(uris[0].fsPath, 'utf8');
+                const xdData = JSON.parse(jsonText);
+                if (Array.isArray(xdData) && xdData.length > 0 && 'text' in xdData[0]) {
+                  const xdSummary = xdData.map((d: any) =>
+                    `・${d.text}  font-size:${d.fontSize || '—'}  font-family:${d.fontFamily || '—'}  font-weight:${d.fontWeight || '—'}  line-height:${d.lineHeight || '—'}  color:${d.color || '—'}`
+                  ).join('\n');
+                  finalPrompt += `\n\n---\n【デザインカンプ（XD）の指定値】\n以下はデザインカンプから取得したフォント・色の指定値です。CSSの実装値と照合して、ズレがあれば指摘してください。\n${xdSummary}`;
+                }
+              } catch (_) {
+                vscode.window.showWarningMessage('JSONの読み込みに失敗しました。スキップします。');
+              }
+            }
+          }
+
           resolve({
-            question: reviewPrompt,
+            question: finalPrompt,
             isSvg: false,
             isSkeleton: false,
             isStructural: false,
@@ -6241,12 +6277,14 @@ ${fullText}`;
           }
 
           if (reviewItems.length === 0) {
-            // パース失敗 → フォールバックで別タブ表示
-            const doc = await vscode.workspace.openTextDocument({
-              content: `✨ レビュー結果\n${'='.repeat(40)}\n\n${cleanAnswer}`,
-              language: editor.document.languageId
-            });
-            await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+            // パース失敗 → カーソル行の上にコメントとして挿入
+            const cursorLine = editor.selection.active.line;
+            const insertPos = new vscode.Position(cursorLine, 0);
+            const commentText = lang === 'html'
+              ? `<!-- ✨ レビュー結果\n${cleanAnswer}\n-->\n`
+              : `/* ✨ レビュー結果\n${cleanAnswer}\n*/\n`;
+            await editor.edit(editBuilder => { editBuilder.insert(insertPos, commentText); });
+            vscode.window.showInformationMessage('レビュー結果をカーソル行の上に挿入しました');
           } else {
             const cssEdits: { line: number; comment: string }[] = [];
             const htmlEdits: { line: number; comment: string }[] = [];
@@ -6273,12 +6311,14 @@ ${fullText}`;
             }
 
             if (cssEdits.length === 0 && htmlEdits.length === 0) {
-              // マッチ失敗 → フォールバックで別タブ表示
-              const doc = await vscode.workspace.openTextDocument({
-                content: `✨ レビュー結果\n${'='.repeat(40)}\n\n${cleanAnswer}`,
-                language: editor.document.languageId
-              });
-              await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+              // マッチ失敗 → カーソル行の上にコメントとして挿入
+              const cursorLine = editor.selection.active.line;
+              const insertPos = new vscode.Position(cursorLine, 0);
+              const commentText = lang === 'html'
+                ? `<!-- ✨ レビュー結果\n${cleanAnswer}\n-->\n`
+                : `/* ✨ レビュー結果\n${cleanAnswer}\n*/\n`;
+              await editor.edit(editBuilder => { editBuilder.insert(insertPos, commentText); });
+              vscode.window.showInformationMessage('レビュー結果をカーソル行の上に挿入しました');
             } else {
               // CSS ファイルへの挿入
               if (cssEdits.length > 0) {
@@ -8442,6 +8482,48 @@ function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
           renderOptions: { after: { contentText: `  "${propName}: ${propInfo.value}" は通常ルールと同じ値です。@media内では不要な可能性があります` } }
         });
       }
+    }
+  }
+
+  // ⑨ ::before / ::after に content がないチェック
+  for (const rule of rules) {
+    const sel = rule.selector;
+    if (!sel.includes('::before') && !sel.includes('::after') &&
+        !sel.includes(':before')  && !sel.includes(':after')) { continue; }
+    if (!rule.props.has('content')) {
+      if (hasIgnoreComment(doc, rule.selectorOffset)) { continue; }
+      const start = doc.positionAt(rule.selectorOffset);
+      const end = lineEndPos(doc, rule.selectorOffset);
+      decorations.push({
+        range: new vscode.Range(start, end),
+        renderOptions: { after: { contentText: `  ⚠ "::before/::after" には "content" が必要です（content: "" でも可）` } }
+      });
+    }
+  }
+
+  // ⑩ animation に対応する @keyframes がないチェック
+  const definedKeyframes = new Set<string>();
+  const keyframeDefRegex = /@keyframes\s+([\w-]+)/g;
+  let kd: RegExpExecArray | null;
+  while ((kd = keyframeDefRegex.exec(text)) !== null) { definedKeyframes.add(kd[1]); }
+
+  for (const rule of rules) {
+    const animInfo = rule.props.get('animation') || rule.props.get('animation-name');
+    if (!animInfo) { continue; }
+    // animation値から名前部分を抽出（"fade 0.3s ease" → "fade"）
+    const animValue = animInfo.value.trim();
+    const knownKeywords = /^(none|initial|inherit|unset|normal|forwards|backwards|both|infinite|alternate|reverse|ease|linear|ease-in|ease-out|ease-in-out|step-start|step-end|\d)/;
+    const nameParts = animValue.split(/[\s,]+/).filter(p => p && !knownKeywords.test(p));
+    for (const name of nameParts) {
+      if (definedKeyframes.has(name)) { continue; }
+      if (hasIgnoreComment(doc, animInfo.offset)) { continue; }
+      const start = doc.positionAt(animInfo.offset);
+      const end = lineEndPos(doc, animInfo.offset);
+      decorations.push({
+        range: new vscode.Range(start, end),
+        renderOptions: { after: { contentText: `  ⚠ "@keyframes ${name}" が定義されていません` } }
+      });
+      break; // 同じプロパティに1つだけ警告
     }
   }
 
