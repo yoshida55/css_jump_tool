@@ -5376,8 +5376,10 @@ ${explanation}
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
       quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
+      let acceptHandled = false;
 
       quickPick.onDidAccept(async () => {
+        acceptHandled = true;
         const inputValue = quickPick.value;
 
         // 末尾が s / S / ｓ / Ｓ / し → その場置換モード（プリセット不要）
@@ -5667,7 +5669,9 @@ ${fullText}`;
       });
 
       quickPick.onDidHide(() => {
-        resolve(undefined);
+        if (!acceptHandled) {
+          resolve(undefined);
+        }
         quickPick.dispose();
       });
 
@@ -8366,6 +8370,41 @@ function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
           renderOptions: { after: { contentText: `  "display: grid" には "grid-template-columns" か "grid-template-rows" が必要です` } }
         });
       }
+    }
+  }
+
+  // ⑤' margin/padding ロングハンドをまとめる提案
+  const longhandGroups = [
+    { shorthand: 'margin',  sides: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'] },
+    { shorthand: 'padding', sides: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'] },
+  ];
+  for (const rule of rules) {
+    for (const group of longhandGroups) {
+      if (rule.props.has(group.shorthand)) { continue; } // shorthand既にあり → スキップ
+      const found = group.sides.filter(s => rule.props.has(s));
+      if (found.length < 2) { continue; }
+
+      // ショートハンド提案値を生成（未指定は '0' 扱い）
+      const tv = rule.props.get(`${group.shorthand}-top`)?.value    ?? '0';
+      const rv = rule.props.get(`${group.shorthand}-right`)?.value  ?? '0';
+      const bv = rule.props.get(`${group.shorthand}-bottom`)?.value ?? '0';
+      const lv = rule.props.get(`${group.shorthand}-left`)?.value   ?? '0';
+      let suggestion: string;
+      if (tv === rv && rv === bv && bv === lv)      { suggestion = `${group.shorthand}: ${tv}`; }
+      else if (rv === lv && tv === bv)              { suggestion = `${group.shorthand}: ${tv} ${rv}`; }
+      else if (rv === lv)                           { suggestion = `${group.shorthand}: ${tv} ${rv} ${bv}`; }
+      else                                          { suggestion = `${group.shorthand}: ${tv} ${rv} ${bv} ${lv}`; }
+
+      // 最初のロングハンドの行にヒントを出す
+      const firstInfo = found
+        .map(lh => rule.props.get(lh)!)
+        .reduce((a, b) => a.offset < b.offset ? a : b);
+      const hintStart = doc.positionAt(firstInfo.offset);
+      const hintEnd   = lineEndPos(doc, firstInfo.offset);
+      decorations.push({
+        range: new vscode.Range(hintStart, hintEnd),
+        renderOptions: { after: { contentText: `  [参考] ${found.join(' + ')} → ${suggestion}; にまとめられます` } }
+      });
     }
   }
 
