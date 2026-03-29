@@ -12,7 +12,8 @@
     "tabs",
     "nativeMessaging",
     "webRequest",
-    "downloads"
+    "downloads",
+    "debugger"
   ],
   "host_permissions": [
     "<all_urls>",

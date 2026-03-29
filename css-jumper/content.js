@@ -650,14 +650,6 @@ document.addEventListener("click", function(event) {
     return;
   }
 
-  if (event.shiftKey && !event.altKey && !event.ctrlKey) {
-    // Shift+クリック → CSS説明表示 + ジャンプ
-    event.preventDefault();
-    event.stopPropagation();
-    requestCssExplanationAndJump(event.target);
-    return;
-  }
-
   if (event.altKey) {
     event.preventDefault();
     event.stopPropagation();
@@ -4487,12 +4479,22 @@ function onLayoutMouseMove(e) {
     if (key === xdLastKey) { return; } // 同じ要素は無視
     xdLastKey = key;
 
-    // 同じテキストのエントリがあれば上書き、なければ追加
+    // テキスト + フォントサイズが両方同じなら上書き、サイズが違えば別エントリ追加
     var idx = -1;
     for (var i = 0; i < xdCaptured.length; i++) {
-      if (xdCaptured[i].text === text) { idx = i; break; }
+      if (xdCaptured[i].text === text && xdCaptured[i].fontSize === style.fontSize) { idx = i; break; }
     }
-    var item = { text: text, fontSize: style.fontSize, fontFamily: style.fontFamily, fontWeight: style.fontWeight, lineHeight: style.lineHeight, color: style.color };
+
+    // 同じテキストが既にある場合、連番サフィックスをつける（創作(2)、創作(3)…）
+    var displayText = text;
+    if (idx < 0) {
+      var sameTextCount = xdCaptured.filter(function(c) {
+        return c.text === text || c.text.replace(/\(\d+\)$/, '') === text;
+      }).length;
+      if (sameTextCount > 0) { displayText = text + '(' + (sameTextCount + 1) + ')'; }
+    }
+
+    var item = { text: displayText, fontSize: style.fontSize, fontFamily: style.fontFamily, fontWeight: style.fontWeight, lineHeight: style.lineHeight, color: style.color };
     if (idx >= 0) { xdCaptured[idx] = item; } else { xdCaptured.push(item); }
 
     // 件数バッジを更新

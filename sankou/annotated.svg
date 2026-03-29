@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 600 1900" width="600" height="1900">
+
+  <!-- デザインカンプ画像 -->
+  <image href="./一枚で全部のスクショ.png" x="0" y="0"
+         width="600" height="1900"
+         preserveAspectRatio="xMidYMin meet"/>
+
+  <!-- 凡例 -->
+  <rect x="4" y="4" width="210" height="20" rx="3" fill="#1e1e2e" opacity="0.85"/>
+  <text x="8" y="18" font-family="monospace" font-size="10" fill="#89b4fa">黄=フォント確認済み  橙=フッター要素</text>
+
+  <!-- ========================================
+       セクション: お知らせ (y ~ 35%)
+       ======================================== -->
+
+  <!-- ① お知らせ 16px -->
+  <circle cx="482" cy="633" r="5" fill="#FFE84D" stroke="#333" stroke-width="1"/>
+  <line x1="482" y1="633" x2="340" y2="625" stroke="#FFE84D" stroke-width="1"/>
+  <rect x="130" y="613" width="208" height="28" rx="3" fill="#FFE84D" opacity="0.93"/>
+  <text x="136" y="624" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">お知らせ</text>
+  <text x="136" y="637" font-family="monospace" font-size="10" fill="#1e1e2e">16px / Yu Mincho / #FFFFFF</text>
+
+  <!-- ========================================
+       セクション: 新しい価値の創造 (y ~ 52%)
+       ======================================== -->
+
+  <!-- ② 新しい価値の創造 36px -->
+  <circle cx="448" cy="945" r="5" fill="#FFE84D" stroke="#333" stroke-width="1"/>
+  <line x1="448" y1="945" x2="330" y2="937" stroke="#FFE84D" stroke-width="1"/>
+  <rect x="120" y="925" width="208" height="28" rx="3" fill="#FFE84D" opacity="0.93"/>
+  <text x="126" y="936" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">新しい価値の創造</text>
+  <text x="126" y="949" font-family="monospace" font-size="10" fill="#1e1e2e">36px / Yu Mincho / #000000</text>
+
+  <!-- ③ テキストテキスト 16px (黄色帯エリア) -->
+  <circle cx="250" cy="1085" r="5" fill="#FFE84D" stroke="#333" stroke-width="1"/>
+  <line x1="250" y1="1085" x2="176" y2="1077" stroke="#FFE84D" stroke-width="1"/>
+  <rect x="8" y="1065" width="166" height="28" rx="3" fill="#FFE84D" opacity="0.93"/>
+  <text x="14" y="1076" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">テキストテキスト</text>
+  <text x="14" y="1089" font-family="monospace" font-size="10" fill="#1e1e2e">16px / Yu Mincho / #FFF</text>
+
+  <!-- ========================================
+       セクション: 科学と技術の調和 (y ~ 67%)
+       ======================================== -->
+
+  <!-- ④ 科学と技術の調和 36px -->
+  <circle cx="75" cy="1220" r="5" fill="#FFE84D" stroke="#333" stroke-width="1"/>
+  <line x1="75" y1="1220" x2="100" y2="1212" stroke="#FFE84D" stroke-width="1"/>
+  <rect x="8" y="1200" width="208" height="28" rx="3" fill="#FFE84D" opacity="0.93"/>
+  <text x="14" y="1211" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">科学と技術の調和</text>
+  <text x="14" y="1224" font-family="monospace" font-size="10" fill="#1e1e2e">36px / Yu Mincho / #000000</text>
+
+  <!-- ========================================
+       フッター (y ~ 80%〜)
+       ======================================== -->
+
+  <!-- ⑤ ０３|XXXX|XXXX  67px (大きい電話番号) -->
+  <circle cx="440" cy="1500" r="5" fill="#FF9800" stroke="#333" stroke-width="1"/>
+  <line x1="440" y1="1500" x2="360" y2="1492" stroke="#FF9800" stroke-width="1"/>
+  <rect x="148" y="1480" width="210" height="28" rx="3" fill="#FF9800" opacity="0.93"/>
+  <text x="154" y="1491" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">０３|XXXX|XXXX</text>
+  <text x="154" y="1504" font-family="monospace" font-size="10" fill="#1e1e2e">67px / Yu Mincho / #FFFFFF</text>
+
+  <!-- ⑥ 住所 14px -->
+  <circle cx="455" cy="1600" r="5" fill="#FF9800" stroke="#333" stroke-width="1"/>
+  <line x1="455" y1="1600" x2="370" y2="1592" stroke="#FF9800" stroke-width="1"/>
+  <rect x="158" y="1580" width="210" height="28" rx="3" fill="#FF9800" opacity="0.93"/>
+  <text x="164" y="1591" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">〒 住所テキスト</text>
+  <text x="164" y="1604" font-family="monospace" font-size="10" fill="#1e1e2e">14px / Yu Mincho / #FFFFFF</text>
+
+  <!-- ⑦ 商品のご紹介 16px -->
+  <circle cx="455" cy="1645" r="5" fill="#FF9800" stroke="#333" stroke-width="1"/>
+  <line x1="455" y1="1645" x2="370" y2="1637" stroke="#FF9800" stroke-width="1"/>
+  <rect x="158" y="1625" width="180" height="28" rx="3" fill="#FF9800" opacity="0.93"/>
+  <text x="164" y="1636" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">商品のご紹介</text>
+  <text x="164" y="1649" font-family="monospace" font-size="10" fill="#1e1e2e">16px / Yu Mincho / #FFFFFF</text>
+
+  <!-- ⑧ 店舗のご案内 16px -->
+  <circle cx="455" cy="1685" r="5" fill="#FF9800" stroke="#333" stroke-width="1"/>
+  <line x1="455" y1="1685" x2="370" y2="1677" stroke="#FF9800" stroke-width="1"/>
+  <rect x="158" y="1665" width="180" height="28" rx="3" fill="#FF9800" opacity="0.93"/>
+  <text x="164" y="1676" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">店舗のご案内</text>
+  <text x="164" y="1689" font-family="monospace" font-size="10" fill="#1e1e2e">16px / Yu Mincho / #FFFFFF</text>
+
+  <!-- ⑨ オンラインストア〜お問い合わせ 14px -->
+  <circle cx="300" cy="1725" r="5" fill="#FF9800" stroke="#333" stroke-width="1"/>
+  <line x1="300" y1="1725" x2="240" y2="1717" stroke="#FF9800" stroke-width="1"/>
+  <rect x="8" y="1705" width="230" height="28" rx="3" fill="#FF9800" opacity="0.93"/>
+  <text x="14" y="1716" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">オンラインストア〜お問い合わせ</text>
+  <text x="14" y="1729" font-family="monospace" font-size="10" fill="#1e1e2e">14px / Yu Mincho / #FFFFFF</text>
+
+  <!-- ⑩ © SOUSAKU 10px -->
+  <circle cx="295" cy="1868" r="5" fill="#FF9800" stroke="#333" stroke-width="1"/>
+  <line x1="295" y1="1868" x2="220" y2="1860" stroke="#FF9800" stroke-width="1"/>
+  <rect x="8" y="1848" width="160" height="28" rx="3" fill="#FF9800" opacity="0.93"/>
+  <text x="14" y="1859" font-family="monospace" font-size="10" font-weight="bold" fill="#1e1e2e">© SOUSAKU</text>
+  <text x="14" y="1872" font-family="monospace" font-size="10" fill="#1e1e2e">10px / Yu Mincho / #FFFFFF</text>
+
+</svg>

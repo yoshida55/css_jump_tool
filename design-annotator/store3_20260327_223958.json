@@ -1,0 +1,90 @@
+[
+  {
+    "text": "タ イ ト ル タ イ ト ル タ イ ト ル タ イ ト ル",
+    "fontSize": "16px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#000000"
+  },
+  {
+    "text": "お 知 ら せ",
+    "fontSize": "36px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#000000"
+  },
+  {
+    "text": "商 品 の ご 紹 介",
+    "fontSize": "16px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  },
+  {
+    "text": "店 舗 の ご 案 内",
+    "fontSize": "16px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  },
+  {
+    "text": "新 し い 価 値 の 創 造",
+    "fontSize": "36px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#000000"
+  },
+  {
+    "text": "テキストテキスト テキストテキスト",
+    "fontSize": "16px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  },
+  {
+    "text": "科 学 と 技 術 の 調 和",
+    "fontSize": "36px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#000000"
+  },
+  {
+    "text": "オ ン ラ イ ン ス ト ア を 見 る ― お 問 い 合 わ せ",
+    "fontSize": "14px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  },
+  {
+    "text": "© SOUSAKU",
+    "fontSize": "10px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  },
+  {
+    "text": "〒 １ ０ ６ | ０ ０ ３ ２ 　 東 京 都 港 区 六 本 木 ５ 丁 目 × × × × ×",
+    "fontSize": "14px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  },
+  {
+    "text": "０ ３ | Ｘ Ｘ Ｘ Ｘ | Ｘ Ｘ Ｘ Ｘ",
+    "fontSize": "67px",
+    "fontFamily": "Yu Mincho,",
+    "fontWeight": "Regular",
+    "lineHeight": "",
+    "color": "#FFFFFF"
+  }
+]

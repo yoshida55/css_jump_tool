@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>デザインアノテーター</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #1e1e2e; color: #cdd6f4; font-family: monospace; }
+
+    #header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 10px 16px;
+      background: #313244;
+      border-bottom: 1px solid #45475a;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #header h1 { font-size: 13px; color: #89b4fa; margin-right: 8px; }
+    #hint { font-size: 11px; color: #6c7086; margin-left: auto; }
+
+    button {
+      padding: 5px 12px;
+      background: #45475a;
+      color: #cdd6f4;
+      border: 1px solid #585b70;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: monospace;
+    }
+    button:hover { background: #585b70; }
+    button.danger { color: #f38ba8; border-color: #f38ba8; }
+
+    #main { padding: 20px; }
+
+    /* 画像ドロップゾーン */
+    #drop-zone {
+      width: 680px;
+      height: 200px;
+      border: 2px dashed #585b70;
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #6c7086;
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    #drop-zone:hover, #drop-zone.dragover {
+      border-color: #89b4fa;
+      background: rgba(137, 180, 250, 0.05);
+      color: #89b4fa;
+    }
+    #drop-zone span { font-size: 32px; margin-bottom: 8px; }
+
+    #canvas-area {
+      position: relative;
+      display: none;        /* 画像が来るまで非表示 */
+      cursor: crosshair;
+    }
+
+    #design-img {
+      display: block;
+      width: 680px;
+      height: auto;
+    }
+
+    .ann-label {
+      position: absolute;
+      background: rgba(255, 232, 77, 0.95);
+      color: #1e1e2e;
+      font-size: 11px;
+      font-weight: bold;
+      padding: 3px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      z-index: 9;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+      cursor: grab;
+      user-select: none;
+    }
+    .ann-label:hover { background: rgba(255, 200, 0, 0.98); }
+    .ann-label.dragging { cursor: grabbing; z-index: 30; }
+
+    .pin-input {
+      position: absolute;
+      z-index: 20;
+      background: #1e1e2e;
+      border: 2px solid #89b4fa;
+      border-radius: 6px;
+      color: #cdd6f4;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 5px 10px;
+      width: 220px;
+      outline: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6);
+    }
+
+    #tooltip {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #313244;
+      color: #a6e3a1;
+      font-size: 11px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1px solid #45475a;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    #tooltip.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>デザインアノテーター</h1>
+  <button onclick="saveJSON()">JSON保存</button>
+  <button onclick="loadJSON()">JSON読み込み</button>
+  <button class="danger" onclick="clearAll()">全削除</button>
+  <span id="hint">クリック→入力→Enter / ラベルをドラッグで移動 / ダブルクリックで編集 / Ctrl+Z で元に戻す</span>
+</div>
+
+<div id="main">
+
+  <!-- 画像ドロップゾーン（画像が来たら非表示） -->
+  <div id="drop-zone">
+    <span>🖼</span>
+    デザインカンプをここにドロップ<br>
+    <small style="margin-top:6px; font-size:11px;">PNG / JPG / JPEG</small>
+  </div>
+
+  <!-- アノテーションキャンバス（画像が来たら表示） -->
+  <div id="canvas-area">
+    <img id="design-img" alt="デザインカンプ" draggable="false"/>
+  </div>
+
+</div>
+
+<div id="tooltip"></div>
+<input type="file" id="json-file-input" accept=".json" style="display:none"/>
+
+<script>
+  var annotations = [];
+  var pinCount = 0;
+  var history = [];          // Ctrl+Z 用
+  var canvasArea = document.getElementById('canvas-area');
+  var img        = document.getElementById('design-img');
+  var dropZone   = document.getElementById('drop-zone');
+
+  // ========== 起動時：自動保存を復元 ==========
+  (function restoreFromStorage() {
+    var saved = localStorage.getItem('annotator_data');
+    if (!saved) return;
+    try {
+      var data = JSON.parse(saved);
+      annotations = data.annotations || [];
+      pinCount    = data.pinCount    || 0;
+      // 画像は保存できないので復元しない（毎回ドロップが必要）
+    } catch(e) {}
+  })();
+
+  // ========== 画像ドロップ ==========
+  dropZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+  });
+  dropZone.addEventListener('dragleave', function() {
+    dropZone.classList.remove('dragover');
+  });
+  dropZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    var file = e.dataTransfer.files[0];
+    if (!file || !file.type.startsWith('image/')) {
+      showTooltip('画像ファイルをドロップしてください');
+      return;
+    }
+    loadImage(file);
+  });
+  // クリックでもファイル選択できる
+  dropZone.addEventListener('click', function() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', function(e) {
+      if (e.target.files[0]) loadImage(e.target.files[0]);
+    });
+    input.click();
+  });
+
+  function loadImage(file) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      img.src = e.target.result;
+      img.onload = function() {
+        dropZone.style.display = 'none';
+        canvasArea.style.display = 'inline-block';
+        renderAnnotations();
+        showTooltip('画像を読み込みました');
+      };
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // ========== クリックでアノテーション追加 ==========
+  canvasArea.addEventListener('click', function(e) {
+    if (e.target.classList.contains('ann-label')) return;
+    var rect = canvasArea.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var y = e.clientY - rect.top;
+    showInput(x, y, null);
+  });
+
+  // ========== Ctrl+Z ==========
+  document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+      e.preventDefault();
+      if (history.length === 0) { showTooltip('これ以上戻れません'); return; }
+      var prev = history.pop();
+      annotations = prev.annotations;
+      pinCount    = prev.pinCount;
+      renderAnnotations();
+      autoSave();
+      showTooltip('元に戻しました');
+    }
+  });
+
+  // ========== 入力欄表示 ==========
+  function showInput(x, y, existingAnn) {
+    var prev = document.querySelector('.pin-input');
+    if (prev) prev.remove();
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'pin-input';
+    input.placeholder = 'margin-top: 40px など';
+
+    var inputX = x + 8;
+    var inputY = y + 8;
+    if (inputX + 228 > img.offsetWidth)  inputX = x - 236;
+    if (inputY + 38  > img.offsetHeight) inputY = y - 46;
+    input.style.left = inputX + 'px';
+    input.style.top  = inputY + 'px';
+
+    if (existingAnn) { input.value = existingAnn.text; }
+
+    canvasArea.appendChild(input);
+    input.focus();
+    if (existingAnn) input.select();
+
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.stopPropagation();
+        var text = input.value.trim();
+        input.remove();
+        if (!text) return;
+
+        pushHistory();
+
+        if (existingAnn) {
+          existingAnn.text = text;
+        } else {
+          pinCount++;
+          annotations.push({
+            id: pinCount,
+            xPct: x / img.offsetWidth  * 100,
+            yPct: y / img.offsetHeight * 100,
+            text: text
+          });
+        }
+        renderAnnotations();
+        autoSave();
+        showTooltip('追加: ' + text);
+      }
+      if (e.key === 'Escape') { input.remove(); }
+      if (e.key === 'Delete' && existingAnn) {
+        pushHistory();
+        annotations = annotations.filter(function(a) { return a.id !== existingAnn.id; });
+        renderAnnotations();
+        autoSave();
+        input.remove();
+        showTooltip('削除しました');
+      }
+    });
+
+    input.addEventListener('blur', function() {
+      setTimeout(function() { if (input.parentNode) input.remove(); }, 150);
+    });
+  }
+
+  // ========== 描画 ==========
+  function renderAnnotations() {
+    document.querySelectorAll('.ann-label').forEach(function(el) { el.remove(); });
+
+    annotations.forEach(function(ann) {
+      var x = ann.xPct / 100 * img.offsetWidth;
+      var y = ann.yPct / 100 * img.offsetHeight;
+
+      var labelX, labelY;
+      if (ann.labelDx !== undefined) {
+        labelX = x + ann.labelDx;
+        labelY = y + ann.labelDy;
+      } else {
+        labelX = (x + 200 > img.offsetWidth) ? x - 185 : x + 13;
+        labelY = y - 10;
+      }
+
+      var label = document.createElement('div');
+      label.className = 'ann-label';
+      label.style.left = labelX + 'px';
+      label.style.top  = labelY + 'px';
+      label.textContent = ann.text;
+      label.title = 'ダブルクリックで編集';
+
+      label.addEventListener('dblclick', function(e) {
+        e.stopPropagation();
+        showInput(x, y, ann);
+      });
+
+      makeDraggable(label, ann, x, y);
+      canvasArea.appendChild(label);
+    });
+  }
+
+  // ========== ドラッグ ==========
+  function makeDraggable(label, ann, pinX, pinY) {
+    label.addEventListener('mousedown', function(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      label.classList.add('dragging');
+
+      var startMouseX = e.clientX;
+      var startMouseY = e.clientY;
+      var startLeft   = parseFloat(label.style.left);
+      var startTop    = parseFloat(label.style.top);
+
+      function onMove(e) {
+        label.style.left = (startLeft + e.clientX - startMouseX) + 'px';
+        label.style.top  = (startTop  + e.clientY - startMouseY) + 'px';
+      }
+      function onUp() {
+        label.classList.remove('dragging');
+        ann.labelDx = parseFloat(label.style.left) - pinX;
+        ann.labelDy = parseFloat(label.style.top)  - pinY;
+        autoSave();
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup',   onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',   onUp);
+    });
+  }
+
+  // ========== 自動保存 ==========
+  function autoSave() {
+    localStorage.setItem('annotator_data', JSON.stringify({
+      annotations: annotations,
+      pinCount:    pinCount
+    }));
+  }
+
+  // ========== 履歴（Ctrl+Z用） ==========
+  function pushHistory() {
+    history.push({
+      annotations: JSON.parse(JSON.stringify(annotations)),
+      pinCount:    pinCount
+    });
+    if (history.length > 30) history.shift(); // 最大30件
+  }
+
+  // ========== JSON保存 ==========
+  function saveJSON() {
+    if (annotations.length === 0) { showTooltip('メモがありません'); return; }
+    var blob = new Blob([JSON.stringify(annotations, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'annotations.json';
+    a.click();
+    showTooltip('保存しました (' + annotations.length + '件)');
+  }
+
+  // ========== JSON読み込み ==========
+  function loadJSON() { document.getElementById('json-file-input').click(); }
+
+  document.getElementById('json-file-input').addEventListener('change', function(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      try {
+        var data = JSON.parse(ev.target.result);
+
+        // XD形式（fontSize/fontFamilyあり・xPctなし）かどうか判定
+        var isXdFormat = data.length > 0 && data[0].fontSize !== undefined && data[0].xPct === undefined;
+
+        if (isXdFormat) {
+          // XD形式 → 右端に縦並びで配置（あとでドラッグして移動）
+          var imported = data.map(function(item, i) {
+            pinCount++;
+            // ラベルテキスト：テキスト冒頭(10文字) + フォントサイズ
+            var shortText = (item.text || '').replace(/\s+/g, '').substring(0, 8);
+            var label = shortText + ': ' + (item.fontSize || '?');
+            return {
+              id:     pinCount,
+              xPct:   92,                              // 右端
+              yPct:   5 + (i * (85 / data.length)),   // 縦均等配置
+              text:   label
+            };
+          });
+          annotations = annotations.concat(imported);
+          renderAnnotations();
+          autoSave();
+          showTooltip('XDデータ ' + imported.length + '件を右端に配置 → ドラッグで移動してください');
+        } else {
+          // アノテーター形式（通常読み込み）
+          annotations = data;
+          pinCount = data.reduce(function(max, a) { return Math.max(max, a.id); }, 0);
+          renderAnnotations();
+          autoSave();
+          showTooltip(annotations.length + '件 読み込みました');
+        }
+      } catch(err) { showTooltip('読み込み失敗'); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  // ========== 全削除 ==========
+  function clearAll() {
+    if (!confirm('全部削除しますか？')) return;
+    pushHistory();
+    annotations = [];
+    pinCount = 0;
+    renderAnnotations();
+    autoSave();
+    showTooltip('全削除しました');
+  }
+
+  // ========== ツールチップ ==========
+  function showTooltip(msg) {
+    var t = document.getElementById('tooltip');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._timer);
+    t._timer = setTimeout(function() { t.classList.remove('show'); }, 2000);
+  }
+
+  window.addEventListener('resize', renderAnnotations);
+</script>
+</body>
+</html>

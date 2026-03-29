@@ -21,9 +21,134 @@ document.addEventListener("DOMContentLoaded", function () {
   var saveApiKeyBtn = document.getElementById("saveApiKeyBtn");
   var claudeModelSelect = document.getElementById("claudeModel");
   var apiKeyStatus = document.getElementById("apiKeyStatus");
+  var screenshotBtn = document.getElementById("screenshotBtn");
+  var screenshotStatus = document.getElementById("screenshotStatus");
 
   // 保存された情報を読み込み
   loadSavedData();
+
+  // ========== スクリーンショット ==========
+  screenshotBtn.addEventListener("click", function () {
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      if (!tabs || !tabs[0]) {
+        showScreenshotStatus("⚠️ アクティブなタブが見つかりません", "error");
+        return;
+      }
+      takeFullPageScreenshot(tabs[0].id);
+    });
+  });
+
+  function takeFullPageScreenshot(tabId) {
+    showScreenshotStatus("準備中（スクロールして全体読み込み）...", "info");
+    screenshotBtn.disabled = true;
+
+    chrome.debugger.attach({ tabId: tabId }, "1.3", function () {
+      if (chrome.runtime.lastError) {
+        showScreenshotStatus("⚠️ " + chrome.runtime.lastError.message, "error");
+        screenshotBtn.disabled = false;
+        return;
+      }
+
+      // ① まず一番下までスクロール（遅延読み込みを全部発火させる）
+      showScreenshotStatus("スクロール中（遅延読み込み待ち）...", "info");
+      chrome.debugger.sendCommand({ tabId: tabId }, "Runtime.evaluate", {
+        expression: "window.scrollTo(0, document.body.scrollHeight)"
+      }, function () {
+        // ② 遅延読み込みが完了するまで待機（2秒）
+        setTimeout(function () {
+
+          // ③ 一番上に戻す
+          chrome.debugger.sendCommand({ tabId: tabId }, "Runtime.evaluate", {
+            expression: "window.scrollTo(0, 0)"
+          }, function () {
+            setTimeout(function () {
+
+              // ④ 実際のページ全体の高さをJSで取得（メトリクスより正確）
+              chrome.debugger.sendCommand({ tabId: tabId }, "Runtime.evaluate", {
+                expression: "JSON.stringify({ w: Math.max(document.body.scrollWidth, document.documentElement.scrollWidth), h: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) })"
+              }, function (sizeResult) {
+
+                var size = { w: 1440, h: 3000 }; // フォールバック値
+                try {
+                  size = JSON.parse(sizeResult.result.value);
+                } catch(e) {}
+
+                var width  = Math.max(size.w, 800);
+                var height = Math.max(size.h, 600);
+
+                showScreenshotStatus("撮影中（" + width + "×" + height + "px）...", "info");
+
+                // ⑤ ビューポートをページ全体サイズに拡張
+                chrome.debugger.sendCommand({ tabId: tabId }, "Emulation.setDeviceMetricsOverride", {
+                  width: width,
+                  height: height,
+                  deviceScaleFactor: 1,
+                  mobile: false
+                }, function () {
+
+                  // ⑥ フルページキャプチャ
+                  chrome.debugger.sendCommand({ tabId: tabId }, "Page.captureScreenshot", {
+                    format: "png",
+                    captureBeyondViewport: true,
+                    clip: { x: 0, y: 0, width: width, height: height, scale: 1 }
+                  }, function (result) {
+
+                    // ⑦ ビューポートを元に戻してデタッチ
+                    chrome.debugger.sendCommand({ tabId: tabId }, "Emulation.clearDeviceMetricsOverride", {}, function () {
+                      chrome.debugger.detach({ tabId: tabId });
+                    });
+
+                    screenshotBtn.disabled = false;
+
+                    if (chrome.runtime.lastError || !result || !result.data) {
+                      showScreenshotStatus("⚠️ キャプチャ失敗", "error");
+                      return;
+                    }
+
+                    // ⑧ PNGをダウンロード
+                    var ts = makeTimestamp();
+                    var dataUrl = "data:image/png;base64," + result.data;
+                    chrome.downloads.download({
+                      url: dataUrl,
+                      filename: "screenshot_" + ts + ".png"
+                    }, function () {
+                      showScreenshotStatus("✓ 保存: screenshot_" + ts + ".png", "success");
+                    });
+                  });
+                });
+              });
+            }, 500);
+          });
+        }, 2000); // 遅延読み込み待ち 2秒
+      });
+    });
+  }
+
+  function detachAndReset(tabId) {
+    chrome.debugger.detach({ tabId: tabId });
+    screenshotBtn.disabled = false;
+  }
+
+  function makeTimestamp() {
+    var d = new Date();
+    return d.getFullYear()
+      + pad2(d.getMonth() + 1)
+      + pad2(d.getDate())
+      + "_"
+      + pad2(d.getHours())
+      + pad2(d.getMinutes())
+      + pad2(d.getSeconds());
+  }
+
+  function pad2(n) { return String(n).padStart(2, "0"); }
+
+  function showScreenshotStatus(msg, type) {
+    screenshotStatus.textContent = msg;
+    screenshotStatus.className = "status " + (type || "");
+    if (type !== "info") {
+      setTimeout(function () { screenshotStatus.className = "status"; }, 4000);
+    }
+  }
 
   // Claude API Key保存
   saveApiKeyBtn.addEventListener("click", function () {
