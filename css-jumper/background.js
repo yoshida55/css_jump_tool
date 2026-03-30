@@ -1459,14 +1459,4 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     return true;
   }
 
-  // JSONファイルをダウンロードフォルダに保存（chrome.downloads使用）
-  if (msg.type === 'SAVE_XD_JSON') {
-    var json = msg.json || '[]';
-    var filename = msg.filename || 'xd_design.json';
-    var dataUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(json);
-    chrome.downloads.download({ url: dataUrl, filename: filename, saveAs: true }, function(downloadId) {
-      sendResponse({ ok: true, downloadId: downloadId });
-    });
-    return true; // 非同期応答
-  }
 });
