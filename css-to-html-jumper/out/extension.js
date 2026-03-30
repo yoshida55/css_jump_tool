@@ -1664,7 +1664,7 @@ ${titleList}
 - 候補に合わない場合は先頭のカテゴリ（${categoryList[0]}）にする
 - JSON配列のみ返す（他のテキスト禁止）
 
-出力形式: [{"i":0,"c":"その他"},{"i":1,"c":"wordpress/php"}]`;
+出力形式: [{"i":0,"c":"その他"},{"i":1,"c":"WordPress"}]`;
                 const postData = JSON.stringify({
                     contents: [{ parts: [{ text: prompt }] }],
                     generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: 'application/json' }

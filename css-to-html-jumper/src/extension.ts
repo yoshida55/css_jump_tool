@@ -1741,7 +1741,7 @@ ${titleList}
 - 候補に合わない場合は先頭のカテゴリ（${categoryList[0]}）にする
 - JSON配列のみ返す（他のテキスト禁止）
 
-出力形式: [{"i":0,"c":"その他"},{"i":1,"c":"wordpress/php"}]`;
+出力形式: [{"i":0,"c":"その他"},{"i":1,"c":"WordPress"}]`;
 
         const postData = JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
@@ -2209,7 +2209,7 @@ async function handleQuiz(showFilterPick = false) {
         const streakLabel = streak > 0 ? `  🔥${streak}日連続` : '';
         const staging3Count = [...quizHistoryMap.values()].filter(h => h.stagingLevel === 3).length;
         const htmlCount = unstagedHeadings.filter(h => h.category?.toLowerCase() === 'html').length;
-        const wpCount = unstagedHeadings.filter(h => h.category?.toLowerCase() === 'wordpress').length;
+        const wpCount = unstagedHeadings.filter(h => h.category?.toLowerCase().includes('wordpress')).length;
 
         const topItems: TopItem[] = [
           { label: `📅 今日のメモから出題`, description: `${todayCount}件`, mode: 'today' },
@@ -2250,7 +2250,7 @@ async function handleQuiz(showFilterPick = false) {
         const targetCat = selectedMode === 'wordpress-only' ? 'wordpress' : 'html';
         const filtered = headings.filter(h => {
           if (stagedTitles.has(h.title)) { return false; }
-          return h.category?.toLowerCase() === targetCat;
+          return h.category?.toLowerCase().includes(targetCat);
         });
         if (filtered.length === 0) {
           vscode.window.showInformationMessage('該当するカテゴリのメモが見つかりませんでした。出題方法を選び直してください。');
