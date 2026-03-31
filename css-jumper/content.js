@@ -554,6 +554,31 @@ document.addEventListener("keydown", function(event) {
 // VS Codeジャンプの共通処理
 // preferMobile: trueの場合、メディアクエリ内を優先検索
 function jumpToVSCode(clickedElement, preferMobile) {
+
+  // PHPソースジャンプ（data-php-src 属性チェック）
+  // PHPが出力した data-php-src="C:/path/to/file.php:42" があれば直接PHPファイルへジャンプ
+  var phpEl = clickedElement;
+  while (phpEl && phpEl !== document.body) {
+    var phpSrc = phpEl.getAttribute("data-php-src");
+    if (phpSrc) {
+      var lastColon = phpSrc.lastIndexOf(":");
+      var phpFilePath = phpSrc.substring(0, lastColon);
+      var phpLineNumber = parseInt(phpSrc.substring(lastColon + 1), 10) || 1;
+      showNotification("PHP: " + phpFilePath.split(/[/\\]/).pop() + ":" + phpLineNumber, "success");
+      try {
+        chrome.runtime.sendMessage({
+          action: "phpJumpResult",
+          filePath: phpFilePath,
+          lineNumber: phpLineNumber
+        });
+      } catch (e) {
+        showNotification("通信エラー: ページをリロードしてください", "error");
+      }
+      return;
+    }
+    phpEl = phpEl.parentElement;
+  }
+
   var targetElement = clickedElement;
 
   // クリックした要素からIDまたはクラスを持つ要素を探す（親を遡る）
@@ -632,10 +657,10 @@ function jumpToVSCode(clickedElement, preferMobile) {
   }
 }
 
-// localhost / 127.0.0.1 / file:// のみで動作させるガード
+// localhost / 127.0.0.1 / *.local / file:// のみで動作させるガード
 function isLocalPage() {
   var host = location.hostname;
-  return host === "localhost" || host === "127.0.0.1" || location.protocol === "file:";
+  return host === "localhost" || host === "127.0.0.1" || host.endsWith(".local") || location.protocol === "file:";
 }
 
 // Alt+クリックでVS Codeを開く / Alt+Shift+クリックでAIアドバイス

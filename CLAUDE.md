@@ -13,6 +13,7 @@ css-jumper/
 ├── content.js             ... ページ操作（Alt+クリック検知、表示機能）
 ├── popup.html / popup.js  ... 設定UI
 ├── setup.bat              ... セットアップ用バッチ
+├── debug_helper.php       ... PHPジャンプ用ヘルパー（php_src()関数）
 └── native-host/
     ├── open_vscode.exe              ... VS Code起動用（Python不要）
     ├── open_vscode.py               ... exeのソース
@@ -35,6 +36,7 @@ css-to-html-jumper/
 | 機能                | 操作                                | 説明                                |
 | ------------------- | ----------------------------------- | ----------------------------------- |
 | CSSジャンプ         | Alt+クリック                        | CSSファイルのみ開く                 |
+| **PHPジャンプ**     | **Alt+クリック（data-php-src属性）** | **PHPテンプレートの該当行を開く**   |
 | **3点連携ジャンプ** | **ダブルクリック**                  | **CSS + HTML🟡 + ブラウザ🔴**       |
 | **モバイルCSS検索** | **Ctrl+ダブルクリック / 767px以下** | **@media内を優先検索**              |
 | **HTMLハイライト**  | **上記ジャンプ時**                  | **HTMLファイル該当行を黄色3秒表示** |
@@ -86,6 +88,64 @@ flex 横  .wrapper           ← 紫（深さ0）
 - `getElemSelector()` — 要素のクラス名/ID/タグ名を取得
 - `showFlexInfo()` — ラベル生成・配置・クリックイベント設定
 - `removeFlexInfo()` — ラベル削除
+
+### PHPジャンプ（2026-03-31追加）
+
+#### 概要
+
+PHPテンプレートが出力したHTML要素を Alt+クリックすると、そのPHPファイルの該当行をVS Codeで開く機能。
+
+#### 使い方（PHP側）
+
+```php
+require_once 'debug_helper.php';  // または functions.php でrequire
+
+// タグの中に php_src() を書くだけ
+<section <?= php_src() ?>>...</section>
+<div <?= php_src() ?> class="hero">...</div>
+```
+
+出力されるHTML:
+```html
+<section data-php-src="C:/path/to/template.php:42">...</section>
+```
+
+#### 動作フロー
+
+```
+1. PHP が data-php-src="ファイルパス:行番号" を出力
+2. ブラウザで要素を Alt+クリック
+3. content.js が data-php-src 属性を検出（親要素も遡って検索）
+4. background.js → Native Messaging → VS Code でPHPファイルを開く
+```
+
+#### CSSジャンプとの優先順位
+
+- `data-php-src` 属性が**あれば**PHPジャンプ（CSS検索はしない）
+- `data-php-src` 属性が**なければ**通常のCSSジャンプ
+
+#### ドメイン対応
+
+`isLocalPage()` に `.local` ドメインを追加済み（Local by Flywheel 対応）。
+
+#### debug_helper.php の設定
+
+```php
+define('CSS_JUMPER_DEBUG', false); // 本番ではこれを追加して無効化
+```
+
+#### WordPressでの使い方例
+
+```php
+// header.php
+require_once get_template_directory() . '/debug_helper.php';
+<header <?= php_src() ?>>
+
+// 各テンプレートファイルの先頭タグに付けると便利
+<section <?= php_src() ?> class="hero">
+```
+
+---
 
 ### 3点連携ジャンプ（2026-02-12追加）
 

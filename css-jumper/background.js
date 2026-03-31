@@ -221,6 +221,11 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   if (message.action === "classNameResult") {
     handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth);
   }
+
+  // PHPソースジャンプ（data-php-src 属性経由）
+  if (message.action === "phpJumpResult") {
+    openInVscode(message.filePath, message.lineNumber);
+  }
   
   // AIアドバイスリクエスト
   if (message.action === "aiAdviceRequest") {
