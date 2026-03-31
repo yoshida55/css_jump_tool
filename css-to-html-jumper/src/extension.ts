@@ -7325,7 +7325,7 @@ ${fullText}`;
 
   function updateStatusBar() {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'css') {
+    if (!editor || (editor.document.languageId !== 'css' && editor.document.languageId !== 'php')) {
       statusBarItem.hide();
       return;
     }
