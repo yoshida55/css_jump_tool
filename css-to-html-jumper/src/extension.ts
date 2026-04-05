@@ -7560,6 +7560,101 @@ ${fullText}`;
   context.subscriptions.push(insertSvgCommand);
 
   // ========================================
+  // カンプ照合（kanpu.json と CSS を比較してインライン警告）
+  // ========================================
+  const kanpuDecType = vscode.window.createTextEditorDecorationType({
+    after: { color: 'rgba(255, 180, 0, 0.9)', fontStyle: 'italic', margin: '0 0 0 1em' }
+  });
+  context.subscriptions.push(kanpuDecType);
+
+  const checkKanpuCommand = vscode.commands.registerCommand('cssToHtmlJumper.checkKanpu', async () => {
+    const fs = require('fs');
+    const nodePath = require('path');
+
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+      vscode.window.showErrorMessage('ワークスペースが開かれていません');
+      return;
+    }
+    const wsRoot = workspaceFolders[0].uri.fsPath;
+
+    const cfg = vscode.workspace.getConfiguration('cssToHtmlJumper');
+    const kanpuFolder = cfg.get<string>('kanpuFolder', '') || wsRoot;
+    const kanpuPath = nodePath.join(kanpuFolder, 'kanpu.json');
+
+    if (!fs.existsSync(kanpuPath)) {
+      vscode.window.showErrorMessage(`kanpu.json が見つかりません: ${kanpuPath}`);
+      return;
+    }
+
+    let kanpuRecords: any[];
+    try {
+      const raw = fs.readFileSync(kanpuPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      kanpuRecords = parsed.records || (Array.isArray(parsed) ? parsed : []);
+    } catch {
+      vscode.window.showErrorMessage('kanpu.json の読み込みに失敗しました');
+      return;
+    }
+
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'css') {
+      vscode.window.showErrorMessage('CSSファイルを開いた状態で実行してください');
+      return;
+    }
+    const cssText = editor.document.getText();
+
+    // HTMLファイルを結合して検索用テキストを作る
+    const htmlFiles = await vscode.workspace.findFiles('**/*.html', '**/node_modules/**', 20);
+    let htmlText = '';
+    for (const f of htmlFiles) {
+      try { htmlText += fs.readFileSync(f.fsPath, 'utf8') + '\n'; } catch { /* skip */ }
+    }
+
+    const decorations: vscode.DecorationOptions[] = [];
+
+    for (const record of kanpuRecords) {
+      let selector = '';
+      let matchType: 'exact' | 'partial' = 'exact';
+
+      if (record.textContent && record.textContent.trim()) {
+        selector = kanpuFindSelectorByText(htmlText, record.textContent.trim());
+        matchType = 'exact';
+      } else if (record.shapeHeading) {
+        const nameMatch = (record.shapeHeading as string).match(/[：:]\s*(.+)/);
+        if (nameMatch) {
+          selector = kanpuFindSelectorByName(htmlText, nameMatch[1].trim());
+          matchType = 'partial';
+        }
+      }
+
+      if (!selector) continue;
+
+      const diffs = kanpuCompare(cssText, selector, record);
+      for (const diff of diffs) {
+        const lineIndex = kanpuFindPropLine(cssText, selector, diff.prop);
+        if (lineIndex < 0) continue;
+        const line = editor.document.lineAt(lineIndex);
+        const label = matchType === 'partial'
+          ? `  ❓[推定] デザイン: ${diff.expected}`
+          : `  ⚠ デザイン: ${diff.expected}`;
+        decorations.push({
+          range: new vscode.Range(lineIndex, line.text.length, lineIndex, line.text.length),
+          renderOptions: { after: { contentText: label } }
+        });
+      }
+    }
+
+    editor.setDecorations(kanpuDecType, decorations);
+    if (decorations.length === 0) {
+      vscode.window.showInformationMessage('カンプ照合完了: 差異なし');
+    } else {
+      vscode.window.showInformationMessage(`カンプ照合完了: ${decorations.length}件の差異を検出`);
+    }
+  });
+  context.subscriptions.push(checkKanpuCommand);
+
+  // ========================================
   // 【関連】→「keyword」 → メモへのDocumentLink
   // ========================================
   const memoRelatedLinkProvider = vscode.languages.registerDocumentLinkProvider(
@@ -8094,13 +8189,15 @@ ${selectedText}
   function scheduleCssDupCheck(doc: vscode.TextDocument) {
     if (doc.languageId !== 'css') { return; }
     if (cssDupTimer) { clearTimeout(cssDupTimer); }
-    cssDupTimer = setTimeout(() => {
+    cssDupTimer = setTimeout(async () => {
       const decs = runCssDupCheck(doc);
-      cssHintDecMap.set(doc.uri.toString(), decs);
+      const unusedDecs = await runUnusedCssCheck(doc);
+      const allDecs = [...decs, ...unusedDecs];
+      cssHintDecMap.set(doc.uri.toString(), allDecs);
       if (!cssHintsEnabled) { return; }
       for (const editor of vscode.window.visibleTextEditors) {
         if (editor.document.uri.toString() === doc.uri.toString()) {
-          editor.setDecorations(cssHintDecType, decs);
+          editor.setDecorations(cssHintDecType, allDecs);
         }
       }
     }, 800);
@@ -8147,6 +8244,180 @@ ${selectedText}
 }
 
 export async function deactivate() {
+}
+
+// ========================================
+// 未使用CSS検出
+// ========================================
+async function runUnusedCssCheck(doc: vscode.TextDocument): Promise<vscode.DecorationOptions[]> {
+  const fs = require('fs');
+  const decorations: vscode.DecorationOptions[] = [];
+  const text = doc.getText();
+
+  const htmlFiles = await vscode.workspace.findFiles('**/*.{html,php}', '**/node_modules/**', 50);
+  if (htmlFiles.length === 0) { return decorations; }
+
+  let htmlText = '';
+  for (const f of htmlFiles) {
+    try { htmlText += fs.readFileSync(f.fsPath, 'utf8') + '\n'; } catch { /* skip */ }
+  }
+
+  const keyframeStopRegex = /^(from|to|\d+%(\s*,\s*\d+%)*)$/i;
+  const ruleRegex = /([^{}@][^{}]*?)\{([^{}]*)\}/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = ruleRegex.exec(text)) !== null) {
+    const rawSelector = m[1].replace(/\/\*[\s\S]*?\*\//g, '').trim();
+    if (!rawSelector || keyframeStopRegex.test(rawSelector)) { continue; }
+
+    // , 区切りで複数セレクタを分割して、全部未使用のときだけ警告
+    const parts = rawSelector.split(',').map(s => s.trim()).filter(Boolean);
+    const allUnused = parts.every(sel => !isSelectorUsed(sel, htmlText));
+    if (!allUnused) { continue; }
+
+    // セレクタ行の位置を特定
+    const leadingMatch = m[1].match(/^(\s*(?:\/\*[\s\S]*?\*\/\s*)*)/);
+    const selectorOffset = m.index + (leadingMatch ? leadingMatch[0].length : 0);
+    if (hasIgnoreComment(doc, selectorOffset)) { continue; }
+
+    const pos = doc.positionAt(selectorOffset);
+    const lineEnd = doc.lineAt(pos.line).range.end;
+    decorations.push({
+      range: new vscode.Range(pos.line, 0, pos.line, lineEnd.character),
+      renderOptions: { after: { contentText: `  💤 未使用: HTMLで使われていません` } }
+    });
+  }
+
+  return decorations;
+}
+
+function isSelectorUsed(selector: string, htmlText: string): boolean {
+  // 疑似クラス・疑似要素を除去してから判定
+  const cleaned = selector.replace(/::?[\w-]+(\([^)]*\))?/g, '').trim();
+
+  // html / body / * / :root / タグ単体 → 常に使用済み扱い
+  if (!cleaned || /^(html|body|\*|:root)$/.test(cleaned)) { return true; }
+  if (/^[a-z][a-z0-9]*$/i.test(cleaned)) { return true; }
+
+  // .class と #id を抽出
+  const classNames = (cleaned.match(/\.([\w-]+)/g) || []).map(c => c.slice(1));
+  const idNames    = (cleaned.match(/#([\w-]+)/g)  || []).map(i => i.slice(1));
+
+  // クラスもIDもなければスキップ（例: タグ > タグ）
+  if (classNames.length === 0 && idNames.length === 0) { return true; }
+
+  for (const cls of classNames) {
+    if (!new RegExp(`class="[^"]*\\b${cls}\\b[^"]*"`, 'i').test(htmlText)) { return false; }
+  }
+  for (const id of idNames) {
+    if (!new RegExp(`id="[^"]*\\b${id}\\b[^"]*"`, 'i').test(htmlText)) { return false; }
+  }
+  return true;
+}
+
+// ========================================
+// カンプ照合ヘルパー関数
+// ========================================
+
+function kanpuFindSelectorByText(htmlText: string, text: string): string {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // class属性を持つタグの中にテキストを含む
+  const classMatch = htmlText.match(new RegExp(`<[a-z0-9]+[^>]*class="([^"]+)"[^>]*>\\s*${escaped}\\s*</`, 'i'));
+  if (classMatch) { return '.' + classMatch[1].split(/\s+/)[0]; }
+  // id属性
+  const idMatch = htmlText.match(new RegExp(`<[a-z0-9]+[^>]*id="([^"]+)"[^>]*>\\s*${escaped}\\s*</`, 'i'));
+  if (idMatch) { return '#' + idMatch[1]; }
+  return '';
+}
+
+function kanpuFindSelectorByName(htmlText: string, name: string): string {
+  const lower = name.toLowerCase();
+  // class属性に部分一致
+  const classMatch = htmlText.match(new RegExp(`class="([^"]*${lower}[^"]*)"`, 'i'));
+  if (classMatch) {
+    const cls = classMatch[1].split(/\s+/).find(c => c.toLowerCase().includes(lower));
+    if (cls) { return '.' + cls; }
+  }
+  // id属性に部分一致
+  const idMatch = htmlText.match(new RegExp(`id="([^"]*${lower}[^"]*)"`, 'i'));
+  if (idMatch) { return '#' + idMatch[1]; }
+  // src/alt に部分一致 → imgの直前の親クラスを探す
+  const srcRe = new RegExp(`(<img[^>]*(?:src|alt)="[^"]*${lower}[^"]*"[^>]*>)`, 'i');
+  const srcMatch = htmlText.match(srcRe);
+  if (srcMatch) {
+    const before = htmlText.substring(0, htmlText.indexOf(srcMatch[1]));
+    const parentMatch = before.match(/class="([^"]+)"\s*[^>]*>\s*$/);
+    if (parentMatch) { return '.' + parentMatch[1].split(/\s+/)[0]; }
+  }
+  return '';
+}
+
+function kanpuCompare(cssText: string, selector: string, record: any): { prop: string; expected: string }[] {
+  const diffs: { prop: string; expected: string }[] = [];
+  const block = kanpuGetBlock(cssText, selector);
+  if (!block) { return diffs; }
+
+  const checks = [
+    { key: 'textSize',      prop: 'font-size' },
+    { key: 'color',         prop: 'color' },
+    { key: 'letterSpacing', prop: 'letter-spacing' },
+    { key: 'textFamily',    prop: 'font-family' },
+    { key: 'w',             prop: 'width' },
+    { key: 'h',             prop: 'height' },
+  ];
+
+  for (const c of checks) {
+    const jsonVal: string = record[c.key];
+    if (!jsonVal || !jsonVal.trim()) { continue; }
+    const cssVal = kanpuGetPropVal(block, c.prop);
+    if (!cssVal) { continue; }
+    if (!kanpuValMatch(jsonVal.trim(), cssVal.trim(), c.prop)) {
+      diffs.push({ prop: c.prop, expected: jsonVal.trim() });
+    }
+  }
+  return diffs;
+}
+
+function kanpuGetBlock(cssText: string, selector: string): string | null {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = cssText.match(new RegExp(esc + '\\s*\\{([^}]*)\\}'));
+  return m ? m[1] : null;
+}
+
+function kanpuGetPropVal(block: string, prop: string): string | null {
+  const esc = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = block.match(new RegExp(esc + '\\s*:\\s*([^;\\n]+)'));
+  return m ? m[1].trim() : null;
+}
+
+function kanpuFindPropLine(cssText: string, selector: string, prop: string): number {
+  const lines = cssText.split('\n');
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let inBlock = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!inBlock && new RegExp(esc + '\\s*\\{').test(lines[i])) { inBlock = true; continue; }
+    if (inBlock) {
+      if (lines[i].includes('}')) { inBlock = false; continue; }
+      if (new RegExp(prop + '\\s*:').test(lines[i])) { return i; }
+    }
+  }
+  return -1;
+}
+
+function kanpuValMatch(jsonVal: string, cssVal: string, prop: string): boolean {
+  // calc() / % / vw / vh / auto / var() は比較スキップ（意図的な動的・相対値）
+  if (/calc\(|%|vw|vh|auto|var\(/.test(cssVal)) { return true; }
+  // color は16進数で正規化して比較
+  if (prop === 'color') {
+    return jsonVal.toLowerCase() === cssVal.toLowerCase();
+  }
+  // 数値（px/rem）は数値部分だけ比較（1px以内は許容）
+  const jNum = parseFloat(jsonVal);
+  const cNum = parseFloat(cssVal);
+  if (!isNaN(jNum) && !isNaN(cNum)) {
+    return Math.abs(jNum - cNum) < 1;
+  }
+  return jsonVal === cssVal;
 }
 
 // ========================================

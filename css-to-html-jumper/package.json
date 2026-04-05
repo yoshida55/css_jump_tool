@@ -118,6 +118,11 @@
         "command": "cssToHtmlJumper.showPhpDoc",
         "title": "📖 PHP/WP関数を調べる",
         "category": "CSS to HTML"
+      },
+      {
+        "command": "cssToHtmlJumper.checkKanpu",
+        "title": "🎯 カンプ照合（kanpu.json と CSS を比較）",
+        "category": "CSS to HTML"
       }
     ],
     "menus": {
@@ -281,6 +286,11 @@
           "type": "array",
           "default": ["CSS", "JavaScript", "Python", "HTML", "WordPress", "PHP"],
           "description": "カテゴリ判定に使用する単語リスト。見出し末尾がこのリストの単語ならカテゴリ扱い"
+        },
+        "cssToHtmlJumper.kanpuFolder": {
+          "type": "string",
+          "default": "",
+          "description": "カンプ照合用 kanpu.json の置き場フォルダ。空欄ならワークスペースルートを使用"
         }
       }
     }
