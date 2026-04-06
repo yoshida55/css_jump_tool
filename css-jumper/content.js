@@ -255,6 +255,12 @@ if (document.readyState === "loading") {
 function autoSwitchProjectFromUrl() {
   var url = window.location.href;
 
+  // file:// の場合はプロジェクト切替不要、直接CSS検出へ
+  if (url.startsWith("file://")) {
+    autoDetectCssIfLiveServer();
+    return;
+  }
+
   // Live Serverかどうかをチェック（localhost or 127.0.0.1）
   if (!url.includes("127.0.0.1") && !url.includes("localhost")) {
     return;
@@ -380,28 +386,103 @@ function fallbackProjectSwitchFromUrl() {
 }
 
 
-// Live Serverのページなら自動でCSS検出
+// Live Serverのページ or file:// なら自動でCSS検出
 function autoDetectCssIfLiveServer() {
   var url = window.location.href;
-  
-  // Live Serverかどうかをチェック（localhost or 127.0.0.1）
-  if (!url.includes("127.0.0.1") && !url.includes("localhost")) {
+  var isFileProt = url.startsWith("file://");
+
+  // Live Server か file:// 以外はスキップ
+  if (!url.includes("127.0.0.1") && !url.includes("localhost") && !isFileProt) {
     return;
   }
-  
+
+  // file:// の場合は projectPath をURLから導出して処理
+  if (isFileProt) {
+    console.log("CSS Jumper: file://を検出、自動CSS取得開始");
+
+    // file:///C:/path/to/index.html → "C:/path/to"
+    var rawPath = decodeURIComponent(window.location.pathname).replace(/^\//, '').replace(/\\/g, '/');
+    var derivedProjectPath = rawPath.replace(/\/[^/]+$/, '');
+    var pageDir = url.replace(/[^/]+$/, ''); // "file:///C:/path/to/"
+
+    var links = document.querySelectorAll('link[rel="stylesheet"]');
+    var cssLinks = [];
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].href;
+      if (href && href.startsWith('file://')) {
+        cssLinks.push(href);
+      }
+    }
+
+    if (cssLinks.length === 0) {
+      console.log("CSS Jumper: CSSリンクなし（file://）");
+      return;
+    }
+
+    console.log("CSS Jumper: CSSリンク検出（file://）", cssLinks.length + "件");
+
+    var cssFiles = [];
+    var loadedCount = 0;
+    var errorCount = 0;
+    var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
+
+    for (var j = 0; j < cssLinks.length; j++) {
+      (function(cssUrl) {
+        // file:// は fetch が失敗するケースがあるため XHR を使用
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', cssUrl, true);
+        xhr.onload = function() {
+          var content = xhr.responseText || "";
+          // pageDirからの相対パスを計算（例: "css/style.css"）
+          var relUrl = decodeURIComponent(cssUrl.startsWith(pageDir) ? cssUrl.slice(pageDir.length) : cssUrl.split('/').pop());
+          var fileName = relUrl.split('/').pop();
+
+          var isExcluded = false;
+          for (var e = 0; e < excludeFiles.length; e++) {
+            if (fileName.toLowerCase() === excludeFiles[e].toLowerCase()) { isExcluded = true; break; }
+          }
+
+          if (content) {
+            cssFiles.push({ name: fileName, relativePath: relUrl, content: content, lines: content.split('\n').length, excluded: isExcluded });
+            console.log("CSS Jumper: file://CSS読込成功", fileName, content.length + "文字");
+          }
+          loadedCount++;
+          if (loadedCount + errorCount === cssLinks.length) {
+            cssAutoDetected = true;
+            chrome.storage.local.set({ projectPath: derivedProjectPath, cssFiles: cssFiles }, function() {
+              console.log("CSS Jumper: file://CSS保存完了", cssFiles.length + "件", "projectPath:", derivedProjectPath);
+            });
+          }
+        };
+        xhr.onerror = function() {
+          console.log("CSS Jumper: CSS取得失敗（file://）", cssUrl);
+          errorCount++;
+          if (loadedCount + errorCount === cssLinks.length && cssFiles.length > 0) {
+            cssAutoDetected = true;
+            chrome.storage.local.set({ projectPath: derivedProjectPath, cssFiles: cssFiles }, function() {
+              console.log("CSS Jumper: file://CSS保存完了（部分）", cssFiles.length + "件");
+            });
+          }
+        };
+        xhr.send();
+      })(cssLinks[j]);
+    }
+    return;
+  }
+
   console.log("CSS Jumper: Live Serverを検出、自動CSS取得開始");
-  
+
   // プロジェクトパスが設定されているかチェック
   chrome.storage.local.get(["projectPath"], function(result) {
     if (!result.projectPath) {
       console.log("CSS Jumper: プロジェクトパス未設定、自動検出スキップ");
       return;
     }
-    
+
     // ページ内のCSSリンクを取得
     var links = document.querySelectorAll('link[rel="stylesheet"]');
     var cssLinks = [];
-    
+
     for (var i = 0; i < links.length; i++) {
       var href = links[i].href;
       // 外部CDN等は除外（ローカルのみ）
@@ -944,15 +1025,15 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     // ページ内のCSSリンクを取得
     var links = document.querySelectorAll('link[rel="stylesheet"]');
     var cssLinks = [];
-    
+
     for (var i = 0; i < links.length; i++) {
       var href = links[i].href;
-      // 外部CDN等は除外（ローカルのみ）
-      if (href && (href.includes('127.0.0.1') || href.includes('localhost'))) {
+      // ローカル（localhost / 127.0.0.1 / file://）のみ
+      if (href && (href.includes('127.0.0.1') || href.includes('localhost') || href.startsWith('file://'))) {
         cssLinks.push(href);
       }
     }
-    
+
     console.log("CSS Jumper: CSSリンク検出", cssLinks);
     sendResponse({ cssLinks: cssLinks });
   }

@@ -623,7 +623,10 @@ async function fetchCurrentPageCssFiles(existingCssFiles) {
     if (!response || !response.cssLinks) return { files: [], orderedRelativePaths: [] };
 
     var pageUrl = new URL(tabs[0].url);
-    var baseUrl = pageUrl.origin;
+    var isFileProt = tabs[0].url.startsWith("file://");
+    var baseUrl = isFileProt ? null : pageUrl.origin;
+    // file:// の場合: ページのディレクトリ（"file:///C:/path/to/"）
+    var pageDir = isFileProt ? tabs[0].url.replace(/[^/]+$/, "") : null;
     var excludeFiles = ["reset.css", "normalize.css", "sanitize.css"];
 
     // ページのCSS読み込み順序を記録（cascade優先度の根拠）
@@ -633,9 +636,20 @@ async function fetchCurrentPageCssFiles(existingCssFiles) {
     for (var i = 0; i < response.cssLinks.length; i++) {
       var href = response.cssLinks[i];
       try {
-        var urlObj = new URL(href);
-        var relativePath = urlObj.pathname.replace(/^\//, "");
-        var fileName = relativePath.split("/").pop();
+        var relativePath, fileName;
+        if (isFileProt && href.startsWith("file://")) {
+          // file:// の場合: ページからの相対パスを計算
+          var decodedHref = decodeURIComponent(href);
+          var decodedPageDir = decodeURIComponent(pageDir);
+          relativePath = decodedHref.startsWith(decodedPageDir)
+            ? decodedHref.slice(decodedPageDir.length)
+            : href.split("/").pop();
+          fileName = relativePath.split("/").pop();
+        } else {
+          var urlObj = new URL(href);
+          relativePath = urlObj.pathname.replace(/^\//, "");
+          fileName = relativePath.split("/").pop();
+        }
 
         orderedRelativePaths.push(relativePath);
 
@@ -645,6 +659,9 @@ async function fetchCurrentPageCssFiles(existingCssFiles) {
         // 既に登録済みのファイルはスキップ（refreshCssContentsで最新化済み）
         var alreadyExists = existingCssFiles.some(function(f) { return f.relativePath === relativePath; });
         if (alreadyExists) continue;
+
+        // file:// の場合は追加フェッチをスキップ（初回検出時に保存済みのはず）
+        if (isFileProt) continue;
 
         try {
           var cssUrl = baseUrl + "/" + relativePath;
