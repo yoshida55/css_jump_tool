@@ -219,7 +219,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log("CSS Jumper: メッセージ受信", message);
   
   if (message.action === "classNameResult") {
-    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth);
+    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth, message.tagName, message.currentUrl);
   }
 
   // PHPソースジャンプ（data-php-src 属性経由）
@@ -339,7 +339,7 @@ function handleQuickResize(message, sender, sendResponse) {
 }
 
 // セレクタ情報（ID, クラス）を処理（最新のCSS内容を取得してから検索）
-async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
+async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagName, currentUrl) {
   var preferMediaQuery = viewportWidth && viewportWidth < 768;
   console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, viewportWidth: viewportWidth, preferMediaQuery: preferMediaQuery });
 
@@ -361,13 +361,15 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
   var projectPath = result.projectPath;
   var cssFiles = result.cssFiles || [];
 
-  if (!projectPath) {
-    notifyUser("⚠️ プロジェクトパスが未設定です\n拡張機能アイコンをクリックして設定してください", "error");
-    return;
-  }
-
-  if (cssFiles.length === 0) {
-    notifyUser("⚠️ CSSファイルが未読み込みです\n拡張機能アイコンをクリックしてCSSを選択してください", "error");
+  if (!projectPath || cssFiles.length === 0) {
+    // CSS未設定 → PHPファイル検索にフォールバック
+    var phpFound = await searchPhpAndJump(tagName, allClasses, id, currentUrl);
+    if (phpFound) return;
+    if (!projectPath) {
+      notifyUser("⚠️ プロジェクトパスが未設定です\n拡張機能アイコンをクリックして設定してください", "error");
+    } else {
+      notifyUser("⚠️ CSSファイルが未読み込みです\n拡張機能アイコンをクリックしてCSSを選択してください", "error");
+    }
     return;
   }
 
@@ -454,10 +456,37 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth) {
     }
   }
 
+  // CSS検索失敗 → PHPファイル検索にフォールバック
+  if (tagName || className || id) {
+    console.log("CSS Jumper: CSS未発見 → PHP検索にフォールバック", { tagName, className, id });
+    var phpFound = await searchPhpAndJump(tagName, allClasses, id, currentUrl);
+    if (phpFound) return;
+  }
+
   // 検索失敗時に詳細情報を表示
   var fileNames = targetCssFiles.map(function(f) { return f.name; }).join(", ");
   var targetName = id ? "#" + id : "." + className;
   notifyUser("「" + targetName + "」が見つかりません\n検索対象: " + fileNames, "error");
+}
+
+// PHPファイルをVS Code拡張経由で検索してジャンプ
+async function searchPhpAndJump(tagName, classes, id, currentUrl) {
+  try {
+    var res = await fetch("http://127.0.0.1:3848/search-php", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tagName: tagName, classes: classes || [], id: id || "", currentUrl: currentUrl || "" })
+    });
+    if (!res.ok) return false;
+    var data = await res.json();
+    if (!data.filePath) return false;
+    openInVscode(data.filePath, data.lineNumber);
+    notifyUser("PHP: " + data.filePath.split(/[/\\]/).pop() + ":" + data.lineNumber, "success");
+    return true;
+  } catch (e) {
+    console.log("CSS Jumper: PHP検索失敗", e);
+    return false;
+  }
 }
 
 // CSSファイルの内容をLive Serverから取得して更新
@@ -937,18 +966,22 @@ function openInVscode(filePath, lineNumber) {
   var decodedPath = decodeURIComponent(filePath);
   console.log("CSS Jumper: VS Codeを開く", decodedPath, lineNumber);
 
-  chrome.runtime.sendNativeMessage(
-    "com.cssjumper.open_vscode",
-    { file: decodedPath, line: lineNumber },
-    function(response) {
-      if (chrome.runtime.lastError) {
-        console.error("CSS Jumper: Native Messaging失敗", chrome.runtime.lastError.message);
-        notifyUser("VS Codeを開けませんでした: " + chrome.runtime.lastError.message, "error");
-      } else {
-        console.log("CSS Jumper: Native Messaging成功", response);
-      }
+  // VS Code拡張のHTTPサーバー経由で開く（Native Messaging不要）
+  fetch("http://127.0.0.1:3848/open-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filePath: decodedPath, lineNumber: lineNumber })
+  }).then(function(res) {
+    if (!res.ok) {
+      console.error("CSS Jumper: open-file失敗", res.status);
+      notifyUser("VS Codeを開けませんでした（ステータス: " + res.status + "）", "error");
+    } else {
+      console.log("CSS Jumper: open-file成功");
     }
-  );
+  }).catch(function(err) {
+    console.error("CSS Jumper: open-file接続失敗", err);
+    notifyUser("VS Codeを開けませんでした（VS Code拡張が起動しているか確認してください）", "error");
+  });
 }
 
 // VS Code拡張にHTTPリクエストを送ってハイライト表示

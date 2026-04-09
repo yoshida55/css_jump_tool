@@ -29,8 +29,8 @@ if (!defined('CSS_JUMPER_DEBUG')) {
 function php_src($depth = 0) {
     if (!CSS_JUMPER_DEBUG) return '';
 
-    $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, $depth + 2);
-    $frame = isset($trace[$depth + 1]) ? $trace[$depth + 1] : $trace[0];
+    $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, $depth + 1);
+    $frame = isset($trace[$depth]) ? $trace[$depth] : $trace[0];
 
     // Windows バックスラッシュ → スラッシュに統一
     $file = isset($frame['file']) ? str_replace('\\', '/', $frame['file']) : '';

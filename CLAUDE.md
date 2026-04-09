@@ -36,7 +36,7 @@ css-to-html-jumper/
 | 機能                | 操作                                | 説明                                |
 | ------------------- | ----------------------------------- | ----------------------------------- |
 | CSSジャンプ         | Alt+クリック                        | CSSファイルのみ開く                 |
-| **PHPジャンプ**     | **Alt+クリック（data-php-src属性）** | **PHPテンプレートの該当行を開く**   |
+| **PHPジャンプ**     | **Alt+クリック**                    | **PHPテンプレートの該当行を開く（自動検索 or php_src()）** |
 | **3点連携ジャンプ** | **ダブルクリック**                  | **CSS + HTML🟡 + ブラウザ🔴**       |
 | **モバイルCSS検索** | **Ctrl+ダブルクリック / 767px以下** | **@media内を優先検索**              |
 | **HTMLハイライト**  | **上記ジャンプ時**                  | **HTMLファイル該当行を黄色3秒表示** |
@@ -89,44 +89,52 @@ flex 横  .wrapper           ← 紫（深さ0）
 - `showFlexInfo()` — ラベル生成・配置・クリックイベント設定
 - `removeFlexInfo()` — ラベル削除
 
-### PHPジャンプ（2026-03-31追加）
+### PHPジャンプ（2026-03-31追加 / 2026-04-10改善）
 
 #### 概要
 
-PHPテンプレートが出力したHTML要素を Alt+クリックすると、そのPHPファイルの該当行をVS Codeで開く機能。
+ブラウザで要素を Alt+クリックすると、PHPテンプレートの該当行をVS Codeで開く機能。
+**setup.bat不要・Native Messaging不要**（VS Code拡張のHTTPサーバー経由で動作）。
 
-#### 使い方（PHP側）
+#### ジャンプの優先順位
 
-```php
-require_once 'debug_helper.php';  // または functions.php でrequire
-
-// タグの中に php_src() を書くだけ
-<section <?= php_src() ?>>...</section>
-<div <?= php_src() ?> class="hero">...</div>
+```
+① data-php-src 属性あり → 正確な行にジャンプ（php_src()使用時）
+② CSSが未設定 or 見つからない → PHPファイル全検索でジャンプ（自動）
 ```
 
-出力されるHTML:
-```html
-<section data-php-src="C:/path/to/template.php:42">...</section>
+②は `php_src()` を一切書かなくてもどの要素でも飛べる。
+
+#### 動作フロー（自動検索）
+
+```
+1. ブラウザで要素を Alt+クリック
+2. クリックした要素のタグ名・クラス名・現在のURLを取得
+3. background.js → http://127.0.0.1:3848/search-php → VS Code拡張
+4. VS Code拡張がワークスペースの全.phpファイルを検索
+5. URLのパス（/contact/ など）に一致するファイルを優先
+6. ヒットした行をVS Codeで開く（黄色ハイライト3秒）
 ```
 
-#### 動作フロー
+#### 動作フロー（php_src()使用時）
 
 ```
 1. PHP が data-php-src="ファイルパス:行番号" を出力
 2. ブラウザで要素を Alt+クリック
 3. content.js が data-php-src 属性を検出（親要素も遡って検索）
-4. background.js → Native Messaging → VS Code でPHPファイルを開く
+4. background.js → http://127.0.0.1:3848/open-file → VS Code でPHPファイルを開く
 ```
 
-#### CSSジャンプとの優先順位
+#### php_src() の使い方（行番号まで正確に飛びたい場合）
 
-- `data-php-src` 属性が**あれば**PHPジャンプ（CSS検索はしない）
-- `data-php-src` 属性が**なければ**通常のCSSジャンプ
+```php
+// functions.php に1行追加（テーマ全体で有効になる）
+require_once get_template_directory() . '/debug_helper.php';
 
-#### ドメイン対応
-
-`isLocalPage()` に `.local` ドメインを追加済み（Local by Flywheel 対応）。
+// 飛びたいタグに追加するだけ
+<header <?= php_src() ?>>
+<section <?= php_src() ?> class="hero">
+```
 
 #### debug_helper.php の設定
 
@@ -134,16 +142,14 @@ require_once 'debug_helper.php';  // または functions.php でrequire
 define('CSS_JUMPER_DEBUG', false); // 本番ではこれを追加して無効化
 ```
 
-#### WordPressでの使い方例
+#### ドメイン対応
 
-```php
-// header.php
-require_once get_template_directory() . '/debug_helper.php';
-<header <?= php_src() ?>>
+`isLocalPage()` に `.local` ドメインを追加済み（Local by Flywheel 対応）。
 
-// 各テンプレートファイルの先頭タグに付けると便利
-<section <?= php_src() ?> class="hero">
-```
+#### 対応環境
+
+- どのWordPressテーマでも動作（テーマ固有の設定不要）
+- VS Codeでテーマフォルダを開いていれば自動でPHPファイルを検索
 
 ---
 
@@ -205,6 +211,10 @@ var isMobile = preferMobile || autoDetectMobile;
 - 代替手段: **Flexラベルクリック** または **Alt+クリック**
 
 ## Native Messaging について
+
+> **⚠️ 2026-04-10 更新**: PHPジャンプ・CSSジャンプともに **VS Code拡張のHTTPサーバー（port 3848）経由** に変更。
+> `openInVscode()` が Native Messaging の代わりに `http://127.0.0.1:3848/open-file` を呼ぶようになったため、
+> **新規PCでは setup.bat の実行は不要**。以下は経緯の記録として残す。
 
 ### 背景（2026-01時点で発生した問題）
 

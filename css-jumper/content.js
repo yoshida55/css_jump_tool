@@ -730,7 +730,9 @@ function jumpToVSCode(clickedElement, preferMobile) {
       id: foundId,
       className: className,
       allClasses: allClasses,
-      viewportWidth: viewportWidth
+      viewportWidth: viewportWidth,
+      tagName: targetElement ? targetElement.tagName.toLowerCase() : "",
+      currentUrl: location.href
     });
   } catch (e) {
     console.log("CSS Jumper: メッセージ送信エラー", e);

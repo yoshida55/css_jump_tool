@@ -1738,6 +1738,9 @@ ${titleList}
 
 【指示】
 - 各見出しを最も近いカテゴリに分類する
+- カテゴリ名は必ず候補リストの文字列をそのまま使う（"wordpress/php" "JS" 等の造語・組み合わせ・略語は禁止）
+- タイトルに「JavaScript」「js」「addEventListener」「querySelector」等のJS固有語が含まれる場合は「JavaScript」カテゴリを優先する（WordPressで使う場合も同様）
+- タイトルに「PHP」「WordPress」「wp_」「get_」「the_」等のWP/PHP固有語が含まれる場合は「WordPress」カテゴリを優先する
 - 候補に合わない場合は先頭のカテゴリ（${categoryList[0]}）にする
 - JSON配列のみ返す（他のテキスト禁止）
 
@@ -4005,6 +4008,137 @@ export function activate(context: vscode.ExtensionContext) {
                 console.error('CSS to HTML Jumper: ファイルオープンエラー', err);
               });
             }
+
+            res.writeHead(200);
+            res.end(JSON.stringify({ status: 'ok' }));
+          } catch (e) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'Invalid JSON' }));
+          }
+        });
+      } else if (req.url === '/search-php' && req.method === 'POST') {
+        // PHPファイルをタグ名・クラス・IDで検索してジャンプ
+        let body = '';
+        req.on('data', (chunk: any) => body += chunk.toString());
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            const tagName: string = (data.tagName || '').toLowerCase();
+            const classes: string[] = data.classes || [];
+            const id: string = data.id || '';
+            const currentUrl: string = data.currentUrl || '';
+
+            const fs = require('fs');
+            const path = require('path');
+
+            // ワークスペースの全phpファイルを検索
+            const folders = vscode.workspace.workspaceFolders;
+            if (!folders || folders.length === 0) {
+              res.writeHead(200);
+              res.end(JSON.stringify({ filePath: null }));
+              return;
+            }
+
+            const phpFiles: string[] = [];
+            const walkDir = (dir: string) => {
+              try {
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const entry of entries) {
+                  if (entry.name === 'node_modules' || entry.name === '.git') continue;
+                  const full = path.join(dir, entry.name);
+                  if (entry.isDirectory()) walkDir(full);
+                  else if (entry.name.endsWith('.php')) phpFiles.push(full);
+                }
+              } catch (e) { /* 無視 */ }
+            };
+            folders.forEach(f => walkDir(f.uri.fsPath));
+
+            // URLのパスセグメントからファイル優先度を計算
+            // 例: /contact/ → "contact" を含むファイルを優先
+            const urlSegments = currentUrl
+              ? currentUrl.replace(/https?:\/\/[^/]+/, '').split('/').filter(Boolean)
+              : [];
+            phpFiles.sort((a, b) => {
+              const aName = path.basename(a, '.php').toLowerCase();
+              const bName = path.basename(b, '.php').toLowerCase();
+              const aScore = urlSegments.some(seg => aName.includes(seg) || seg.includes(aName)) ? 0 : 1;
+              const bScore = urlSegments.some(seg => bName.includes(seg) || seg.includes(bName)) ? 0 : 1;
+              return aScore - bScore;
+            });
+
+            // 検索パターン: タグ名 + クラスかID
+            let result: { filePath: string; lineNumber: number } | null = null;
+
+            for (const phpFile of phpFiles) {
+              const lines = fs.readFileSync(phpFile, 'utf8').split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                // タグ名チェック（あれば）
+                if (tagName && !line.includes('<' + tagName)) continue;
+                // IDチェック
+                if (id && line.includes('id="' + id + '"') || line.includes("id='" + id + "'")) {
+                  result = { filePath: phpFile.replace(/\\/g, '/'), lineNumber: i + 1 };
+                  break;
+                }
+                // クラスチェック（最初のクラス名で検索）
+                if (classes.length > 0) {
+                  const matched = classes.some(cls =>
+                    line.includes('class="' + cls + '"') ||
+                    line.includes("class='" + cls + "'") ||
+                    line.includes('"' + cls + ' ') ||
+                    line.includes("'" + cls + ' ') ||
+                    line.includes(' ' + cls + '"') ||
+                    line.includes(' ' + cls + "'")
+                  );
+                  if (matched) {
+                    result = { filePath: phpFile.replace(/\\/g, '/'), lineNumber: i + 1 };
+                    break;
+                  }
+                }
+              }
+              if (result) break;
+            }
+
+            res.writeHead(200);
+            res.end(JSON.stringify(result || { filePath: null }));
+          } catch (e: any) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
+          }
+        });
+      } else if (req.url === '/open-file' && req.method === 'POST') {
+        // PHPファイルをVS Codeで開く（Native Messaging不要・フォーカスあり）
+        let body = '';
+        req.on('data', (chunk: any) => body += chunk.toString());
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            const filePath = data.filePath;
+            const lineNumber = data.lineNumber || 1;
+
+            if (!filePath) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'Missing filePath' }));
+              return;
+            }
+
+            vscode.workspace.openTextDocument(vscode.Uri.file(filePath)).then(doc => {
+              vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false }).then(editor => {
+                const line = lineNumber - 1;
+                const range = new vscode.Range(line, 0, line, editor.document.lineAt(line).text.length);
+                editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                editor.selection = new vscode.Selection(line, 0, line, 0);
+                // 黄色ハイライト（3秒）
+                const deco = vscode.window.createTextEditorDecorationType({
+                  backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                  isWholeLine: true
+                });
+                editor.setDecorations(deco, [range]);
+                setTimeout(() => deco.dispose(), 3000);
+              });
+            }, (err: any) => {
+              console.error('CSS to HTML Jumper: ファイルオープンエラー', err);
+            });
 
             res.writeHead(200);
             res.end(JSON.stringify({ status: 'ok' }));
