@@ -2021,8 +2021,11 @@ async function handleQuiz(showFilterPick = false) {
                 .slice(0, 3);
             if (needsGen.length > 0) {
                 const buildPregenPrompt = (h) => {
-                    const contentPreview = h.content.slice(0, 10).join('\n');
-                    return `以下のメモの見出しをもとに、クイズ問題とカテゴリをJSON形式で返してください。\n\n【見出しのフォーマット説明】\n見出しは「条件 → 結果（解決策）」の形式で書かれていることがあります。\n例：「mix-blend-mode: screen → 動画の黒が透過する（炎素材に使う）」\nこの形式の場合、「条件（何をしたとき）」を問う問題を作ってください。\n\n【見出し】（これを問題にする）\n${h.title}\n\n【内容】（見出しの意味理解のためだけに使う。内容の細部から問題を作らない）\n${contentPreview}\n\n【カテゴリ候補】\n${categoryList.join(' / ')}\n\n【要件】\n- questionは【見出し】を問い形式にしたもの\n- 見出しが既に「？」で終わる場合はそのまま使ってよい\n- questionは50文字以内（明確さ優先）\n- questionは必ず「？」で終わる\n- questionは質問のみ（前置き禁止）\n- categoryはカテゴリ候補から1つ選ぶ\n\n出力形式（JSONのみ）:\n{"question": "質問文？", "category": "CSS"}`;
+                    const filteredContent = h.content.filter(line => !/^\s*```/.test(line));
+                    const contentPreview = filteredContent.slice(0, 10).join('\n');
+                    const currentCategory = h.category || '';
+                    const categoryHint = currentCategory ? `\n\n【このメモのカテゴリ】\n${currentCategory}\n→ コードの細部ではなく「${currentCategory}の概念・仕組み・使い方」を問う問題にすること` : '';
+                    return `以下のメモの見出しをもとに、クイズ問題とカテゴリをJSON形式で返してください。\n\n【見出しのフォーマット説明】\n見出しは「条件 → 結果（解決策）」の形式で書かれていることがあります。\n例：「mix-blend-mode: screen → 動画の黒が透過する（炎素材に使う）」\nこの形式の場合、「条件（何をしたとき）」を問う問題を作ってください。\n\n【見出し】（これを問題にする）\n${h.title}\n\n【内容】（見出しの意味理解のためだけに使う。内容の細部から問題を作らない）\n${contentPreview}\n\n【カテゴリ候補】\n${categoryList.join(' / ')}${categoryHint}\n\n【要件】\n- questionは【見出し】を問い形式にしたもの\n- 見出しが既に「？」で終わる場合はそのまま使ってよい\n- questionは50文字以内（明確さ優先）\n- questionは必ず「？」で終わる\n- questionは質問のみ（前置き禁止）\n- categoryはカテゴリ候補から1つ選ぶ\n\n出力形式（JSONのみ）:\n{"question": "質問文？", "category": "CSS"}`;
                 };
                 // バックグラウンドで並列実行（await しない → リスト表示をブロックしない）
                 const pregenStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
@@ -2566,7 +2569,11 @@ async function handleQuiz(showFilterPick = false) {
         else if (geminiApiKey) {
             // 初回：Geminiで問題文を新規生成
             try {
-                const contentPreview = quiz.content.slice(0, 10).join('\n');
+                // コードブロック（```...```）を除いた先頭10行をプレビューとして使用
+                const filteredContent = quiz.content.filter(line => !/^\s*```/.test(line));
+                const contentPreview = filteredContent.slice(0, 10).join('\n');
+                const currentCategory = quiz.category || '';
+                const categoryHint = currentCategory ? `\n\n【このメモのカテゴリ】\n${currentCategory}\n→ コードの細部ではなく「${currentCategory}の概念・仕組み・使い方」を問う問題にすること` : '';
                 const prompt = `以下のメモの見出しをもとに、クイズ問題とカテゴリをJSON形式で返してください。
 
 【見出しのフォーマット説明】
@@ -2581,7 +2588,7 @@ ${quiz.title}
 ${contentPreview}
 
 【カテゴリ候補】
-${categoryList.join(' / ')}
+${categoryList.join(' / ')}${categoryHint}
 
 【要件】
 - questionは【見出し】を問い形式にしたもの（内容の細部から出題しない）

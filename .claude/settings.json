@@ -39,7 +39,8 @@
       "WebFetch(domain:xd.adobe.com)",
       "WebFetch(domain:cdn-sharing.adobecc.com)",
       "Edit(~/.claude/skills/memo-format/**)",
-      "Bash(\"/c/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)"
+      "Bash(\"/c/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension css-to-html-jumper-1.10.0.vsix --force)",
+      "Bash(find d:/50_knowledge -name *.quiz-history.json -o -name quiz-history.json)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",
