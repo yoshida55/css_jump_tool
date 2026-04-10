@@ -7159,6 +7159,58 @@ ${fullText}`;
   context.subscriptions.push(disposable);
   context.subscriptions.push(definitionProvider);
 
+  // PHP/HTML → CSS DefinitionProvider（Ctrl+Clickでクラス/IDのCSS定義にジャンプ）
+  const phpToCssDefinitionProvider = vscode.languages.registerDefinitionProvider(
+    [{ scheme: 'file', language: 'php' }, { scheme: 'file', language: 'html' }],
+    {
+      async provideDefinition(document, position) {
+        const line = document.lineAt(position.line).text;
+        const cursorCol = position.character;
+
+        // カーソルが class="..." または id="..." の属性値内にいるか判定
+        const before = line.substring(0, cursorCol);
+        let selectorType: 'class' | 'id' | null = null;
+        if (/class\s*=\s*["'][^"']*$/.test(before)) {
+          selectorType = 'class';
+        } else if (/id\s*=\s*["'][^"']*$/.test(before)) {
+          selectorType = 'id';
+        }
+        if (!selectorType) { return null; }
+
+        // カーソル位置の単語を取得（ハイフン含む）
+        const wordRange = document.getWordRangeAtPosition(position, /[\w-]+/);
+        if (!wordRange) { return null; }
+        const word = document.getText(wordRange);
+        if (!word) { return null; }
+
+        // CSSセレクタのパターン（.foo または #foo の後に空白・{・,・:・(・[）
+        const cssPattern = selectorType === 'class'
+          ? new RegExp(`\\.${escapeRegex(word)}[\\s{,:(\\[]`)
+          : new RegExp(`#${escapeRegex(word)}[\\s{,:(\\[]`);
+
+        // CSSファイルを検索して全マッチを収集
+        const cssUris = await vscode.workspace.findFiles('**/*.css', '**/node_modules/**');
+        const locations: vscode.Location[] = [];
+
+        for (const cssUri of cssUris) {
+          try {
+            const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+            const lines = cssDoc.getText().split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              if (cssPattern.test(lines[i])) {
+                locations.push(new vscode.Location(cssUri, new vscode.Position(i, 0)));
+                break; // 1ファイルにつき最初のマッチのみ
+              }
+            }
+          } catch { /* ignore */ }
+        }
+
+        return locations.length > 0 ? locations : null;
+      }
+    }
+  );
+  context.subscriptions.push(phpToCssDefinitionProvider);
+
   // カーソル位置のセクション範囲を取得（開始行〜終了行）
   function getCurrentSectionRange(editor: vscode.TextEditor): { start: number; end: number; sectionName: string } | null {
     const cursorLine = editor.selection.active.line;
@@ -8382,6 +8434,388 @@ ${selectedText}
   if (vscode.window.activeTextEditor) {
     scheduleHtmlQualityCheck(vscode.window.activeTextEditor.document);
   }
+
+  // PHP/HTML → CSSクラス存在チェック（保存時のみ）
+  // PHP/HTML → CSSクラス存在チェック（波線のみ・右側マーカーなし）
+  const phpCssWavyDecorationType = vscode.window.createTextEditorDecorationType({
+    textDecoration: 'underline wavy rgba(255, 204, 0, 0.9)'
+  });
+  context.subscriptions.push(phpCssWavyDecorationType);
+
+  async function runPhpCssCheck(doc: vscode.TextDocument) {
+    if (doc.languageId !== 'php' && doc.languageId !== 'html') { return; }
+
+    const text = doc.getText();
+    const definedClasses = await collectDefinedClassesFromCss();
+    const wavyDecorations: vscode.DecorationOptions[] = [];
+
+    const classAttrRegex = /class\s*=\s*["']([^"']*)["']/gi;
+    let m: RegExpExecArray | null;
+    while ((m = classAttrRegex.exec(text)) !== null) {
+      const attrValue = m[1];
+      if (attrValue.includes('<?')) { continue; }
+
+      const valueStartInText = m.index + m[0].indexOf(m[1]);
+      const classNames = attrValue.split(/\s+/).filter(c => c.length > 0);
+      let searchOffset = 0;
+      for (const className of classNames) {
+        const idx = m[1].indexOf(className, searchOffset);
+        if (idx === -1) { continue; }
+        searchOffset = idx + className.length;
+        if (definedClasses.has(className)) { continue; }
+        const absStart = valueStartInText + idx;
+        const start = doc.positionAt(absStart);
+        const end = doc.positionAt(absStart + className.length);
+        wavyDecorations.push({ range: new vscode.Range(start, end) });
+      }
+    }
+
+    const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+    if (editor) {
+      editor.setDecorations(phpCssWavyDecorationType, wavyDecorations);
+    }
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => runPhpCssCheck(doc)),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+      if (editor) { editor.setDecorations(phpCssWavyDecorationType, []); }
+    })
+  );
+
+  // PHP関数名「もしかして」チェック（保存時のみ）
+  const phpFunctionCheckDiag = vscode.languages.createDiagnosticCollection('phpFunctionCheck');
+  context.subscriptions.push(phpFunctionCheckDiag);
+
+  const phpFunctionLineDecorationType = vscode.window.createTextEditorDecorationType({
+    after: {
+      color: new vscode.ThemeColor('editorHint.foreground'),
+      fontStyle: 'italic',
+      margin: '0 0 0 2em'
+    }
+  });
+  context.subscriptions.push(phpFunctionLineDecorationType);
+
+  function runPhpFunctionCheck(doc: vscode.TextDocument) {
+    if (doc.languageId !== 'php') { return; }
+    const text = doc.getText();
+    const diagnostics: vscode.Diagnostic[] = [];
+    const lineHints = new Map<number, string>();
+
+    const funcCallRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = funcCallRegex.exec(text)) !== null) {
+      const funcName = m[1];
+      if (PHP_KEYWORDS.has(funcName)) { continue; }
+      if (WP_PHP_FUNCTIONS.includes(funcName)) { continue; }
+
+      const suggestion = findClosestFunction(funcName);
+      if (!suggestion) { continue; }
+
+      const start = doc.positionAt(m.index);
+      const end = doc.positionAt(m.index + funcName.length);
+      const diag = new vscode.Diagnostic(
+        new vscode.Range(start, end),
+        `もしかして: ${suggestion} ?`,
+        vscode.DiagnosticSeverity.Hint
+      );
+      diag.source = 'CSS Jumper';
+      diagnostics.push(diag);
+
+      // 行末ヒント（1行につき1件まで）
+      const lineNum = start.line;
+      if (!lineHints.has(lineNum)) {
+        lineHints.set(lineNum, `  💡 もしかして: ${suggestion} ?`);
+      }
+    }
+
+    phpFunctionCheckDiag.set(doc.uri, diagnostics);
+
+    const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+    if (editor) {
+      const decorations: vscode.DecorationOptions[] = [];
+      for (const [lineNum, msg] of lineHints) {
+        const lineEnd = doc.lineAt(lineNum).range.end;
+        decorations.push({
+          range: new vscode.Range(lineEnd, lineEnd),
+          renderOptions: { after: { contentText: msg } }
+        });
+      }
+      editor.setDecorations(phpFunctionLineDecorationType, decorations);
+    }
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => runPhpFunctionCheck(doc)),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      phpFunctionCheckDiag.delete(doc.uri);
+      const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+      if (editor) { editor.setDecorations(phpFunctionLineDecorationType, []); }
+    })
+  );
+
+  // PHP 括弧対応チェック（保存時のみ）
+  const phpBracketCheckDiag = vscode.languages.createDiagnosticCollection('phpBracketCheck');
+  context.subscriptions.push(phpBracketCheckDiag);
+
+  const phpBracketLineDecorationType = vscode.window.createTextEditorDecorationType({
+    after: {
+      color: new vscode.ThemeColor('editorWarning.foreground'),
+      fontStyle: 'italic',
+      margin: '0 0 0 2em'
+    }
+  });
+  context.subscriptions.push(phpBracketLineDecorationType);
+
+  function runPhpBracketCheck(doc: vscode.TextDocument) {
+    if (doc.languageId !== 'php') { return; }
+    const text = doc.getText();
+
+    // 文字列・コメントを除外しながら括弧をスタックで追跡
+    type BracketEntry = { char: string; offset: number };
+    const stack: BracketEntry[] = [];
+    const unmatched: { char: string; offset: number; isExtra: boolean }[] = [];
+    const OPEN  = new Set(['(', '{', '[']);
+    const CLOSE = new Set([')', '}', ']']);
+    const PAIR: Record<string, string> = { ')': '(', '}': '{', ']': '[' };
+
+    let i = 0;
+    let state: 'normal' | 'single' | 'double' | 'line_comment' | 'block_comment' = 'normal';
+
+    while (i < text.length) {
+      const ch = text[i];
+      const next = text[i + 1] ?? '';
+
+      if (state === 'normal') {
+        if (ch === '/' && next === '/') { state = 'line_comment'; i += 2; continue; }
+        if (ch === '#')                 { state = 'line_comment'; i++;    continue; }
+        if (ch === '/' && next === '*') { state = 'block_comment'; i += 2; continue; }
+        if (ch === "'")                 { state = 'single'; i++;          continue; }
+        if (ch === '"')                 { state = 'double'; i++;          continue; }
+        if (OPEN.has(ch))  { stack.push({ char: ch, offset: i }); }
+        if (CLOSE.has(ch)) {
+          if (stack.length > 0 && stack[stack.length - 1].char === PAIR[ch]) {
+            stack.pop();
+          } else {
+            unmatched.push({ char: ch, offset: i, isExtra: true }); // 対応なし閉じ括弧
+          }
+        }
+      } else if (state === 'single') {
+        if (ch === '\\') { i += 2; continue; }
+        if (ch === "'")  { state = 'normal'; }
+      } else if (state === 'double') {
+        if (ch === '\\') { i += 2; continue; }
+        if (ch === '"')  { state = 'normal'; }
+      } else if (state === 'line_comment') {
+        if (ch === '\n') { state = 'normal'; }
+      } else if (state === 'block_comment') {
+        if (ch === '*' && next === '/') { state = 'normal'; i += 2; continue; }
+      }
+      i++;
+    }
+
+    // スタックに残った = 閉じ忘れの開き括弧
+    for (const entry of stack) {
+      unmatched.push({ char: entry.char, offset: entry.offset, isExtra: false });
+    }
+
+    const diagnostics: vscode.Diagnostic[] = [];
+    const lineHints = new Map<number, string>();
+    const CLOSE_OF: Record<string, string> = { '(': ')', '{': '}', '[': ']' };
+
+    for (const item of unmatched) {
+      const pos = doc.positionAt(item.offset);
+      const msg = item.isExtra
+        ? `この "${item.char}" に対応する "${PAIR[item.char]}" がありません`
+        : `この "${item.char}" に対応する "${CLOSE_OF[item.char]}" がありません`;
+      const diag = new vscode.Diagnostic(
+        new vscode.Range(pos, new vscode.Position(pos.line, pos.character + 1)),
+        msg,
+        vscode.DiagnosticSeverity.Warning
+      );
+      diag.source = 'CSS Jumper';
+      diagnostics.push(diag);
+      if (!lineHints.has(pos.line)) {
+        lineHints.set(pos.line, `  ⚠ ${msg}`);
+      }
+    }
+
+    phpBracketCheckDiag.set(doc.uri, diagnostics);
+
+    const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+    if (editor) {
+      const decorations: vscode.DecorationOptions[] = [];
+      for (const [lineNum, msg] of lineHints) {
+        const lineEnd = doc.lineAt(lineNum).range.end;
+        decorations.push({
+          range: new vscode.Range(lineEnd, lineEnd),
+          renderOptions: { after: { contentText: msg } }
+        });
+      }
+      editor.setDecorations(phpBracketLineDecorationType, decorations);
+    }
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => runPhpBracketCheck(doc)),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      phpBracketCheckDiag.delete(doc.uri);
+      const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+      if (editor) { editor.setDecorations(phpBracketLineDecorationType, []); }
+    })
+  );
+
+  // 選択あり手動Ctrl+S → AI WordPress/PHP チェック
+  const phpAiCheckDecorationType = vscode.window.createTextEditorDecorationType({
+    after: {
+      color: new vscode.ThemeColor('editorInfo.foreground'),
+      fontStyle: 'italic',
+      margin: '0 0 0 2em'
+    }
+  });
+  context.subscriptions.push(phpAiCheckDecorationType);
+
+  // ステータスバーアイテム（次の手動保存まで表示し続ける）
+  const phpAiStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  context.subscriptions.push(phpAiStatusBar);
+
+  // 手動保存フラグ（onWillSaveで検知 → onDidSaveで参照）
+  let phpAiManualSave = false;
+
+  context.subscriptions.push(
+    vscode.workspace.onWillSaveTextDocument((e) => {
+      if (e.document.languageId !== 'php') { return; }
+      phpAiManualSave = e.reason === vscode.TextDocumentSaveReason.Manual;
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(async (doc) => {
+      if (doc.languageId !== 'php') { return; }
+
+      // 自動保存はスキップ
+      if (!phpAiManualSave) { return; }
+      phpAiManualSave = false;
+
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document !== doc) { return; }
+      const selection = editor.selection;
+
+      // 選択なし → 前回のAI結果をクリアして終了
+      if (selection.isEmpty) {
+        editor.setDecorations(phpAiCheckDecorationType, []);
+        phpAiStatusBar.hide();
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+      const apiKey = config.get<string>('geminiApiKey', '');
+      if (!apiKey) { return; }
+
+      // 選択範囲を周辺ブロック（関数 or ±30行）に自動拡張
+      const expandedRange = expandToSurroundingBlock(doc, selection.start.line);
+      const selectedText = doc.getText(expandedRange);
+      const startLine = expandedRange.start.line;
+
+      phpAiStatusBar.text = '🤖 AIチェック中...';
+      phpAiStatusBar.show();
+
+      try {
+        const prompt = `以下のWordPress PHPコードをレビューしてください。
+セキュリティ問題・確実にバグになる問題のみ指摘してください。
+「〜した方がいい」「推奨」「誤解を招く」レベルは指摘不要です。迷ったら指摘しない。
+スタイルや命名の好みは指摘不要です。
+
+【重要】WordPressの「直接出力する関数」の知識：
+以下の関数は自分でechoする（戻り値がvoidまたはfalse）ため、echoは不要、かつesc_html()等の引数に渡せません：
+直接出力: the_title(), the_content(), the_excerpt(), the_permalink(), the_date(), the_time(), the_author(), the_tags(), the_category(), the_post_thumbnail(), the_ID(), the_author_posts_link()
+対応するreturn版: get_the_title(), get_the_content(), get_the_excerpt(), get_permalink(), get_the_date(), get_the_time(), get_the_author(), get_the_ID()
+
+例: esc_html(the_title()) は誤り → echo esc_html(get_the_title()) が正しい
+例: echo the_title() は冗長 → the_title() だけでよい（ただしエスケープなし）
+
+コードの1行目は実際のファイルの${startLine + 1}行目です。
+
+問題があれば以下のJSON形式のみで返してください（問題なければ空配列 [] を返してください）：
+[{"line": 実際の行番号, "message": "日本語で簡潔に説明"}]
+
+JSONのみ返してください。説明文は一切不要です。
+
+\`\`\`php
+${selectedText}
+\`\`\``;
+
+        const requestBody = JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        });
+
+        const result = await new Promise<string>((resolve, reject) => {
+          const httpsModule = require('https');
+          const path = `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`;
+          const req = httpsModule.request({
+            hostname: 'generativelanguage.googleapis.com',
+            port: 443,
+            path,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          }, (res: any) => {
+            let data = '';
+            res.on('data', (chunk: any) => data += chunk);
+            res.on('end', () => {
+              try {
+                const json = JSON.parse(data);
+                const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) { resolve(text); }
+                else { reject(new Error(json.error?.message || 'APIエラーが発生しました')); }
+              } catch { reject(new Error('レスポンスの解析に失敗しました')); }
+            });
+          });
+          req.on('error', () => reject(new Error('ネットワークエラーが発生しました')));
+          req.write(requestBody);
+          req.end();
+        });
+
+        // レスポンスからJSON配列を抽出（マークダウンコードブロックも考慮）
+        const jsonMatch = result.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) {
+          phpAiStatusBar.text = '✅ AIチェック: 問題なし';
+          editor.setDecorations(phpAiCheckDecorationType, []);
+          return;
+        }
+
+        let issues: { line: number; message: string }[] = [];
+        try {
+          issues = JSON.parse(jsonMatch[0]);
+        } catch {
+          phpAiStatusBar.text = '⚠️ AIチェック: 結果の解析に失敗しました';
+          return;
+        }
+
+        if (issues.length === 0) {
+          phpAiStatusBar.text = '✅ AIチェック: 問題なし';
+          editor.setDecorations(phpAiCheckDecorationType, []);
+          return;
+        }
+
+        const decorations: vscode.DecorationOptions[] = [];
+        for (const issue of issues) {
+          const lineNum = issue.line - 1; // 0-based
+          if (lineNum < 0 || lineNum >= doc.lineCount) { continue; }
+          const lineEnd = doc.lineAt(lineNum).range.end;
+          decorations.push({
+            range: new vscode.Range(lineEnd, lineEnd),
+            renderOptions: { after: { contentText: `  🤖 ${issue.message}` } }
+          });
+        }
+        editor.setDecorations(phpAiCheckDecorationType, decorations);
+        phpAiStatusBar.text = `🤖 AIチェック完了: ${issues.length}件の指摘`;
+
+      } catch (e: any) {
+        phpAiStatusBar.text = `❌ AIチェック失敗: ${e.message}`;
+      }
+    })
+  );
 }
 
 export async function deactivate() {
@@ -9012,4 +9446,183 @@ function runHtmlQualityCheck(doc: vscode.TextDocument, diagCollection: vscode.Di
 // 正規表現の特殊文字をエスケープ
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ========================================
+// PHP/WP 関数名「もしかして」チェック用
+// ========================================
+
+const WP_PHP_FUNCTIONS: string[] = [
+  // エスケープ
+  'esc_html', 'esc_attr', 'esc_url', 'esc_js', 'esc_textarea',
+  'esc_html__', 'esc_attr__', 'esc_html_e', 'esc_attr_e',
+  'wp_kses_post', 'wp_strip_all_tags',
+  // sanitize
+  'sanitize_text_field', 'sanitize_email', 'sanitize_url',
+  'sanitize_key', 'sanitize_title', 'absint',
+  // 翻訳
+  'esc_html__', 'esc_attr__', '_e', '_n', '_x', '_nx', '_ex',
+  // テンプレートタグ（タイトル・コンテンツ）
+  'the_title', 'get_the_title', 'the_content', 'get_the_content',
+  'the_excerpt', 'get_the_excerpt', 'the_permalink', 'get_the_permalink',
+  'get_permalink', 'the_ID', 'get_the_ID',
+  'the_author', 'get_the_author', 'get_the_author_meta',
+  'the_date', 'get_the_date', 'the_time', 'get_the_time', 'the_modified_date',
+  'the_tags', 'the_category', 'get_the_category',
+  // サムネイル・画像
+  'the_post_thumbnail', 'get_the_post_thumbnail',
+  'has_post_thumbnail', 'get_the_post_thumbnail_url',
+  'the_post_thumbnail_url', 'wp_get_attachment_image', 'wp_get_attachment_url',
+  // タクソノミー
+  'get_the_terms', 'wp_get_post_terms', 'get_the_tags',
+  'get_term', 'get_terms', 'get_term_link', 'get_term_by', 'get_taxonomy',
+  // 条件分岐
+  'is_home', 'is_front_page', 'is_single', 'is_page', 'is_archive',
+  'is_category', 'is_tag', 'is_search', 'is_404', 'is_singular',
+  'is_tax', 'is_post_type_archive', 'is_user_logged_in', 'is_admin',
+  'is_main_query', 'in_the_loop', 'comments_open', 'is_active_sidebar',
+  // ループ
+  'have_posts', 'the_post', 'wp_reset_postdata', 'wp_reset_query',
+  'get_posts', 'get_post', 'setup_postdata',
+  // WP_Query
+  'WP_Query', 'query_posts',
+  // フック
+  'add_action', 'add_filter', 'remove_action', 'remove_filter',
+  'do_action', 'apply_filters', 'has_action', 'has_filter',
+  // エンキュー
+  'wp_enqueue_style', 'wp_enqueue_script',
+  'wp_register_style', 'wp_register_script',
+  'wp_dequeue_style', 'wp_dequeue_script',
+  'wp_localize_script', 'wp_add_inline_style',
+  // オプション
+  'get_option', 'update_option', 'add_option', 'delete_option',
+  'get_theme_mod', 'set_theme_mod', 'get_theme_support',
+  // 投稿メタ
+  'get_post_meta', 'update_post_meta', 'add_post_meta', 'delete_post_meta',
+  // ユーザー
+  'get_current_user_id', 'current_user_can', 'get_userdata', 'wp_get_current_user',
+  // URL/パス
+  'get_template_directory_uri', 'get_stylesheet_directory_uri',
+  'get_template_directory', 'get_stylesheet_directory',
+  'get_bloginfo', 'home_url', 'site_url', 'admin_url',
+  'plugins_url', 'content_url', 'includes_url', 'get_admin_url',
+  // テンプレート
+  'get_template_part', 'get_header', 'get_footer', 'get_sidebar',
+  'locate_template', 'load_template', 'get_search_form',
+  // メニュー/サイドバー
+  'wp_nav_menu', 'register_nav_menus', 'register_nav_menu',
+  'dynamic_sidebar', 'register_sidebar',
+  // ページネーション
+  'paginate_links', 'next_posts_link', 'previous_posts_link',
+  'the_posts_pagination', 'get_next_post', 'get_previous_post',
+  // コメント
+  'comments_template', 'wp_list_comments', 'comment_form', 'get_comment_count',
+  // その他WP
+  'wp_die', 'wp_redirect', 'wp_safe_redirect', 'wp_mail',
+  'wp_insert_post', 'wp_update_post', 'wp_delete_post',
+  'get_search_query', 'the_search_query', 'get_search_form',
+  // ACF
+  'get_field', 'the_field', 'have_rows', 'the_row',
+  'get_sub_field', 'the_sub_field', 'get_row_index', 'update_field', 'add_row',
+  // PHPよく使う（配列）
+  'array_push', 'array_pop', 'array_shift', 'array_unshift',
+  'array_map', 'array_filter', 'array_merge', 'array_slice',
+  'array_key_exists', 'array_keys', 'array_values', 'array_unique',
+  'array_reverse', 'array_combine', 'array_diff', 'array_intersect',
+  'in_array', 'implode', 'explode', 'count', 'sizeof',
+  // PHPよく使う（文字列）
+  'str_replace', 'str_contains', 'str_starts_with', 'str_ends_with',
+  'strpos', 'strrpos', 'substr', 'strlen', 'trim', 'ltrim', 'rtrim',
+  'strtolower', 'strtoupper', 'ucfirst', 'ucwords',
+  'sprintf', 'printf', 'number_format',
+  'htmlspecialchars', 'htmlentities', 'strip_tags', 'nl2br',
+  'preg_match', 'preg_replace', 'preg_split',
+  // PHPよく使う（型変換・チェック）
+  'intval', 'floatval', 'strval', 'boolval',
+  'is_array', 'is_string', 'is_int', 'is_float', 'is_null', 'is_numeric',
+  'isset', 'empty', 'var_dump', 'print_r',
+  // PHPよく使う（日付・ファイル）
+  'date', 'time', 'mktime', 'strtotime',
+  'file_exists', 'file_get_contents', 'file_put_contents',
+  'json_encode', 'json_decode',
+];
+
+const PHP_KEYWORDS = new Set([
+  'if', 'else', 'elseif', 'while', 'for', 'foreach', 'switch', 'case',
+  'function', 'class', 'return', 'echo', 'print', 'die', 'exit',
+  'new', 'try', 'catch', 'finally', 'throw', 'array', 'list', 'match',
+  'require', 'include', 'require_once', 'include_once', 'namespace', 'use',
+  'public', 'private', 'protected', 'static', 'abstract', 'interface', 'extends',
+]);
+
+/** Levenshtein距離（2文字差まで使用） */
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/** WP_PHP_FUNCTIONSの中から最も近い関数名を返す（見つからなければ空文字） */
+function findClosestFunction(name: string): string {
+  const maxDist = name.length <= 5 ? 1 : 2; // 短い名前は距離1のみ
+  let bestMatch = '';
+  let bestDist = maxDist + 1;
+  const lower = name.toLowerCase();
+  for (const known of WP_PHP_FUNCTIONS) {
+    if (Math.abs(known.length - name.length) > maxDist) { continue; }
+    const dist = levenshteinDistance(lower, known.toLowerCase());
+    if (dist > 0 && dist < bestDist) {
+      bestDist = dist;
+      bestMatch = known;
+    }
+  }
+  return bestMatch;
+}
+
+/** カーソル行から上に遡って function を探し、対応する } までの範囲を返す。
+ *  関数が見つからない場合は前後30行を返す。 */
+function expandToSurroundingBlock(doc: vscode.TextDocument, cursorLine: number): vscode.Range {
+  const lines = doc.getText().split('\n');
+  const FALLBACK = 3;
+
+  // 上に遡って function キーワードを探す
+  let funcStart = -1;
+  for (let i = cursorLine; i >= 0; i--) {
+    if (/^\s*(?:(?:public|private|protected|static)\s+)*function\s+\w+/.test(lines[i])) {
+      funcStart = i;
+      break;
+    }
+  }
+
+  if (funcStart === -1) {
+    // 関数が見つからない → 前後30行
+    const start = Math.max(0, cursorLine - FALLBACK);
+    const end = Math.min(doc.lineCount - 1, cursorLine + FALLBACK);
+    return new vscode.Range(start, 0, end, lines[end].length);
+  }
+
+  // funcStart の { に対応する } を探す（ネスト対応）
+  let depth = 0;
+  let funcEnd = funcStart;
+  for (let i = funcStart; i < lines.length; i++) {
+    for (const ch of lines[i]) {
+      if (ch === '{') { depth++; }
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) { funcEnd = i; break; }
+      }
+    }
+    if (depth === 0 && i > funcStart) { break; }
+  }
+
+  return new vscode.Range(funcStart, 0, funcEnd, lines[funcEnd].length);
 }
