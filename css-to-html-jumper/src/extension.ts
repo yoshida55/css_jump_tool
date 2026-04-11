@@ -8,6 +8,7 @@ import * as os from 'os';
 import { cssProperties, analyzeValue } from './cssProperties';
 import { jsMethods } from './jsProperties';
 import { registerAiHoverProvider } from './aiHoverProvider';
+import { annotatePhpCode } from './wpFunctions';
 import { registerOverviewGenerator } from './overviewGenerator';
 import { phpFunctions } from './phpProperties';
 import { registerPhpCompletionProvider, registerPhpInlineCompletionProvider, extractPhpFunctionsFromMemo, getCachedPhpFunctions, PhpFunction } from './phpCompletionProvider';
@@ -4122,13 +4123,31 @@ export function activate(context: vscode.ExtensionContext) {
               return;
             }
 
+            const openInEditor = (uri: vscode.Uri) => {
+              vscode.workspace.openTextDocument(uri).then(doc => {
+                vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false }).then(editor => {
+                  const line = lineNumber - 1;
+                  const range = new vscode.Range(line, 0, line, editor.document.lineAt(line).text.length);
+                  editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                  editor.selection = new vscode.Selection(line, 0, line, 0);
+                  const deco = vscode.window.createTextEditorDecorationType({
+                    backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                    isWholeLine: true
+                  });
+                  editor.setDecorations(deco, [range]);
+                  setTimeout(() => deco.dispose(), 3000);
+                });
+              }, (err: any) => {
+                console.error('CSS to HTML Jumper: ファイルオープンエラー', err);
+              });
+            };
+
             vscode.workspace.openTextDocument(vscode.Uri.file(filePath)).then(doc => {
               vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false }).then(editor => {
                 const line = lineNumber - 1;
                 const range = new vscode.Range(line, 0, line, editor.document.lineAt(line).text.length);
                 editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
                 editor.selection = new vscode.Selection(line, 0, line, 0);
-                // 黄色ハイライト（3秒）
                 const deco = vscode.window.createTextEditorDecorationType({
                   backgroundColor: 'rgba(255, 255, 0, 0.3)',
                   isWholeLine: true
@@ -4136,8 +4155,24 @@ export function activate(context: vscode.ExtensionContext) {
                 editor.setDecorations(deco, [range]);
                 setTimeout(() => deco.dispose(), 3000);
               });
-            }, (err: any) => {
-              console.error('CSS to HTML Jumper: ファイルオープンエラー', err);
+            }, async (_err: any) => {
+              // パスが見つからない場合、ワークスペース内でファイル名検索
+              const fileName = require('path').basename(filePath);
+              const found = await vscode.workspace.findFiles(`**/${fileName}`, '**/node_modules/**', 5);
+              if (found.length === 1) {
+                openInEditor(found[0]);
+              } else if (found.length > 1) {
+                // 複数ある場合、パスの末尾が最も一致するものを選ぶ
+                const normalized = filePath.replace(/\\/g, '/');
+                const best = found.reduce((a, b) => {
+                  const aMatch = normalized.endsWith(a.fsPath.replace(/\\/g, '/').split('/').slice(-2).join('/')) ? 1 : 0;
+                  const bMatch = normalized.endsWith(b.fsPath.replace(/\\/g, '/').split('/').slice(-2).join('/')) ? 1 : 0;
+                  return bMatch > aMatch ? b : a;
+                });
+                openInEditor(best);
+              } else {
+                console.error('CSS to HTML Jumper: ファイルが見つかりません', filePath);
+              }
             });
 
             res.writeHead(200);
@@ -5513,7 +5548,7 @@ ${explanation}
     presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
     presetItems.push({ label: '🗑 レビューコメントを削除', prompt: '', showBeside: false });
 
-    const result = await new Promise<{ question: string; userInputText?: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean; replaceInline?: boolean; isInlineReview?: boolean; isDeleteReview?: boolean; isCodingChallenge?: boolean } | undefined>((resolve) => {
+    const result = await new Promise<{ question: string; userInputText?: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean; replaceInline?: boolean; isInlineReview?: boolean; isDeleteReview?: boolean; isCodingChallenge?: boolean; isPhpInlineReview?: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
       quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
@@ -5562,9 +5597,97 @@ ${explanation}
           });
         } else if (selected && selected.label.includes('ファイル全体をレビュー')) {
           // ファイル全体をGeminiでレビュー
-          const fullText = editor.document.getText();
+          const rawFullText = editor.document.getText();
           const lang = editor.document.languageId;
           const langLabel = lang === 'css' ? 'CSS' : lang === 'php' ? 'PHP' : lang === 'html' ? 'HTML' : lang;
+
+          // PHPファイルは専用プロンプトに分岐
+          if (lang === 'php') {
+            const fullText = annotatePhpCode(rawFullText); // wpFunctionsアノテーション付与
+            const phpReviewPrompt = `以下のWordPress PHPファイルをレビューしてください。指摘のみ・修正は不要です。
+コードに /* [WP: direct_output, safe] */ 等のアノテーションが付いている関数は安全なWordPress組み込み関数です。これらへの警告は一切不要。
+問題がある箇所のみ指摘すること。「正しく使えています」「適切です」「問題ありません」等の褒め言葉・肯定コメントは出力禁止。
+
+## ① セキュリティ
+- ユーザー入力・URLパラメータをエスケープせずに出力していないか（XSS）
+- SQLクエリに変数を直接埋め込んでいないか（SQLインジェクション）
+- フォーム送信にnonce検証がないか
+- esc_html / esc_attr / esc_url / esc_js の使い分けが正しいか
+- the_content() はそのまま呼ぶのが正しい（エスケープ不要）
+
+## ② WordPress関数の使い方
+- 直接出力する関数（the_title, the_content, the_permalink 等）にechoやesc_htmlを付けていないか
+- get_* 系（get_the_title等）はechoが必要なのに抜けていないか
+- get_the_category()など配列を返す関数の戻り値を[0]アクセス前にemptyチェックしているか
+- wp_enqueue_style/script はhooksの外（直接実行）になっていないか
+
+## ③ PHPエラーになりえる箇所
+- 未定義変数・未定義配列キーへのアクセス
+- nullや空配列に対してプロパティアクセス（->name等）していないか
+- 括弧の対応ミス
+
+## ④ WordPress設計
+- functions.phpでadd_action/add_filterのフック名が正しいか
+- テンプレートタグをfunctions.php内で直接呼んでいないか
+
+## ⑤ コメント・スペルミス
+- 英語の変数名・関数名のスペルミス
+- 作業記録系コメント（「// 追加」「// 修正」等）が残っていないか
+
+---
+【確認チェックリスト（内部確認用・出力不要）】
+以下を1つずつ確認してから出力すること：
+□ XSS: echo/printで変数を直接出力していないか
+□ エスケープ: esc_html/esc_url/esc_attr が適切に使われているか
+□ nonce: フォームがある場合にwp_nonce_fieldがあるか
+□ 直接出力関数: the_title/the_content等にechoを付けていないか
+□ ループ: while/if/endwhile/endifが揃っているか
+□ HTMLタグ: <section><div><header>等の開閉タグが揃っているか
+□ テンプレート構造: get_footer/get_headerがループの外にあるか
+□ デバッグ出力: var_dump/print_r/echo __FILE__等が残っていないか
+□ スペルミス: 関数名・変数名に明らかな誤字がないか
+
+---
+【出力フォーマット】
+まず全チェック項目を確認して問題点を洗い出し、重複を除去してから最終出力すること。チェック途中での出力は禁止。
+出力は以下のカテゴリ別・行番号付き形式で。問題がないカテゴリは「✅ 問題なし」と記載。
+1つの問題は最も適切な1カテゴリにのみ記載すること。同じ行番号・同じ問題を複数カテゴリに書くことは禁止。
+
+【セキュリティ】
+⚠ 行XX: 該当コード → 問題（1行）
+  修正例: 修正後コード
+
+【WordPress作法】
+💡 行XX: 該当コード → 問題（1行）
+  修正例: 修正後コード
+
+【構造・HTML】
+📋 行XX: 問題（1行）
+
+【問題なし】
+✅ （実際にコード内に存在する観点のみ、観点名だけを短く列挙。「正しく書けています」等の褒め言葉・説明は不要）
+
+【ファイル内容】
+${fullText}`;
+            resolve({
+              question: phpReviewPrompt,
+              isSvg: false,
+              isSkeleton: false,
+              isStructural: false,
+              isHtmlGeneration: false,
+              isMemoSearch: false,
+              isQuiz: false,
+              isFreeQuestion: false,
+              isSectionQuestion: false,
+              showBeside: false,
+              useGemini: false,
+              isInlineReview: false,
+              isPhpInlineReview: true
+            });
+            quickPick.hide();
+            return;
+          }
+
           const reviewPrompt = `以下の${langLabel}ファイルをレビューしてください。指摘のみ・修正は不要です。
 
 ## ① 不要ルール
@@ -5633,7 +5756,7 @@ ${explanation}
 最後に「優先度高: 不要ルール・マジックナンバー / 優先度中: プロパティ順 / 優先度低: 仮クラス名」のように**観点名の言葉**でまとめる（番号だけは使わない）。
 
 【ファイル内容】
-${fullText}`;
+${rawFullText}`;
 
           // XDデータJSONファイルを選択して添付（任意）
           let finalPrompt = reviewPrompt;
@@ -5823,7 +5946,7 @@ ${fullText}`;
       return; // キャンセル
     }
 
-    let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview, isCodingChallenge } = result;
+    let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview, isCodingChallenge, isPhpInlineReview } = result;
 
     // isInlineReview + CSSファイルの場合、HTMLファイルを追加で選択させる
     let reviewHtmlUri: vscode.Uri | null = null;
@@ -6501,6 +6624,50 @@ ${fullText}`;
               vscode.window.showInformationMessage(msg);
             }
           }
+        } else if (isPhpInlineReview) {
+          // PHPレビュー結果を行デコレーションとして表示（ファイル非変更）
+          // 前回の装飾をクリア
+          for (const deco of phpReviewDecoMap.values()) { deco.dispose(); }
+          phpReviewDecoMap.clear();
+          phpReviewUri = editor.document.uri.toString();
+
+          // AIの回答から行番号と指摘内容をパース
+          // 対応パターン: ⚠ 行3: ... / 💡 行39: ... / 📋 行7: ...
+          const responseLines = cleanAnswer.split('\n');
+          const linePattern = /([⚠💡📋])\s*行(\d+)[：:]\s*(.+)/u;
+
+          for (const rLine of responseLines) {
+            const match = rLine.match(linePattern);
+            if (!match) { continue; }
+            const emoji = match[1];
+            const lineNum = parseInt(match[2], 10) - 1; // 0-based
+            const message = match[3].replace(/修正例:.+$/, '').trim(); // 修正例は省略して短く
+            if (lineNum < 0 || lineNum >= editor.document.lineCount) { continue; }
+
+            const color = emoji === '⚠' ? '#ff6b6b' : emoji === '💡' ? '#61afef' : '#e5c07b';
+            // 前の行が空行なら上（before）、そうでなければ行末（after）
+            const prevLineEmpty = lineNum > 0 && editor.document.lineAt(lineNum - 1).text.trim() === '';
+            const deco = vscode.window.createTextEditorDecorationType(
+              prevLineEmpty
+                ? { before: { contentText: `${emoji} ${message}  `, color, fontStyle: 'italic' } }
+                : { after:  { contentText: `  ${emoji} ${message}`, color, fontStyle: 'italic' } }
+            );
+            const lineStart = new vscode.Position(lineNum, 0);
+            const lineEnd = editor.document.lineAt(lineNum).range.end;
+            const range = prevLineEmpty
+              ? new vscode.Range(lineStart, lineStart)
+              : new vscode.Range(lineEnd, lineEnd);
+            editor.setDecorations(deco, [range]);
+            phpReviewDecoMap.set(lineNum, deco);
+          }
+
+          const count = phpReviewDecoMap.size;
+          if (count === 0) {
+            vscode.window.showInformationMessage('📋 レビュー完了: 問題なし');
+          } else {
+            vscode.window.showInformationMessage(`📋 レビュー完了: ${count}件の指摘を表示（編集した行の指摘は自動消去）`);
+          }
+
         } else if (showBeside) {
           // 改善・バグチェック：右側に新しいドキュメントを開く
           const doc = await vscode.workspace.openTextDocument({
@@ -7159,53 +7326,118 @@ ${fullText}`;
   context.subscriptions.push(disposable);
   context.subscriptions.push(definitionProvider);
 
-  // PHP/HTML → CSS DefinitionProvider（Ctrl+Clickでクラス/IDのCSS定義にジャンプ）
+  // PHP/HTML → CSS DefinitionProvider
+  // - class="..." / id="..." → CSSに存在する場合はnull（VS Code built-in に任せる）、未定義の場合は追記して開く
+  // - ['class' => '...'] → 常に当プロバイダーが処理
   const phpToCssDefinitionProvider = vscode.languages.registerDefinitionProvider(
     [{ scheme: 'file', language: 'php' }, { scheme: 'file', language: 'html' }],
     {
       async provideDefinition(document, position) {
         const line = document.lineAt(position.line).text;
         const cursorCol = position.character;
-
-        // カーソルが class="..." または id="..." の属性値内にいるか判定
         const before = line.substring(0, cursorCol);
+
         let selectorType: 'class' | 'id' | null = null;
-        if (/class\s*=\s*["'][^"']*$/.test(before)) {
+        let isArrayPattern = false;
+
+        if (/['"]class['"]\s*=>\s*['"][^'"]*$/.test(before)) {
+          selectorType = 'class';
+          isArrayPattern = true;
+        } else if (/class\s*=\s*["'][^"']*$/.test(before)) {
           selectorType = 'class';
         } else if (/id\s*=\s*["'][^"']*$/.test(before)) {
           selectorType = 'id';
         }
         if (!selectorType) { return null; }
 
-        // カーソル位置の単語を取得（ハイフン含む）
         const wordRange = document.getWordRangeAtPosition(position, /[\w-]+/);
         if (!wordRange) { return null; }
         const word = document.getText(wordRange);
         if (!word) { return null; }
 
-        // CSSセレクタのパターン（.foo または #foo の後に空白・{・,・:・(・[）
         const cssPattern = selectorType === 'class'
           ? new RegExp(`\\.${escapeRegex(word)}[\\s{,:(\\[]`)
           : new RegExp(`#${escapeRegex(word)}[\\s{,:(\\[]`);
 
-        // CSSファイルを検索して全マッチを収集
-        const cssUris = await vscode.workspace.findFiles('**/*.css', '**/node_modules/**');
+        // プラグイン・コアのCSSを除外して検索
+        const cssUris = await vscode.workspace.findFiles(
+          '**/*.css',
+          '**/{node_modules,wp-includes,wp-admin,plugins}/**'
+        );
         const locations: vscode.Location[] = [];
 
         for (const cssUri of cssUris) {
+          if (cssUri.fsPath.endsWith('.min.css')) { continue; }
           try {
             const cssDoc = await vscode.workspace.openTextDocument(cssUri);
             const lines = cssDoc.getText().split('\n');
             for (let i = 0; i < lines.length; i++) {
               if (cssPattern.test(lines[i])) {
                 locations.push(new vscode.Location(cssUri, new vscode.Position(i, 0)));
-                break; // 1ファイルにつき最初のマッチのみ
+                break;
               }
             }
           } catch { /* ignore */ }
         }
 
-        return locations.length > 0 ? locations : null;
+        // 重複除去
+        const seen = new Set<string>();
+        const unique = locations.filter(loc => {
+          const key = loc.uri.fsPath.toLowerCase() + ':' + loc.range.start.line;
+          if (seen.has(key)) { return false; }
+          seen.add(key);
+          return true;
+        });
+
+        // クラスが存在する場合
+        if (unique.length > 0) {
+          if (isArrayPattern) {
+            // ['class' => '...'] は built-in が処理しないので当プロバイダーで返す
+            return unique;
+          } else {
+            // class="..." は VS Code built-in に任せる
+            return null;
+          }
+        }
+
+        // ─── クラスが未定義 → CSSスケルトン追記 ───
+        const phpBaseName = path.basename(document.uri.fsPath, path.extname(document.uri.fsPath));
+        const sortedUris = [...cssUris].sort((a, b) => {
+          const aName = path.basename(a.fsPath, '.css');
+          const bName = path.basename(b.fsPath, '.css');
+          if (aName === phpBaseName) { return -1; }
+          if (bName === phpBaseName) { return 1; }
+          return 0;
+        });
+
+        const items = sortedUris.map(uri => ({
+          label: (path.basename(uri.fsPath, '.css') === phpBaseName ? '★ ' : '') + path.basename(uri.fsPath),
+          description: vscode.workspace.asRelativePath(uri),
+          uri
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+          placeHolder: `".${word}" がCSSに見つかりません。どのファイルに追加しますか？`
+        });
+        if (!selected) { return null; }
+
+        // 空ルールを追記
+        const targetDoc = await vscode.workspace.openTextDocument(selected.uri);
+        const prefix = selectorType === 'class' ? '.' : '#';
+        const newRule = `\n${prefix}${word} {\n  \n}\n`;
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(selected.uri, targetDoc.positionAt(targetDoc.getText().length), newRule);
+        await vscode.workspace.applyEdit(edit);
+
+        // 追記した行へ移動
+        const updatedDoc = await vscode.workspace.openTextDocument(selected.uri);
+        const editor = await vscode.window.showTextDocument(updatedDoc);
+        const ruleIdx = updatedDoc.getText().lastIndexOf(`${prefix}${word} {`);
+        const rulePos = updatedDoc.positionAt(ruleIdx);
+        editor.selection = new vscode.Selection(rulePos, rulePos);
+        editor.revealRange(new vscode.Range(rulePos, rulePos), vscode.TextEditorRevealType.InCenter);
+
+        return null;
       }
     }
   );
@@ -8666,14 +8898,122 @@ ${selectedText}
     })
   );
 
-  // 選択あり手動Ctrl+S → AI WordPress/PHP チェック
-  const phpAiCheckDecorationType = vscode.window.createTextEditorDecorationType({
-    after: {
-      color: new vscode.ThemeColor('editorInfo.foreground'),
-      fontStyle: 'italic',
-      margin: '0 0 0 2em'
-    }
+  // --- PHP構造チェック（HTMLタグ閉じ忘れ・get_footer位置） ---
+  const phpStructureDecorationType = vscode.window.createTextEditorDecorationType({
+    after: { color: new vscode.ThemeColor('editorWarning.foreground'), fontStyle: 'italic' }
   });
+  context.subscriptions.push(phpStructureDecorationType);
+
+  function runPhpStructureCheck(doc: vscode.TextDocument) {
+    if (doc.languageId !== 'php') { return; }
+    const fullText = doc.getText();
+    const lines = fullText.split('\n');
+    const hints = new Map<number, string>();
+
+    // === 1. HTMLブロックタグ 閉じ忘れチェック ===
+    const BLOCK_TAGS = new Set(['section', 'div', 'header', 'footer', 'main', 'article', 'aside', 'nav', 'ul', 'ol', 'table', 'form']);
+    const tagStack: { tag: string; line: number }[] = [];
+    let inPhp = false;
+    let pos = 0;
+    let lineNum = 0;
+
+    while (pos < fullText.length) {
+      const ch = fullText[pos];
+      if (ch === '\n') { lineNum++; pos++; continue; }
+
+      // PHPブロック開始
+      if (!inPhp && fullText.startsWith('<?php', pos)) { inPhp = true; pos += 5; continue; }
+      if (!inPhp && fullText.startsWith('<?', pos))   { inPhp = true; pos += 2; continue; }
+      // PHPブロック終了
+      if (inPhp && fullText.startsWith('?>', pos)) { inPhp = false; pos += 2; continue; }
+
+      if (!inPhp && ch === '<') {
+        const tagMatch = fullText.slice(pos).match(/^<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(\/?)>/);
+        if (tagMatch) {
+          const isClose = tagMatch[1] === '/';
+          const tagName = tagMatch[2].toLowerCase();
+          const isSelfClose = tagMatch[3] === '/';
+          if (BLOCK_TAGS.has(tagName) && !isSelfClose) {
+            if (isClose) {
+              // 対応する開きタグをスタックから削除
+              for (let j = tagStack.length - 1; j >= 0; j--) {
+                if (tagStack[j].tag === tagName) { tagStack.splice(j, 1); break; }
+              }
+            } else {
+              tagStack.push({ tag: tagName, line: lineNum });
+            }
+          }
+          pos += tagMatch[0].length;
+          continue;
+        }
+      }
+      pos++;
+    }
+
+    for (const entry of tagStack) {
+      if (!hints.has(entry.line)) {
+        hints.set(entry.line, `  ⚠ <${entry.tag}> の閉じタグがありません`);
+      }
+    }
+
+    // === 2. get_footer() / get_header() がwhileループ内チェック ===
+    let whileDepth = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/while\s*\(/.test(line) && !/endwhile/.test(line)) { whileDepth++; }
+      if (/endwhile/.test(line)) { whileDepth = Math.max(0, whileDepth - 1); }
+      if (whileDepth > 0) {
+        if (/get_footer\s*\(/.test(line)) { hints.set(i, '  ⚠ get_footer() が while ループ内にあります'); }
+        if (/get_header\s*\(/.test(line)) { hints.set(i, '  ⚠ get_header() が while ループ内にあります'); }
+      }
+    }
+
+    // デコレーション適用
+    const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+    if (!editor) { return; }
+    const decorations: vscode.DecorationOptions[] = [];
+    for (const [lineIdx, msg] of hints) {
+      if (lineIdx < doc.lineCount) {
+        const lineEnd = doc.lineAt(lineIdx).range.end;
+        decorations.push({ range: new vscode.Range(lineEnd, lineEnd), renderOptions: { after: { contentText: msg } } });
+      }
+    }
+    editor.setDecorations(phpStructureDecorationType, decorations);
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => runPhpStructureCheck(doc)),
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor) { runPhpStructureCheck(editor.document); }
+    })
+  );
+
+  // PHPファイルレビュー インライン表示用（行ごとに管理）
+  const phpReviewDecoMap = new Map<number, vscode.TextEditorDecorationType>();
+  let phpReviewUri: string | undefined;
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument(e => {
+      if (!phpReviewUri || e.document.uri.toString() !== phpReviewUri) { return; }
+      for (const change of e.contentChanges) {
+        const linesAdded = (change.text.match(/\n/g) || []).length;
+        const linesDeleted = change.range.end.line - change.range.start.line;
+        if (linesAdded > 0 || linesDeleted > 0) {
+          // 行の追加・削除 → 全クリア（行番号がズレるため）
+          for (const deco of phpReviewDecoMap.values()) { deco.dispose(); }
+          phpReviewDecoMap.clear();
+          phpReviewUri = undefined;
+          return;
+        }
+        // 同一行内の編集 → その行だけクリア
+        const lineNum = change.range.start.line;
+        const deco = phpReviewDecoMap.get(lineNum);
+        if (deco) { deco.dispose(); phpReviewDecoMap.delete(lineNum); }
+      }
+    })
+  );
+
+  // 選択あり手動Ctrl+S → AI WordPress/PHP チェック
+  const phpAiCheckDecorationType = vscode.window.createTextEditorDecorationType({});
   context.subscriptions.push(phpAiCheckDecorationType);
 
   // ステータスバーアイテム（次の手動保存まで表示し続ける）
@@ -8710,12 +9050,13 @@ ${selectedText}
       }
 
       const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
-      const apiKey = config.get<string>('geminiApiKey', '');
+      const apiKey = config.get<string>('claudeApiKey', '');
       if (!apiKey) { return; }
 
       // 選択範囲を周辺ブロック（関数 or ±30行）に自動拡張
       const expandedRange = expandToSurroundingBlock(doc, selection.start.line);
-      const selectedText = doc.getText(expandedRange);
+      const rawText = doc.getText(expandedRange);
+      const annotatedText = annotatePhpCode(rawText);
       const startLine = expandedRange.start.line;
 
       phpAiStatusBar.text = '🤖 AIチェック中...';
@@ -8723,17 +9064,19 @@ ${selectedText}
 
       try {
         const prompt = `以下のWordPress PHPコードをレビューしてください。
-セキュリティ問題・確実にバグになる問題のみ指摘してください。
-「〜した方がいい」「推奨」「誤解を招く」レベルは指摘不要です。迷ったら指摘しない。
-スタイルや命名の好みは指摘不要です。
 
-【重要】WordPressの「直接出力する関数」の知識：
-以下の関数は自分でechoする（戻り値がvoidまたはfalse）ため、echoは不要、かつesc_html()等の引数に渡せません：
-直接出力: the_title(), the_content(), the_excerpt(), the_permalink(), the_date(), the_time(), the_author(), the_tags(), the_category(), the_post_thumbnail(), the_ID(), the_author_posts_link()
-対応するreturn版: get_the_title(), get_the_content(), get_the_excerpt(), get_permalink(), get_the_date(), get_the_time(), get_the_author(), get_the_ID()
+【ルール】
+- セキュリティ問題（XSS・SQLインジェクション・nonce漏れ等）と確実にバグになる問題のみ指摘
+- 「〜した方がいい」「推奨」「誤解を招く」レベルは指摘不要。迷ったら指摘しない
+- スタイル・命名・構造の好みは指摘不要
 
-例: esc_html(the_title()) は誤り → echo esc_html(get_the_title()) が正しい
-例: echo the_title() は冗長 → the_title() だけでよい（ただしエスケープなし）
+【コードの読み方】
+各行末の // [WP:関数名 → ...] はWordPress関数のメタ情報です。
+- 「直接出力・安全」→ そのまま呼ぶだけでOK。echoなし・esc_html()の引数に渡さないのが正しい使い方
+- 「直接出力・内部でkses済み」→ エスケープ不要・安全。どのタグ内に書くかは問わない。そのまま呼ぶだけでOK
+- 「文字列を返す」→ echo esc_html(...) が正しい
+- 「URLを返す」→ echo esc_url(...) が正しい
+- この[WP:...]注釈を必ず参照して判断すること
 
 コードの1行目は実際のファイルの${startLine + 1}行目です。
 
@@ -8743,29 +9086,34 @@ ${selectedText}
 JSONのみ返してください。説明文は一切不要です。
 
 \`\`\`php
-${selectedText}
+${annotatedText}
 \`\`\``;
 
         const requestBody = JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }]
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1024,
+          messages: [{ role: 'user', content: prompt }]
         });
 
         const result = await new Promise<string>((resolve, reject) => {
           const httpsModule = require('https');
-          const path = `/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`;
           const req = httpsModule.request({
-            hostname: 'generativelanguage.googleapis.com',
+            hostname: 'api.anthropic.com',
             port: 443,
-            path,
+            path: '/v1/messages',
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01'
+            }
           }, (res: any) => {
             let data = '';
             res.on('data', (chunk: any) => data += chunk);
             res.on('end', () => {
               try {
                 const json = JSON.parse(data);
-                const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+                const text = json.content?.[0]?.text;
                 if (text) { resolve(text); }
                 else { reject(new Error(json.error?.message || 'APIエラーが発生しました')); }
               } catch { reject(new Error('レスポンスの解析に失敗しました')); }
@@ -8798,15 +9146,33 @@ ${selectedText}
           return;
         }
 
-        const decorations: vscode.DecorationOptions[] = [];
+        // 行ごとにグループ化
+        const byLine = new Map<number, string[]>();
         for (const issue of issues) {
           const lineNum = issue.line - 1; // 0-based
           if (lineNum < 0 || lineNum >= doc.lineCount) { continue; }
-          const lineEnd = doc.lineAt(lineNum).range.end;
-          decorations.push({
-            range: new vscode.Range(lineEnd, lineEnd),
-            renderOptions: { after: { contentText: `  🤖 ${issue.message}` } }
-          });
+          if (!byLine.has(lineNum)) { byLine.set(lineNum, []); }
+          byLine.get(lineNum)!.push(issue.message);
+        }
+
+        const decorations: vscode.DecorationOptions[] = [];
+        const infoColor = new vscode.ThemeColor('editorInfo.foreground');
+        for (const [lineNum, messages] of byLine) {
+          if (messages.length === 1) {
+            // 1件 → 行の上（before）
+            const lineStart = new vscode.Position(lineNum, 0);
+            decorations.push({
+              range: new vscode.Range(lineStart, lineStart),
+              renderOptions: { before: { contentText: `🤖 ${messages[0]}  `, color: infoColor, fontStyle: 'italic' } }
+            });
+          } else {
+            // 複数件 → 行末に横並び（after）
+            const lineEnd = doc.lineAt(lineNum).range.end;
+            decorations.push({
+              range: new vscode.Range(lineEnd, lineEnd),
+              renderOptions: { after: { contentText: `  🤖 ${messages.join(' ｜ ')}`, color: infoColor, fontStyle: 'italic', margin: '0 0 0 2em' } }
+            });
+          }
         }
         editor.setDecorations(phpAiCheckDecorationType, decorations);
         phpAiStatusBar.text = `🤖 AIチェック完了: ${issues.length}件の指摘`;

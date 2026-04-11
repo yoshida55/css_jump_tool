@@ -1031,7 +1031,8 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
     for (var i = 0; i < links.length; i++) {
       var href = links[i].href;
       // ローカル（localhost / 127.0.0.1 / file://）のみ
-      if (href && (href.includes('127.0.0.1') || href.includes('localhost') || href.startsWith('file://'))) {
+      var hrefHost = href ? (function(){ try { return new URL(href).hostname; } catch(e){ return ''; } })() : '';
+      if (href && (href.includes('127.0.0.1') || href.includes('localhost') || href.startsWith('file://') || hrefHost.endsWith('.local'))) {
         cssLinks.push(href);
       }
     }
