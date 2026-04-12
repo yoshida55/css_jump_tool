@@ -8191,6 +8191,112 @@ ${selectedText}
             editor.setDecorations(phpCssWavyDecorationType, []);
         }
     }));
+    // CSS → HTML/PHP 存在チェック（CSSのセレクターがHTML/PHPに使われているか）
+    const cssOrphanDecorationType = vscode.window.createTextEditorDecorationType({});
+    context.subscriptions.push(cssOrphanDecorationType);
+    // WordPressが自動生成するクラス名（チェック対象外）
+    const WP_AUTO_CLASSES = new Set([
+        'aligncenter', 'alignleft', 'alignright', 'alignwide', 'alignfull', 'alignnone',
+        'screen-reader-text', 'sticky', 'bypostauthor', 'wp-caption', 'wp-caption-text',
+        'gallery', 'gallery-item', 'gallery-icon', 'gallery-caption',
+        'page-numbers', 'prev', 'next', 'current', 'dots', 'pagination', 'nav-links',
+    ]);
+    const WP_AUTO_PREFIXES = ['wp-', 'has-', 'is-', 'menu-item', 'current-menu', 'post-', 'page-', 'category-', 'tag-', 'attachment-', 'single-'];
+    async function runCssOrphanCheck(doc) {
+        if (doc.languageId !== 'css') {
+            return;
+        }
+        // HTML/PHPファイルの全クラス名を収集
+        const usedClasses = new Set();
+        const htmlPhpFiles = await vscode.workspace.findFiles('**/*.{html,php}', '**/{node_modules,wp-includes,wp-admin,plugins,vendor}/**', 60);
+        for (const fileUri of htmlPhpFiles) {
+            try {
+                const content = fs.readFileSync(fileUri.fsPath, 'utf-8');
+                const patterns = [
+                    /class\s*=\s*["']([^"'<>]*)["']/gi,
+                    /['"]class['"]\s*=>\s*['"]([^'"]*)['"]/gi,
+                ];
+                for (const pat of patterns) {
+                    let m;
+                    while ((m = pat.exec(content)) !== null) {
+                        m[1].split(/\s+/).filter(c => c.length > 0).forEach(c => usedClasses.add(c));
+                    }
+                }
+            }
+            catch { /* ignore */ }
+        }
+        // 元テキストの行を直接処理（コメント除去でズレないように）
+        const text = doc.getText();
+        const lines = text.split('\n');
+        // Unicodeを含むクラス名対応の正規表現
+        const classRegex = /\.(-?[a-zA-Z_\u00C0-\uFFFF][a-zA-Z0-9_\u00C0-\uFFFF-]*)/gu;
+        const warnedLines = new Set();
+        const decorations = [];
+        let inBlockComment = false;
+        for (let i = 0; i < lines.length; i++) {
+            let line = lines[i];
+            // ブロックコメントの開始・終了を追跡
+            if (inBlockComment) {
+                if (line.includes('*/')) {
+                    inBlockComment = false;
+                }
+                continue;
+            }
+            if (line.includes('/*')) {
+                if (!line.includes('*/')) {
+                    inBlockComment = true;
+                }
+                line = line.replace(/\/\*.*?\*\//g, '').replace(/\/\*.*/g, '');
+            }
+            // セレクター行のみ対象（{ を含む行 or . で始まる行）
+            if (!line.includes('{') && !/^\s*\./.test(line)) {
+                continue;
+            }
+            classRegex.lastIndex = 0;
+            const orphans = [];
+            let cm;
+            while ((cm = classRegex.exec(line)) !== null) {
+                const className = cm[1];
+                if (WP_AUTO_CLASSES.has(className)) {
+                    continue;
+                }
+                if (WP_AUTO_PREFIXES.some(p => className.startsWith(p))) {
+                    continue;
+                }
+                if (!usedClasses.has(className) && !orphans.includes(className)) {
+                    orphans.push(className);
+                }
+            }
+            if (orphans.length > 0 && !warnedLines.has(i)) {
+                warnedLines.add(i);
+                const lineEnd = doc.lineAt(i).range.end;
+                decorations.push({
+                    range: new vscode.Range(lineEnd, lineEnd),
+                    renderOptions: {
+                        after: {
+                            contentText: `  ⚠ HTMLに存在しません: .${orphans.join(', .')}`,
+                            color: '#ff7840',
+                            fontStyle: 'italic',
+                        }
+                    }
+                });
+            }
+        }
+        const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+        if (editor) {
+            editor.setDecorations(cssOrphanDecorationType, decorations);
+        }
+    }
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => runCssOrphanCheck(doc)), vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (editor) {
+            runCssOrphanCheck(editor.document);
+        }
+    }), vscode.workspace.onDidCloseTextDocument(doc => {
+        const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+        if (editor) {
+            editor.setDecorations(cssOrphanDecorationType, []);
+        }
+    }));
     // PHP関数名「もしかして」チェック（保存時のみ）
     const phpFunctionCheckDiag = vscode.languages.createDiagnosticCollection('phpFunctionCheck');
     context.subscriptions.push(phpFunctionCheckDiag);
