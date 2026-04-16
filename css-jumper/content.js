@@ -2655,11 +2655,15 @@ function handleAiAdviceClick(clickedElement) {
   var elementInfo = collectElementInfo(clickedElement);
   console.log("CSS Jumper: AIアドバイス - 要素情報", elementInfo);
 
+  // ページ全体をスキャンして異常に大きい要素を探す
+  var largeElements = scanLargeElements();
+  console.log("CSS Jumper: 大きい要素スキャン結果", largeElements);
+
   // 要素をハイライト
   highlightForAdvice(clickedElement);
 
   // テキスト入力UIを表示
-  showAdviceInputUI(clickedElement, elementInfo);
+  showAdviceInputUI(clickedElement, elementInfo, largeElements);
 }
 
 // 要素のcomputedStyleを含む情報を収集
@@ -2717,6 +2721,49 @@ function collectElementInfo(el) {
   };
 }
 
+// ページ全体をスキャンして「異常に大きい要素」を探す
+function scanLargeElements() {
+  var vh = window.innerHeight;
+  var vw = window.innerWidth;
+  var results = [];
+  var all = document.querySelectorAll("body *");
+
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    // CSS Jumper 自身のUIは除外
+    if (el.closest && el.closest("[id^='css-jumper']")) continue;
+    // 非表示要素は除外
+    if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
+
+    var h = el.offsetHeight;
+    var w = el.offsetWidth;
+
+    // ビューポートの高さを超えている or 幅がビューポートより大幅に大きい
+    if (h > vh || w > vw * 1.5) {
+      var cs = window.getComputedStyle(el);
+      var tag = el.tagName.toLowerCase();
+      var cls = (typeof el.className === "string") ? el.className.trim() : "";
+      var id = el.id || "";
+      var selector = id ? "#" + id : (cls ? "." + cls.split(" ")[0] : tag);
+
+      results.push({
+        selector: selector,
+        tag: tag,
+        offsetWidth: w,
+        offsetHeight: h,
+        position: cs.position,
+        display: cs.display,
+        src: tag === "img" ? (el.src || "").split("/").pop() : ""  // 画像ならファイル名
+      });
+
+      // 最大10件まで
+      if (results.length >= 10) break;
+    }
+  }
+
+  return results;
+}
+
 // アドバイス対象要素をハイライト
 function highlightForAdvice(el) {
   removeAdviceHighlight();
@@ -2736,7 +2783,7 @@ function removeAdviceHighlight() {
 }
 
 // テキスト入力UI表示
-function showAdviceInputUI(el, elementInfo) {
+function showAdviceInputUI(el, elementInfo, largeElements) {
   // 既存のUIを削除
   removeAdviceUI();
 
@@ -2850,7 +2897,7 @@ function showAdviceInputUI(el, elementInfo) {
   // Enterキーで送信
   input.addEventListener("keydown", function(e) {
     if (e.key === "Enter" && input.value.trim()) {
-      sendAdviceRequest(input.value.trim(), elementInfo, answerArea, askBtn);
+      sendAdviceRequest(input.value.trim(), elementInfo, answerArea, askBtn, largeElements);
     }
     if (e.key === "Escape") {
       removeAdviceUI();
@@ -2861,7 +2908,7 @@ function showAdviceInputUI(el, elementInfo) {
   // ボタンイベント
   askBtn.addEventListener("click", function() {
     if (input.value.trim()) {
-      sendAdviceRequest(input.value.trim(), elementInfo, answerArea, askBtn);
+      sendAdviceRequest(input.value.trim(), elementInfo, answerArea, askBtn, largeElements);
     }
   });
 
@@ -2872,7 +2919,7 @@ function showAdviceInputUI(el, elementInfo) {
 }
 
 // AIにリクエスト送信
-function sendAdviceRequest(question, elementInfo, answerArea, askBtn) {
+function sendAdviceRequest(question, elementInfo, answerArea, askBtn, largeElements) {
   answerArea.style.display = "block";
   answerArea.textContent = "🔄 AIに質問中...";
   answerArea.style.color = "#6c7086";
@@ -2882,7 +2929,8 @@ function sendAdviceRequest(question, elementInfo, answerArea, askBtn) {
   chrome.runtime.sendMessage({
     action: "aiAdviceRequest",
     userQuestion: question,
-    elementInfo: elementInfo
+    elementInfo: elementInfo,
+    largeElements: largeElements || []
   }, function(response) {
     askBtn.disabled = false;
     askBtn.textContent = "🔍 聞く";

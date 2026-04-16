@@ -1052,7 +1052,7 @@ function handleAiAdviceRequest(message, sender, sendResponse) {
     }
 
     // プロンプト構築
-    var prompt = buildAdvicePrompt(elementInfo, message.userQuestion, cssRules);
+    var prompt = buildAdvicePrompt(elementInfo, message.userQuestion, cssRules, message.largeElements || []);
 
     // Claude API呼び出し
     fetch("https://api.anthropic.com/v1/messages", {
@@ -1091,10 +1091,10 @@ function handleAiAdviceRequest(message, sender, sendResponse) {
 }
 
 // AIアドバイス用プロンプト構築
-function buildAdvicePrompt(info, userQuestion, cssRules) {
+function buildAdvicePrompt(info, userQuestion, cssRules, largeElements) {
   var lines = [];
   lines.push("あなたはCSS/HTMLのエキスパートです。ユーザーがブラウザ上でクリックした要素について質問しています。");
-  lines.push("簡潔に、具体的なCSSプロパティと値で回答してください。");
+  lines.push("簡潔に、具体的なCSSプロパティと値で回答してください.");
   lines.push("");
   lines.push("【クリックした要素】");
   lines.push("タグ: " + info.tagName);
@@ -1144,6 +1144,20 @@ function buildAdvicePrompt(info, userQuestion, cssRules) {
   lines.push("");
   lines.push("【ビューポート幅】 " + info.viewportWidth + "px");
   lines.push("");
+  // ページ内の異常に大きい要素一覧
+  if (largeElements && largeElements.length > 0) {
+    lines.push("【⚠ ページ内で異常に大きい要素（レイアウト崩れの原因候補）】");
+    for (var i = 0; i < largeElements.length; i++) {
+      var el = largeElements[i];
+      var desc = el.selector + "（" + el.tag + "）: " + el.offsetWidth + "px × " + el.offsetHeight + "px";
+      if (el.src) desc += " [画像: " + el.src + "]";
+      desc += " / position: " + el.position + " / display: " + el.display;
+      lines.push("  - " + desc);
+    }
+    lines.push("※ ビューポート高さより大きい要素は特に怪しい");
+    lines.push("");
+  }
+
   lines.push("【ユーザーの質問】");
   lines.push(userQuestion);
   lines.push("");
