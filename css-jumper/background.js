@@ -1065,7 +1065,7 @@ function handleAiAdviceRequest(message, sender, sendResponse) {
       },
       body: JSON.stringify({
         model: model,
-        max_tokens: 1024,
+        max_tokens: 2048,
         messages: [
           { role: "user", content: prompt }
         ]
@@ -1118,20 +1118,28 @@ function buildAdvicePrompt(info, userQuestion, cssRules) {
   lines.push("display: " + info.display);
   lines.push("position: " + info.position);
   lines.push("width: " + info.width + " / height: " + info.height);
+  lines.push("実際の描画高さ(offsetHeight): " + info.offsetHeight + "px");
+  lines.push("min-height: " + info.minHeight);
+  lines.push("float: " + info.float);
+  lines.push("clear: " + info.clear);
   lines.push("padding: " + info.padding);
   lines.push("margin: " + info.margin);
-  lines.push("flex: " + info.flex);
+  lines.push("overflow: " + info.overflow);
+  lines.push("box-sizing: " + info.boxSizing);
+  if (info.flex && info.flex !== "0 1 auto") lines.push("flex: " + info.flex);
   if (info.flexDirection) lines.push("flex-direction: " + info.flexDirection);
   if (info.justifyContent) lines.push("justify-content: " + info.justifyContent);
   if (info.alignItems) lines.push("align-items: " + info.alignItems);
   if (info.gap) lines.push("gap: " + info.gap);
-  lines.push("overflow: " + info.overflow);
-  lines.push("box-sizing: " + info.boxSizing);
   lines.push("");
   lines.push("【親要素】");
   lines.push("タグ: " + info.parentTagName);
   if (info.parentClass) lines.push("クラス: ." + info.parentClass);
   lines.push("display: " + info.parentDisplay);
+  lines.push("実際の描画高さ(offsetHeight): " + info.parentOffsetHeight + "px");
+  lines.push("float: " + info.parentFloat);
+  lines.push("clear: " + info.parentClear);
+  lines.push("overflow: " + info.parentOverflow);
   if (info.parentFlexDirection) lines.push("flex-direction: " + info.parentFlexDirection);
   lines.push("");
   lines.push("【ビューポート幅】 " + info.viewportWidth + "px");
@@ -1139,12 +1147,18 @@ function buildAdvicePrompt(info, userQuestion, cssRules) {
   lines.push("【ユーザーの質問】");
   lines.push(userQuestion);
   lines.push("");
+  lines.push("【診断手順】以下の順で必ず確認してください：");
+  lines.push("1. offsetHeightが0または極端に小さい要素がないか（float崩れのサイン）");
+  lines.push("2. float: left/right が指定されていてclearが効いていないか");
+  lines.push("3. position: absolute/fixedで親から外れていないか");
+  lines.push("4. overflow: hidden が height を殺していないか");
+  lines.push("5. flexbox/gridの親子関係がおかしくないか");
+  lines.push("");
   lines.push("【回答ルール】");
-  lines.push("- 具体的なCSSプロパティと値を提示");
-  lines.push("- どのセレクタに適用するか明示（.クラス名 { ... }）");
-  lines.push("- 理由を1行で添える");
+  lines.push("- ① 原因（1〜2行）");
+  lines.push("- ② 修正するセレクタとCSSプロパティを明示");
+  lines.push("- ③ なぜそれで直るかを1行で");
   lines.push("- 日本語で回答");
-  lines.push("- 200文字以内");
 
   return lines.join("\n");
 }

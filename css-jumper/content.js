@@ -2692,6 +2692,10 @@ function collectElementInfo(el) {
     position: cs.position,
     width: cs.width,
     height: cs.height,
+    offsetHeight: el.offsetHeight,  // 実際のレンダリング高さ（0なら崩れている）
+    minHeight: cs.minHeight,
+    float: cs.float,
+    clear: cs.clear,
     padding: cs.padding,
     margin: cs.margin,
     flex: cs.flex,
@@ -2704,6 +2708,10 @@ function collectElementInfo(el) {
     parentTagName: parent ? parent.tagName.toLowerCase() : "",
     parentClass: parentClass,
     parentDisplay: parentCs ? parentCs.display : "",
+    parentFloat: parentCs ? parentCs.float : "",
+    parentClear: parentCs ? parentCs.clear : "",
+    parentOverflow: parentCs ? parentCs.overflow : "",
+    parentOffsetHeight: parent ? parent.offsetHeight : 0,
     parentFlexDirection: parentCs && (parentCs.display === "flex" || parentCs.display === "inline-flex") ? parentCs.flexDirection : "",
     viewportWidth: window.innerWidth
   };
@@ -2785,7 +2793,7 @@ function showAdviceInputUI(el, elementInfo) {
   // テキスト入力
   var input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "例: 幅を広げたい / 横並びにしたい / 中央寄せ";
+  input.placeholder = "例: フッターが真ん中に来る / レイアウトが崩れる / 横並びにしたい";
   input.style.cssText =
     "width: 100%;" +
     "padding: 10px 12px;" +

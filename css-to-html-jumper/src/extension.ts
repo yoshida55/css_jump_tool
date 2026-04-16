@@ -3190,12 +3190,42 @@ vertical-align
 }
 
 // ========================================
+// クリップボード画像をキャプチャして base64 で返す
+// ========================================
+async function captureClipboardImage(): Promise<{ base64: string; mediaType: string } | null> {
+  const os = require('os');
+  const tmpPath = path.join(os.tmpdir(), 'cssjumper_clipboard.png');
+  const ps = `
+Add-Type -AssemblyName System.Windows.Forms
+$img = [System.Windows.Forms.Clipboard]::GetImage()
+if ($img -ne $null) {
+  $img.Save('${tmpPath.replace(/\\/g, '\\\\')}')
+  Write-Output 'saved'
+} else {
+  Write-Output 'empty'
+}
+`.trim();
+
+  try {
+    const { execSync } = require('child_process');
+    const result = execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+    if (result === 'saved' && fs.existsSync(tmpPath)) {
+      const data = fs.readFileSync(tmpPath).toString('base64');
+      return { base64: data, mediaType: 'image/png' };
+    }
+  } catch (e) {
+    // クリップボードに画像がない、またはPS実行失敗 → 無視
+  }
+  return null;
+}
+
+// ========================================
 // Claude API 呼び出し関数
 // ========================================
-async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean, isHtmlGeneration?: boolean, isSectionQuestion?: boolean): Promise<string> {
+async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean, isHtmlGeneration?: boolean, isSectionQuestion?: boolean, imageData?: { base64: string; mediaType: string }, modelOverride?: string): Promise<string> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('claudeApiKey', '');
-  const model = config.get<string>('claudeModel', 'claude-sonnet-4-5-20250929');
+  const model = modelOverride || config.get<string>('claudeModel', 'claude-sonnet-4-5-20250929');
 
   if (!apiKey) {
     throw new Error('Claude API キーが設定されていません。設定 → cssToHtmlJumper.claudeApiKey を確認してください。');
@@ -3289,11 +3319,19 @@ ${question}
     return '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0');
   });
 
+  // 画像添付がある場合は multi-content 形式で送る
+  const userContent: any = imageData
+    ? [
+        { type: 'image', source: { type: 'base64', media_type: imageData.mediaType, data: imageData.base64 } },
+        { type: 'text', text: sanitizedPrompt }
+      ]
+    : sanitizedPrompt;
+
   const requestBody = JSON.stringify({
     model: model,
     max_tokens: (isStructural || isHtmlGeneration) ? 8192 : 4096,
     messages: [
-      { role: 'user', content: sanitizedPrompt }
+      { role: 'user', content: userContent }
     ]
   });
 
@@ -5197,6 +5235,9 @@ ${explanation}
   // ========================================
   const claudeOutputChannel = vscode.window.createOutputChannel('Claude AI');
 
+  // 前回の会話コンテキスト（🔄 続きを聞く 用）
+  let lastConversationContext: { question: string; answer: string } | null = null;
+
   const presetQuestions = [
     { label: '🔧 改善して', prompt: `このコードを改善してください。
 
@@ -5538,6 +5579,10 @@ ${explanation}
       return;
     }
 
+    // クリップボードに画像があるか自動チェック
+    const clipboardImage = await captureClipboardImage();
+    const clipboardIndicator = clipboardImage ? '📸 スクショ添付済 | ' : '';
+
     // Step 2: プリセット選択
     // 入力ありの場合は「直接質問」を先頭に追加
     const presetItems = [...presetQuestions];
@@ -5546,12 +5591,18 @@ ${explanation}
     }
     presetItems.push({ label: '🎮 問題を出す', prompt: '', showBeside: false });
     presetItems.push({ label: '📂 複数ファイルを選択して質問', prompt: '', showBeside: false });
+    presetItems.push({ label: '🧠 横断思考（関連ファイルをAIが自動収集）', prompt: '', showBeside: false });
+    if (lastConversationContext) {
+      presetItems.push({ label: '🔄 続きを聞く（前回の会話を引き継ぐ）', prompt: '', showBeside: true });
+    }
     presetItems.push({ label: '🗑 レビューコメントを削除', prompt: '', showBeside: false });
 
-    const result = await new Promise<{ question: string; userInputText?: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean; replaceInline?: boolean; isInlineReview?: boolean; isDeleteReview?: boolean; isCodingChallenge?: boolean; isPhpInlineReview?: boolean } | undefined>((resolve) => {
+    const result = await new Promise<{ question: string; userInputText?: string; isSvg: boolean; isSkeleton: boolean; isStructural: boolean; isHtmlGeneration: boolean; isMemoSearch: boolean; isQuiz: boolean; isFreeQuestion: boolean; isSectionQuestion: boolean; showBeside: boolean; useGemini: boolean; isMultiFile?: boolean; isCrossThink?: boolean; isContinue?: boolean; replaceInline?: boolean; isInlineReview?: boolean; isDeleteReview?: boolean; isCodingChallenge?: boolean; isPhpInlineReview?: boolean } | undefined>((resolve) => {
       const quickPick = vscode.window.createQuickPick();
       quickPick.items = presetItems;
-      quickPick.placeholder = userInput.trim() ? 'プリセットを選択（💬直接質問=プリセットなし）' : 'プリセットを選択';
+      quickPick.placeholder = userInput.trim()
+        ? `${clipboardIndicator}プリセットを選択（💬直接質問=プリセットなし）`
+        : `${clipboardIndicator}プリセットを選択`;
       let acceptHandled = false;
 
       quickPick.onDidAccept(async () => {
@@ -5838,6 +5889,36 @@ ${rawFullText}`;
             useGemini: false,
             isMultiFile: true // 複数ファイルフラグ
           });
+        } else if (selected && selected.label.includes('続きを聞く')) {
+          resolve({
+            question: userInput.trim(),
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isHtmlGeneration: false,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: false,
+            isSectionQuestion: false,
+            showBeside: true,
+            useGemini: false,
+            isContinue: true
+          });
+        } else if (selected && selected.label.includes('横断思考')) {
+          resolve({
+            question: userInput.trim(),
+            isSvg: false,
+            isSkeleton: false,
+            isStructural: false,
+            isHtmlGeneration: false,
+            isMemoSearch: false,
+            isQuiz: false,
+            isFreeQuestion: false,
+            isSectionQuestion: false,
+            showBeside: true,
+            useGemini: false,
+            isCrossThink: true
+          });
         } else if (selected && selected.label.includes('セクション質問')) {
           // セクション質問: プリセットプロンプト + ユーザー質問
           const finalQuestion = userInput.trim()
@@ -5946,7 +6027,7 @@ ${rawFullText}`;
       return; // キャンセル
     }
 
-    let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, replaceInline, isInlineReview, isDeleteReview, isCodingChallenge, isPhpInlineReview } = result;
+    let { question, userInputText, isSvg, isSkeleton, isStructural, isHtmlGeneration, isMemoSearch, isQuiz, isFreeQuestion, isSectionQuestion, showBeside, useGemini, isMultiFile, isCrossThink, isContinue, replaceInline, isInlineReview, isDeleteReview, isCodingChallenge, isPhpInlineReview } = result;
 
     // isInlineReview + CSSファイルの場合、HTMLファイルを追加で選択させる
     let reviewHtmlUri: vscode.Uri | null = null;
@@ -6063,6 +6144,23 @@ ${rawFullText}`;
     let codeToSend = code;
     let htmlContext = '';
 
+    // 続きを聞くモード：前回の会話を引き継いでプロンプトを組み立てる
+    if (isContinue && lastConversationContext) {
+      const followUp = question.trim() || userInput.trim();
+      if (!followUp) {
+        vscode.window.showWarningMessage('続きの質問を入力してください。');
+        return;
+      }
+      question = `【前回の会話】
+ユーザー: ${lastConversationContext.question}
+AI: ${lastConversationContext.answer}
+
+【追加の質問】
+${followUp}
+
+上記の前回の会話を踏まえて、追加の質問に日本語で答えてください。`;
+    }
+
     // 複数ファイル選択モードの場合の特別処理
     if (isMultiFile) {
       // プロジェクト内のテキストベースのファイルを検索 (一部バイナリ等は除外)
@@ -6122,6 +6220,165 @@ ${rawFullText}`;
       // または以下のフラグでガード
     }
 
+    // ========================================
+    // 🧠 横断思考モード（Stage1: Haikuでファイル選択 → Stage2: Sonnetで回答）
+    // ========================================
+    if (isCrossThink) {
+      const crossThinkQuestion = question.trim() || userInput.trim();
+      if (!crossThinkQuestion) {
+        vscode.window.showWarningMessage('横断思考には質問を入力してください。');
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
+      const apiKey = config.get<string>('claudeApiKey', '');
+      if (!apiKey) {
+        vscode.window.showErrorMessage('Claude APIキーが設定されていません（cssToHtmlJumper.claudeApiKey）');
+        return;
+      }
+
+      // ワークスペース内のテキストファイルを全収集
+      const allFiles = await vscode.workspace.findFiles(
+        '**/*.{html,css,js,ts,php,json,md}',
+        '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/.cssjumper_cache/**}'
+      );
+      const fileList = allFiles
+        .map(f => vscode.workspace.asRelativePath(f))
+        .sort();
+
+      if (fileList.length === 0) {
+        vscode.window.showWarningMessage('ワークスペースにファイルが見つかりません。');
+        return;
+      }
+
+      // Stage1: Haikuにファイル名一覧 + 質問を送って関連ファイルを選ばせる
+      let stage1Selected: string[] = [];
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: '🧠 Stage1: 関連ファイルをAIが分析中...',
+        cancellable: false
+      }, async () => {
+        const stage1Prompt = `あなたはWebフロントエンド開発の専門家です。
+以下の質問に答えるために、どのファイルを読む必要があるか判断してください。
+
+【質問】
+${crossThinkQuestion}
+
+【プロジェクト内のファイル一覧】
+${fileList.join('\n')}
+
+上記のファイル一覧の中から、この質問に関係しそうなファイルを最大10件選んでください。
+以下のJSON形式のみで回答してください（説明不要）：
+["ファイルパス1", "ファイルパス2", ...]`;
+
+        const requestBody = JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 512,
+          messages: [{ role: 'user', content: stage1Prompt }]
+        });
+
+        await new Promise<void>((res) => {
+          const options = {
+            hostname: 'api.anthropic.com',
+            port: 443,
+            path: '/v1/messages',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01'
+            }
+          };
+          const req = https.request(options, (response) => {
+            let data = '';
+            response.on('data', chunk => data += chunk);
+            response.on('end', () => {
+              try {
+                const json = JSON.parse(data);
+                const text: string = json.content?.[0]?.text || '[]';
+                // JSONの配列部分を抽出（前後に余計なテキストがあっても対応）
+                const match = text.match(/\[[\s\S]*\]/);
+                if (match) {
+                  const parsed = JSON.parse(match[0]) as string[];
+                  stage1Selected = parsed.filter((f: string) => fileList.includes(f));
+                }
+              } catch (e) {
+                // パース失敗時は空のまま
+              }
+              res();
+            });
+          });
+          req.on('error', () => res());
+          req.write(requestBody);
+          req.end();
+        });
+      });
+
+      // Stage1の結果が空なら現在開いているファイルを起点にフォールバック
+      if (stage1Selected.length === 0) {
+        const currentRelPath = vscode.workspace.asRelativePath(editor.document.uri);
+        stage1Selected = fileList.filter(f =>
+          f === currentRelPath ||
+          path.dirname(f) === path.dirname(currentRelPath)
+        ).slice(0, 5);
+      }
+
+      // 確認ダイアログ: AIが選んだファイルをチェック済み状態で表示、全ファイルから追加も可能
+      const confirmItems = allFiles.map(f => {
+        const rel = vscode.workspace.asRelativePath(f);
+        return {
+          label: rel,
+          description: stage1Selected.includes(rel) ? '🧠 AIが選択' : '',
+          picked: stage1Selected.includes(rel),
+          uri: f
+        };
+      }).sort((a, b) => {
+        // AIが選んだものを上に
+        if (a.picked && !b.picked) return -1;
+        if (!a.picked && b.picked) return 1;
+        return a.label.localeCompare(b.label);
+      });
+
+      const finalSelected = await vscode.window.showQuickPick(confirmItems, {
+        canPickMany: true,
+        placeHolder: '🧠 AIが選んだファイル（チェック済み）を確認・追加・除外してからEnter'
+      });
+
+      if (!finalSelected || finalSelected.length === 0) {
+        return; // キャンセル
+      }
+
+      // Stage2: 選ばれたファイルの中身をSonnetに送って本格回答
+      question = `あなたはシニアWeb開発者です。以下の手順で回答してください：
+
+【Step 1】与えられたファイル群を読み、関係性をマップ化する
+【Step 2】質問に関係する要素を特定する
+【Step 3】複数ファイルの矛盾・重複・設計上の問題を探す
+【Step 4】根拠をコード引用付きで示しながら回答する
+
+回答フォーマット：
+① 現状分析（3行以内）
+② 問題点（あれば箇条書き、根拠コード引用付き）
+③ 改善案（優先度付き）
+④ 影響範囲（どのファイルを触るべきか）
+
+【質問】
+${crossThinkQuestion}`;
+
+      codeToSend = '';
+      for (const item of finalSelected) {
+        try {
+          const content = fs.readFileSync(item.uri.fsPath, 'utf8');
+          // 大きすぎるファイルは先頭200行に制限
+          const lines = content.split('\n');
+          const trimmed = lines.length > 200 ? lines.slice(0, 200).join('\n') + '\n// ... (省略)' : content;
+          codeToSend += `\n\n【ファイル：${item.label}】\n\`\`\`\n${trimmed}\n\`\`\`\n`;
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
     // HTML生成系プリセット + HTMLファイルで選択 → 関連CSSを自動添付
     if (isHtmlGeneration && code && editor.document.languageId === 'html') {
       try {
@@ -6150,8 +6407,8 @@ ${rawFullText}`;
       cancellable: false
     }, async () => {
       try {
-        // コンテキスト収集 (複数ファイル選択モードでない時のみ)
-        if (!isMultiFile) {
+        // コンテキスト収集 (複数ファイル選択モード・横断思考モード以外のみ)
+        if (!isMultiFile && !isCrossThink) {
           // CSS/HTMLファイル: セクション全体を自動添付（3段階フォールバック）
           // 特殊プリセット（セクション質問・構造改善・スケルトン・クイズ等）は除外
           const langId = editor.document.languageId;
@@ -6436,7 +6693,20 @@ ${rawFullText}`;
         // モデルに応じてAPI呼び出しを切り替え
         const answer = useGemini
           ? await askGeminiAPI(codeToSend, question, htmlContext || undefined, isStructural)
-          : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isHtmlGeneration, isSectionQuestion);
+          : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isHtmlGeneration, isSectionQuestion, clipboardImage || undefined, isCrossThink ? 'claude-opus-4-6' : undefined);
+
+        // 送信後に一時ファイルを削除
+        if (clipboardImage) {
+          const os = require('os');
+          const tmpPath = path.join(os.tmpdir(), 'cssjumper_clipboard.png');
+          try { fs.unlinkSync(tmpPath); } catch (e) { /* ignore */ }
+        }
+
+        // 会話コンテキストを保存（次回「続きを聞く」用）
+        const savedQuestion = isContinue
+          ? `${lastConversationContext?.question}\n→（追加）${question.trim() || userInput.trim()}`
+          : (question || userInput).trim();
+        lastConversationContext = { question: savedQuestion, answer: answer.substring(0, 1000) };
 
         // コードブロック（```css など）を削除
         const cleanAnswer = answer
