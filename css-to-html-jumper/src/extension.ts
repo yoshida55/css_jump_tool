@@ -111,6 +111,7 @@ let lastPregenTime: number = 0; // バックグラウンド生成の最終実行
 // クイズ回答ドキュメント（セッション通して累積）
 // ========================================
 let quizAnswerDoc: vscode.TextDocument | null = null;
+let claudeInputDraft = ''; // Ctrl+I 入力途中の下書き（フォーカス外れ時に保存）
 
 // ========================================
 // クイズ評価待ち状態（ステータスバー用）
@@ -3222,7 +3223,7 @@ if ($img -ne $null) {
 // ========================================
 // Claude API 呼び出し関数
 // ========================================
-async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean, isHtmlGeneration?: boolean, isSectionQuestion?: boolean, imageData?: { base64: string; mediaType: string }, modelOverride?: string): Promise<string> {
+async function askClaudeAPI(code: string, question: string, htmlContext?: string, isStructural?: boolean, isHtmlGeneration?: boolean, isSectionQuestion?: boolean, imageData?: { base64: string; mediaType: string }, modelOverride?: string, useThinking?: boolean): Promise<string> {
   const config = vscode.workspace.getConfiguration('cssToHtmlJumper');
   const apiKey = config.get<string>('claudeApiKey', '');
   const model = modelOverride || config.get<string>('claudeModel', 'claude-sonnet-4-5-20250929');
@@ -3327,13 +3328,17 @@ ${question}
       ]
     : sanitizedPrompt;
 
-  const requestBody = JSON.stringify({
+  const requestBodyObj: any = {
     model: model,
-    max_tokens: (isStructural || isHtmlGeneration) ? 8192 : 4096,
+    max_tokens: useThinking ? 8192 : ((isStructural || isHtmlGeneration) ? 8192 : 4096),
     messages: [
       { role: 'user', content: userContent }
     ]
-  });
+  };
+  if (useThinking) {
+    requestBodyObj.thinking = { type: 'enabled', budget_tokens: 3000 };
+  }
+  const requestBody = JSON.stringify(requestBodyObj);
 
   return new Promise((resolve, reject) => {
     const options = {
@@ -3356,8 +3361,14 @@ ${question}
           const json = JSON.parse(data);
           if (json.error) {
             reject(new Error(json.error.message || 'API エラー'));
-          } else if (json.content && json.content[0] && json.content[0].text) {
-            resolve(json.content[0].text);
+          } else if (json.content && Array.isArray(json.content)) {
+            // Thinking有効時は content 配列に thinking ブロックも含まれるため text タイプだけ抽出
+            const textBlock = json.content.find((b: any) => b.type === 'text');
+            if (textBlock && textBlock.text) {
+              resolve(textBlock.text);
+            } else {
+              reject(new Error('予期しないレスポンス形式'));
+            }
           } else {
             reject(new Error('予期しないレスポンス形式'));
           }
@@ -4174,6 +4185,8 @@ export function activate(context: vscode.ExtensionContext) {
                   });
                   editor.setDecorations(deco, [range]);
                   setTimeout(() => deco.dispose(), 3000);
+                  // VS Codeウィンドウをアクティブに（複数起動時に埋もれないよう）
+                  vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
                 });
               }, (err: any) => {
                 console.error('CSS to HTML Jumper: ファイルオープンエラー', err);
@@ -4192,6 +4205,14 @@ export function activate(context: vscode.ExtensionContext) {
                 });
                 editor.setDecorations(deco, [range]);
                 setTimeout(() => deco.dispose(), 3000);
+                // VS Codeウィンドウをアクティブに（複数起動時に埋もれないよう）
+                vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+                // PowerShell AppActivate でOSレベルのウィンドウ前面化（コンソール非表示）
+                const cp = require('child_process');
+                cp.exec(
+                  'powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(\'Visual Studio Code\')"',
+                  { windowsHide: true }
+                );
               });
             }, async (_err: any) => {
               // パスが見つからない場合、ワークスペース内でファイル名検索
@@ -5455,10 +5476,12 @@ ${explanation}
     const userInput = await new Promise<string | undefined>((resolve) => {
       const qp = vscode.window.createQuickPick();
       qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で質問';
-      qp.value = code ? code : (cursorWord ? cursorWord + ' って何？' : '');
+      qp.value = code ? code : (cursorWord ? cursorWord + ' って何？' : claudeInputDraft);
+      qp.ignoreFocusOut = true;
       qp.items = [];
 
       qp.onDidChangeValue(value => {
+        claudeInputDraft = value; // 入力途中を保存
         const lastWord = value.split(/[\s　]+/).pop()?.toLowerCase() || '';
         if (!lastWord || lastWord.length < 1) { qp.items = []; return; }
         
@@ -5506,7 +5529,7 @@ ${explanation}
           qp.hide();
         }
       });
-      qp.onDidHide(() => { qp.dispose(); if (!accepted) { resolve(undefined); } });
+      qp.onDidHide(() => { qp.dispose(); if (!accepted) { resolve(undefined); } else { claudeInputDraft = ''; } });
       qp.show();
     });
 
@@ -5603,6 +5626,7 @@ ${explanation}
       quickPick.placeholder = userInput.trim()
         ? `${clipboardIndicator}プリセットを選択（💬直接質問=プリセットなし）`
         : `${clipboardIndicator}プリセットを選択`;
+      quickPick.ignoreFocusOut = true;
       let acceptHandled = false;
 
       quickPick.onDidAccept(async () => {
@@ -6242,6 +6266,7 @@ ${followUp}
         '**/*.{html,css,js,ts,php,json,md}',
         '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/.cssjumper_cache/**}'
       );
+      const allFileUris = allFiles;
       const fileList = allFiles
         .map(f => vscode.workspace.asRelativePath(f))
         .sort();
@@ -6251,7 +6276,19 @@ ${followUp}
         return;
       }
 
-      // Stage1: Haikuにファイル名一覧 + 質問を送って関連ファイルを選ばせる
+      // ファイル名 + 先頭10行のプレビューを生成
+      const filePreviewList = allFiles.map(f => {
+        const rel = vscode.workspace.asRelativePath(f);
+        try {
+          const content = fs.readFileSync(f.fsPath, 'utf8');
+          const preview = content.split('\n').slice(0, 10).join('\n');
+          return `### ${rel}\n${preview}`;
+        } catch {
+          return `### ${rel}\n(読み込み失敗)`;
+        }
+      }).join('\n\n');
+
+      // Stage1: Sonnetにファイル名+プレビュー + 質問を送って関連ファイルを選ばせる
       let stage1Selected: string[] = [];
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
@@ -6259,21 +6296,24 @@ ${followUp}
         cancellable: false
       }, async () => {
         const stage1Prompt = `あなたはWebフロントエンド開発の専門家です。
-以下の質問に答えるために、どのファイルを読む必要があるか判断してください。
+以下の質問・問題の原因が含まれていそうなファイルを特定してください。
 
-【質問】
+【質問・問題】
 ${crossThinkQuestion}
 
-【プロジェクト内のファイル一覧】
-${fileList.join('\n')}
+【プロジェクト内のファイル一覧（先頭10行プレビュー付き）】
+${filePreviewList}
 
-上記のファイル一覧の中から、この質問に関係しそうなファイルを最大10件選んでください。
+上記の中から、この問題の**原因になっていそうな怪しいファイル**を優先して選んでください（目安8件、必要なら増減してOK）。
+「関係しそう」ではなく「バグ・矛盾・未定義・設定ミスが含まれていそう」な観点で選んでください。
+特にCSSファイルは、グローバルルール（img, *, body 等）が問題の原因になることが多いため注意して見てください。
+ファイル名は「### ファイル名」の形式で示されています。
 以下のJSON形式のみで回答してください（説明不要）：
 ["ファイルパス1", "ファイルパス2", ...]`;
 
         const requestBody = JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 512,
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2048,
           messages: [{ role: 'user', content: stage1Prompt }]
         });
 
@@ -6308,7 +6348,7 @@ ${fileList.join('\n')}
               res();
             });
           });
-          req.on('error', () => res());
+          req.on('error', (e) => { console.error('[CrossThink Stage1]', e); res(); });
           req.write(requestBody);
           req.end();
         });
@@ -6341,7 +6381,8 @@ ${fileList.join('\n')}
 
       const finalSelected = await vscode.window.showQuickPick(confirmItems, {
         canPickMany: true,
-        placeHolder: '🧠 AIが選んだファイル（チェック済み）を確認・追加・除外してからEnter'
+        placeHolder: '🧠 AIが選んだ怪しいファイル（最大5件）を確認・追加・除外してからEnter',
+        ignoreFocusOut: true
       });
 
       if (!finalSelected || finalSelected.length === 0) {
@@ -6349,30 +6390,32 @@ ${fileList.join('\n')}
       }
 
       // Stage2: 選ばれたファイルの中身をSonnetに送って本格回答
-      question = `あなたはシニアWeb開発者です。以下の手順で回答してください：
+      question = `あなたはシニアWeb開発者です。以下の手順でレイアウトバグ・表示崩れの原因を特定してください：
 
-【Step 1】与えられたファイル群を読み、関係性をマップ化する
-【Step 2】質問に関係する要素を特定する
-【Step 3】複数ファイルの矛盾・重複・設計上の問題を探す
-【Step 4】根拠をコード引用付きで示しながら回答する
+【Step 1】ファイル群を読み、HTML構造とCSSの関係を把握する
+【Step 2】質問に書かれた「見た目の症状」から、原因になりうるCSSプロパティを逆引きで考える
+【Step 3】以下の観点でCSSを重点チェックする（必ずこの順番で確認すること）：
+  ① まず全CSSファイルのグローバルルール（img, *, body, html, a など）を全部列挙して確認する
+  ② height/width: 100% が誤った親要素を基準にしていないか
+  ③ position: fixed/absolute/relative の組み合わせミス
+  ④ overflow, float, z-index による予期しない影響
+  ⑤ PHPテンプレートの出力順序・構造の問題
+【Step 4】根拠となるコードを引用して原因を断言する（「〜が原因です」と明確に）
 
 回答フォーマット：
-① 現状分析（3行以内）
-② 問題点（あれば箇条書き、根拠コード引用付き）
-③ 改善案（優先度付き）
-④ 影響範囲（どのファイルを触るべきか）
+① 原因（1〜2行で断言）
+② 該当コード（引用）
+③ 修正方法（具体的なコードで）
+④ なぜそうなるか（仕組みを一言で）
 
-【質問】
+【質問・症状】
 ${crossThinkQuestion}`;
 
       codeToSend = '';
       for (const item of finalSelected) {
         try {
           const content = fs.readFileSync(item.uri.fsPath, 'utf8');
-          // 大きすぎるファイルは先頭200行に制限
-          const lines = content.split('\n');
-          const trimmed = lines.length > 200 ? lines.slice(0, 200).join('\n') + '\n// ... (省略)' : content;
-          codeToSend += `\n\n【ファイル：${item.label}】\n\`\`\`\n${trimmed}\n\`\`\`\n`;
+          codeToSend += `\n\n【ファイル：${item.label}】\n\`\`\`\n${content}\n\`\`\`\n`;
         } catch (e) {
           // ignore
         }
@@ -6693,7 +6736,7 @@ ${crossThinkQuestion}`;
         // モデルに応じてAPI呼び出しを切り替え
         const answer = useGemini
           ? await askGeminiAPI(codeToSend, question, htmlContext || undefined, isStructural)
-          : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isHtmlGeneration, isSectionQuestion, clipboardImage || undefined, isCrossThink ? 'claude-opus-4-6' : undefined);
+          : await askClaudeAPI(codeToSend, question, htmlContext || undefined, isStructural, isHtmlGeneration, isSectionQuestion, clipboardImage || undefined, isCrossThink ? 'claude-sonnet-4-6' : undefined, isCrossThink);
 
         // 送信後に一時ファイルを削除
         if (clipboardImage) {

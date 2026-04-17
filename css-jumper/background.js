@@ -420,12 +420,11 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagN
     // HTML検索 + 3点連携ジャンプ
     var htmlResult = await searchInHtml(selector, type, projectPath);
     if (htmlResult) {
-      openInVscode(htmlResult.filePath, htmlResult.lineNumber);
-      setTimeout(function() { highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber); }, 200);
-      setTimeout(function() {
-        openInVscode(bestMatch.filePath, bestMatch.lineNumber);
-        setTimeout(function() { highlightLineInVSCode(bestMatch.filePath, bestMatch.lineNumber); }, 300);
-      }, 100);
+      // CSSをフォーカス付きで開く（最終的にCSSにカーソルが当たるように）
+      openInVscode(bestMatch.filePath, bestMatch.lineNumber);
+      // HTMLはハイライトのみ（preserveFocus: true で開くのでフォーカスを奪わない）
+      setTimeout(function() { highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber); }, 150);
+      setTimeout(function() { highlightLineInVSCode(bestMatch.filePath, bestMatch.lineNumber); }, 300);
       notifyUser("✓ " + prefix + selector + " → CSS:" + bestMatch.fileName + ":" + bestMatch.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
     } else {
       openInVscode(bestMatch.filePath, bestMatch.lineNumber);
