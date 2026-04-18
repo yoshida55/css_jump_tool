@@ -232,8 +232,8 @@
       "properties": {
         "cssToHtmlJumper.targetFiles": {
           "type": "string",
-          "default": "**/*.html",
-          "description": "検索対象のHTMLファイル（glob形式）。複数指定する場合はカンマ区切り。例: **/index.html, **/*.html"
+          "default": "**/*.{html,php}",
+          "description": "検索対象のHTML/PHPファイル（glob形式）。例: **/*.{html,php}"
         },
         "cssToHtmlJumper.copilotPrompt": {
           "type": "string",

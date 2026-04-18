@@ -43,7 +43,8 @@
       "Bash(find d:/50_knowledge -name *.quiz-history.json -o -name quiz-history.json)",
       "mcp__claude_ai_Notion__notion-fetch",
       "mcp__claude_ai_Notion__notion-create-database",
-      "WebFetch(domain:www.anthropic.com)"
+      "WebFetch(domain:www.anthropic.com)",
+      "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code.cmd\" --install-extension css-to-html-jumper-1.10.1.vsix --force)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",
