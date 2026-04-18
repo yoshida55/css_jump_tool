@@ -2169,9 +2169,9 @@ async function handleQuiz(showFilterPick = false) {
       return;
     }
 
-    // === バックグラウンド生成: questionText がない見出しを10件まで並列生成（5分に1回・待ち時間ゼロ） ===
+    // === バックグラウンド生成: questionText がない見出しをVS Code起動後1回だけ生成 ===
     const pregenApiKey = config.get<string>('geminiApiKey', '');
-    const PREGEN_INTERVAL = 5 * 60 * 1000; // 5分
+    const PREGEN_INTERVAL = 24 * 60 * 60 * 1000; // 24時間（実質VS Code起動後1回のみ）
     if (pregenApiKey && Date.now() - lastPregenTime >= PREGEN_INTERVAL) {
       lastPregenTime = Date.now();
       // 直近の日付順（新しい順）で未生成のものを10件取得
@@ -2183,7 +2183,7 @@ async function handleQuiz(showFilterPick = false) {
           if (!b.date) { return -1; }
           return b.date.localeCompare(a.date); // 新しい順
         })
-        .slice(0, 3);
+        .slice(0, 1); // 料金節約のため1件のみ
       if (needsGen.length > 0) {
         const buildPregenPrompt = (h: typeof headings[0]) => {
           const filteredContent = h.content.filter(line => !/^\s*```/.test(line));
