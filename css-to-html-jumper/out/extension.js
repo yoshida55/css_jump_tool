@@ -1435,26 +1435,7 @@ async function handleMemoSearch() {
                     qp.selectedItems = [];
                     return;
                 }
-                // PHP関数が選択された場合 → カーソル位置に挿入してQuickPickを閉じる
-                if (sel && phpFunctionInsertMap.has(sel.label)) {
-                    const insertText = phpFunctionInsertMap.get(sel.label);
-                    const editor = vscode.window.activeTextEditor;
-                    if (editor) {
-                        const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active, /[\w_]+/);
-                        editor.edit(editBuilder => {
-                            if (wordRange) {
-                                editBuilder.replace(wordRange, insertText);
-                            }
-                            else {
-                                editBuilder.insert(editor.selection.active, insertText);
-                            }
-                        });
-                    }
-                    accepted = true;
-                    resolve('');
-                    qp.hide();
-                }
-                else if (sel && qp.items.length > 0) {
+                if (sel && qp.items.length > 0) {
                     if (sel.description === '検索履歴') {
                         const raw = sel.label.replace(/^🕐\s*/, '');
                         accepted = true;
@@ -3583,6 +3564,200 @@ async function findLinkedCssFiles(htmlDocument) {
         }
     }
     return cssFiles;
+}
+// PHPファイルからclass名・id名を抽出してCSSセレクタ配列を返す
+function extractPhpSelectors(phpText) {
+    const classNames = new Set();
+    const idNames = new Set();
+    // HTML属性: class="foo bar"
+    const classRegex = /class\s*=\s*["']([^"'<>]*)["']/g;
+    let m;
+    while ((m = classRegex.exec(phpText)) !== null) {
+        if (m[1].includes('<?')) {
+            continue;
+        }
+        m[1].split(/\s+/).filter(c => c.trim()).forEach(c => classNames.add(c.trim()));
+    }
+    // PHP配列形式: array('class' => 'foo') / ['class' => 'foo']
+    const arrayClassRegex = /['"]class['"]\s*=>\s*['"]([^'"]+)['"]/g;
+    while ((m = arrayClassRegex.exec(phpText)) !== null) {
+        m[1].split(/\s+/).filter(c => c.trim()).forEach(c => classNames.add(c.trim()));
+    }
+    const idRegex = /\bid\s*=\s*["']([^"'<>?]*)["']/g;
+    while ((m = idRegex.exec(phpText)) !== null) {
+        if (m[1].includes('<?')) {
+            continue;
+        }
+        const id = m[1].trim();
+        if (id) {
+            idNames.add(id);
+        }
+    }
+    const selectors = [];
+    idNames.forEach(id => selectors.push(`#${id}`));
+    classNames.forEach(cls => selectors.push(`.${cls}`));
+    return selectors;
+}
+// テーマルートの functions.php を探す（最大5階層上まで）
+function findFunctionsPhp(startDir) {
+    let dir = startDir;
+    for (let i = 0; i < 5; i++) {
+        const candidate = path.join(dir, 'functions.php');
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) {
+            break;
+        }
+        dir = parent;
+    }
+    return null;
+}
+// PHPファイルのCSSスケルトン生成（AI不要・直接パース）
+async function handlePhpCssSkeleton(editor) {
+    const phpPath = editor.document.uri.fsPath;
+    const phpDir = path.dirname(phpPath);
+    const phpBaseName = path.basename(phpPath, '.php');
+    const allSelectors = extractPhpSelectors(editor.document.getText());
+    if (allSelectors.length === 0) {
+        vscode.window.showWarningMessage('PHPファイルにクラス名・ID名が見つかりませんでした');
+        return;
+    }
+    // CSSフォルダを決定する
+    // 優先順: phpDir/css/ → themeRoot/css/ → themeRoot/assets/css/
+    // 見つからない場合はダイアログで確認
+    const functionsPhpPath = findFunctionsPhp(phpDir);
+    const themeRoot = functionsPhpPath ? path.dirname(functionsPhpPath) : phpDir;
+    const candidateFolders = [
+        path.join(phpDir, 'css'),
+        path.join(themeRoot, 'css'),
+        path.join(themeRoot, 'assets', 'css'),
+    ];
+    const foundCssFolder = candidateFolders.find(f => fs.existsSync(f));
+    let cssDir;
+    if (foundCssFolder) {
+        cssDir = foundCssFolder;
+    }
+    else {
+        // css/ フォルダが見つからないのでダイアログで確認
+        const choice = await vscode.window.showInformationMessage('css/ フォルダが見つかりません。どこに CSS を作成しますか？', { modal: true }, 'css/ を新規作成', 'PHPと同じフォルダ', 'キャンセル');
+        if (!choice || choice === 'キャンセル') {
+            return;
+        }
+        cssDir = choice === 'css/ を新規作成'
+            ? path.join(themeRoot, 'css')
+            : phpDir;
+        if (!fs.existsSync(cssDir)) {
+            fs.mkdirSync(cssDir, { recursive: true });
+        }
+    }
+    const cssPath = path.join(cssDir, phpBaseName + '.css');
+    const cssExists = fs.existsSync(cssPath);
+    let selectorsToAdd;
+    if (cssExists) {
+        const answer = await vscode.window.showInformationMessage(`${path.basename(cssPath)} が既に存在します。不足しているセレクタを追記しますか？`, { modal: true }, 'はい', 'いいえ');
+        if (answer !== 'はい') {
+            return;
+        }
+        const existingCss = fs.readFileSync(cssPath, 'utf8');
+        const existingSelectors = new Set();
+        const selectorRegex = /^([.#][^{,\/\n]+?)(?:\s*[{,])/gm;
+        let sm;
+        while ((sm = selectorRegex.exec(existingCss)) !== null) {
+            existingSelectors.add(sm[1].trim());
+        }
+        selectorsToAdd = allSelectors.filter(s => !existingSelectors.has(s));
+        if (selectorsToAdd.length === 0) {
+            vscode.window.showInformationMessage('✅ 不足しているセレクタはありませんでした');
+            return;
+        }
+    }
+    else {
+        selectorsToAdd = allSelectors;
+    }
+    const skeletonText = selectorsToAdd.map(s => `${s} {\n\n}`).join('\n\n');
+    if (cssExists) {
+        const existingContent = fs.readFileSync(cssPath, 'utf8');
+        const sep = existingContent.endsWith('\n') ? '\n' : '\n\n';
+        fs.writeFileSync(cssPath, existingContent + sep + skeletonText + '\n', 'utf8');
+        vscode.window.showInformationMessage(`✅ ${selectorsToAdd.length}個のセレクタを ${path.relative(themeRoot, cssPath)} に追記しました`);
+    }
+    else {
+        fs.writeFileSync(cssPath, skeletonText + '\n', 'utf8');
+        vscode.window.showInformationMessage(`✅ ${path.relative(themeRoot, cssPath)} を新規作成しました`);
+    }
+    const cssUri = vscode.Uri.file(cssPath);
+    const cssDoc = await vscode.workspace.openTextDocument(cssUri);
+    await vscode.window.showTextDocument(cssDoc, vscode.ViewColumn.Beside);
+    // functions.php に wp_enqueue_style を追記（ハンドル名が未登録の場合のみ）
+    if (!functionsPhpPath) {
+        return;
+    }
+    const functionsContent = fs.readFileSync(functionsPhpPath, 'utf8');
+    const handle = phpBaseName.replace(/_/g, '-');
+    if (functionsContent.includes(`'${handle}'`) || functionsContent.includes(`"${handle}"`)) {
+        return;
+    }
+    // テーマルートからの相対パス（例: css/page-contact.css）
+    const cssRelPath = path.relative(themeRoot, cssPath).replace(/\\/g, '/');
+    const enqueueLine = `\twp_enqueue_style( '${handle}', get_template_directory_uri() . '/${cssRelPath}' );`;
+    // wp_enqueue_scripts のコールバック関数名を取得（名前付き関数 or 無名関数）
+    const namedHookRegex = /add_action\s*\(\s*['"]wp_enqueue_scripts['"]\s*,\s*['"](\w+)['"]\s*\)/;
+    const namedHookResult = functionsContent.match(namedHookRegex);
+    let funcOpenBrace = -1;
+    if (namedHookResult && namedHookResult[1]) {
+        // 名前付き関数: function enqueue_style() { を探す
+        const callbackName = namedHookResult[1];
+        const funcDefPos = functionsContent.search(new RegExp(`function\\s+${callbackName}\\s*\\(`));
+        if (funcDefPos >= 0) {
+            funcOpenBrace = functionsContent.indexOf('{', funcDefPos);
+        }
+    }
+    else {
+        // 無名関数: add_action('wp_enqueue_scripts', function() {
+        const anonPos = functionsContent.search(/add_action\s*\(\s*['"]wp_enqueue_scripts['"]\s*,\s*function\s*\(/);
+        if (anonPos >= 0) {
+            const funcKeyword = functionsContent.indexOf('function', anonPos + 10);
+            funcOpenBrace = functionsContent.indexOf('{', funcKeyword);
+        }
+    }
+    if (funcOpenBrace >= 0) {
+        // { ～ } の範囲を特定
+        let depth = 1;
+        let idx = funcOpenBrace + 1;
+        while (idx < functionsContent.length && depth > 0) {
+            if (functionsContent[idx] === '{') {
+                depth++;
+            }
+            else if (functionsContent[idx] === '}') {
+                depth--;
+            }
+            idx++;
+        }
+        const closeIdx = idx - 1;
+        // 関数内で最後に登場する wp_enqueue_style の行末を探す
+        const funcBody = functionsContent.slice(funcOpenBrace, closeIdx);
+        const lastEnqueueMatch = [...funcBody.matchAll(/wp_enqueue_style\s*\([^;]+;/g)].pop();
+        if (lastEnqueueMatch && lastEnqueueMatch.index !== undefined) {
+            const matchEnd = funcOpenBrace + lastEnqueueMatch.index + lastEnqueueMatch[0].length;
+            const lineEnd = functionsContent.indexOf('\n', matchEnd);
+            const insertIdx = lineEnd >= 0 ? lineEnd + 1 : matchEnd;
+            // 1行空けて追記
+            const updated = functionsContent.slice(0, insertIdx) + '\n' + enqueueLine + '\n' + functionsContent.slice(insertIdx);
+            fs.writeFileSync(functionsPhpPath, updated, 'utf8');
+        }
+        else {
+            const updated = functionsContent.slice(0, closeIdx) + enqueueLine + '\n' + functionsContent.slice(closeIdx);
+            fs.writeFileSync(functionsPhpPath, updated, 'utf8');
+        }
+        vscode.window.showInformationMessage(`✅ functions.php に wp_enqueue_style('${handle}') を追記しました`);
+        return;
+    }
+    // フックが見つからない場合はファイル末尾に新しいフックごと追記
+    const newHook = `\nadd_action( 'wp_enqueue_scripts', function() {\n${enqueueLine}\n} );\n`;
+    fs.appendFileSync(functionsPhpPath, newHook, 'utf8');
+    vscode.window.showInformationMessage(`✅ functions.php に wp_enqueue_style('${handle}') を追記しました`);
 }
 // CSSにリンクするHTMLファイルをワークスペースから検索（ファイル名で簡易マッチ）
 async function findLinkedHtmlFiles(cssDocument) {
@@ -5908,6 +6083,11 @@ ${rawFullText}`;
                 }
             });
             vscode.window.showInformationMessage(`✅ レビューコメントを${deleteNums.length}箇所削除しました`);
+            return;
+        }
+        // 📝 PHPファイルのCSSスケルトン生成（AI不要・直接パース）
+        if (isSkeleton && editor.document.languageId === 'php') {
+            await handlePhpCssSkeleton(editor);
             return;
         }
         // 🎮 問題を出す（選択テキストをメモとしてGeminiに渡しHTMLチャレンジ生成）
@@ -9000,8 +9180,85 @@ ${selectedText}
             }
         }
     }));
+    // ─────────────────────────────────────────────────────────────────
+    // ルールベース PHP リントチェック（保存のたびに全行スキャン・選択不要）
+    // ─────────────────────────────────────────────────────────────────
+    const warnIconUri = vscode.Uri.parse(`data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23ffcc00' d='M7.56 1h.88L15 13.5H1L7.56 1zm-.88 8h1.64v1.5H6.68V9zm0-4h1.64v3H6.68V5z'/%3E%3C/svg%3E`);
+    const phpRuleLintDecType = vscode.window.createTextEditorDecorationType({
+        gutterIconPath: warnIconUri,
+        gutterIconSize: 'contain',
+        overviewRulerColor: 'rgba(255, 204, 0, 0.8)',
+        overviewRulerLane: vscode.OverviewRulerLane.Right,
+    });
+    context.subscriptions.push(phpRuleLintDecType);
+    // 固定ルール
+    const phpStaticRules = [
+        { pattern: /;;/, message: '⚠ ;; が二重になっています' },
+        { pattern: /[☑☐✓✔✗✘□■]/, message: '⚠ 全角チェック記号が混入しています' },
+        // echo $var; のみ（esc_html/esc_url/intval 等でラップ済みは除外）
+        { pattern: /echo\s+\$[a-zA-Z_]\w*\s*;/, message: '⚠ echo に esc_html() 等がありません（要確認）' },
+    ];
+    // WP_FUNCTION_MAP の returnVersion を逆引き → echo get_*() → the_*() を使えばよいルールを自動生成
+    // 例: the_title の returnVersion = get_the_title → echo get_the_title( を検出したら警告
+    const phpWpRedirectRules = [];
+    for (const [directFunc, meta] of Object.entries(wpFunctions_1.WP_FUNCTION_MAP)) {
+        if (meta.category === 'direct_output' && meta.returnVersion) {
+            const getter = meta.returnVersion;
+            phpWpRedirectRules.push({
+                pattern: new RegExp(`echo\\s+(esc_html\\s*\\(\\s*|esc_url\\s*\\(\\s*)?${getter}\\s*\\(`),
+                message: `⚠ echo ${getter}() より ${directFunc}() を直接使えばecho不要です`,
+            });
+        }
+    }
+    const phpAllRules = [...phpStaticRules, ...phpWpRedirectRules];
+    function runPhpRuleLintCheck(doc) {
+        if (doc.languageId !== 'php') {
+            return;
+        }
+        const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+        if (!editor) {
+            return;
+        }
+        const lines = doc.getText().split('\n');
+        const byLine = new Map();
+        for (const rule of phpAllRules) {
+            for (let i = 0; i < lines.length; i++) {
+                if (rule.pattern.test(lines[i])) {
+                    if (!byLine.has(i)) {
+                        byLine.set(i, []);
+                    }
+                    byLine.get(i).push(rule.message);
+                }
+            }
+        }
+        const decorations = [];
+        const warnColor = new vscode.ThemeColor('editorWarning.foreground');
+        for (const [lineNum, messages] of byLine) {
+            const lineEnd = doc.lineAt(lineNum).range.end;
+            const short = messages.map(m => m.replace(/^⚠\s*/, '')).join(' ｜ ');
+            decorations.push({
+                range: new vscode.Range(lineEnd, lineEnd),
+                renderOptions: { after: { contentText: `  ⚠ ${short}`, color: warnColor, fontStyle: 'italic', margin: '0 0 0 1em' } }
+            });
+        }
+        editor.setDecorations(phpRuleLintDecType, decorations);
+    }
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => runPhpRuleLintCheck(doc)), vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (editor) {
+            runPhpRuleLintCheck(editor.document);
+        }
+    }));
+    if (vscode.window.activeTextEditor) {
+        runPhpRuleLintCheck(vscode.window.activeTextEditor.document);
+    }
     // 選択あり手動Ctrl+S → AI WordPress/PHP チェック
-    const phpAiCheckDecorationType = vscode.window.createTextEditorDecorationType({});
+    const aiIconUri = vscode.Uri.parse(`data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%234fc3f7'/%3E%3Crect x='7' y='7' width='2' height='5' fill='white'/%3E%3Crect x='7' y='4' width='2' height='2' fill='white'/%3E%3C/svg%3E`);
+    const phpAiCheckDecorationType = vscode.window.createTextEditorDecorationType({
+        gutterIconPath: aiIconUri,
+        gutterIconSize: 'contain',
+        overviewRulerColor: 'rgba(79, 195, 247, 0.8)',
+        overviewRulerLane: vscode.OverviewRulerLane.Right,
+    });
     context.subscriptions.push(phpAiCheckDecorationType);
     // ステータスバーアイテム（次の手動保存まで表示し続ける）
     const phpAiStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
@@ -9145,24 +9402,13 @@ ${annotatedText}
                 byLine.get(lineNum).push(issue.message);
             }
             const decorations = [];
-            const infoColor = new vscode.ThemeColor('editorInfo.foreground');
+            const aiColor = new vscode.ThemeColor('editorInfo.foreground');
             for (const [lineNum, messages] of byLine) {
-                if (messages.length === 1) {
-                    // 1件 → 行の上（before）
-                    const lineStart = new vscode.Position(lineNum, 0);
-                    decorations.push({
-                        range: new vscode.Range(lineStart, lineStart),
-                        renderOptions: { before: { contentText: `🤖 ${messages[0]}  `, color: infoColor, fontStyle: 'italic' } }
-                    });
-                }
-                else {
-                    // 複数件 → 行末に横並び（after）
-                    const lineEnd = doc.lineAt(lineNum).range.end;
-                    decorations.push({
-                        range: new vscode.Range(lineEnd, lineEnd),
-                        renderOptions: { after: { contentText: `  🤖 ${messages.join(' ｜ ')}`, color: infoColor, fontStyle: 'italic', margin: '0 0 0 2em' } }
-                    });
-                }
+                const lineEnd = doc.lineAt(lineNum).range.end;
+                decorations.push({
+                    range: new vscode.Range(lineEnd, lineEnd),
+                    renderOptions: { after: { contentText: `  🤖 ${messages.join(' ｜ ')}`, color: aiColor, fontStyle: 'italic', margin: '0 0 0 1em' } }
+                });
             }
             editor.setDecorations(phpAiCheckDecorationType, decorations);
             phpAiStatusBar.text = `🤖 AIチェック完了: ${issues.length}件の指摘`;
