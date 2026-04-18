@@ -1008,6 +1008,65 @@ function callGeminiApi(apiKey: string, modelPath: string, postData: string): Pro
  * Stage1: 見出し一覧をGeminiに送り、関連セクションのインデックスを返す
  */
 /**
+ * クエリ展開 + セクション選択を1回のAPI呼び出しで行う（高速化版）
+ */
+async function expandQueryAndSelectSections(
+  query: string,
+  sections: Array<{ heading: string; lineStart: number; lineEnd: number }>,
+  apiKey: string,
+  modelPath: string,
+  lines: string[]
+): Promise<{ expandedQueries: string[]; selectedIndices: number[] }> {
+  const headingList = [...sections].reverse().map((s) => {
+    const i = sections.indexOf(s);
+    const snippet = lines.slice(s.lineStart + 1, s.lineStart + 7)
+      .filter(l => l.trim()).slice(0, 3).map(l => `  ${l.trim()}`).join('\n');
+    const subHeadings = lines.slice(s.lineStart + 1, s.lineEnd)
+      .filter(l => l.startsWith('### ')).map(l => `  └ ${l}`).join('\n');
+    let text = `${i}: ${s.heading}`;
+    if (snippet) { text += `\n${snippet}`; }
+    if (subHeadings) { text += `\n${subHeadings}`; }
+    return text;
+  }).join('\n');
+
+  const prompt = `検索クエリ「${query}」について以下を一度に返してください。
+
+【見出し一覧】
+${headingList}
+
+【タスク1】クエリの異なる解釈を3つ出す（同じ意味の言い換えではなく異なる文脈・対象）
+【タスク2】見出し一覧から関連セクションのインデックスを最大7件選ぶ（意味・同義語・関連語で判断、重複禁止）
+
+JSON形式で返す:
+{"interpretations": ["解釈1", "解釈2", "解釈3"], "indices": [0, 3, 7]}`;
+
+  const postData = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 512, responseMimeType: 'application/json' }
+  });
+
+  try {
+    const raw = await callGeminiApi(apiKey, modelPath, postData);
+    const parsed = JSON.parse(raw);
+    const text = (parsed.candidates?.[0]?.content?.parts?.[0]?.text || '{}').trim();
+    const obj = JSON.parse(text);
+    const expandedQueries: string[] = Array.isArray(obj.interpretations)
+      ? obj.interpretations.filter((s: any) => typeof s === 'string').slice(0, 3)
+      : [];
+    const selectedIndices: number[] = Array.isArray(obj.indices)
+      ? obj.indices.filter((n: any) => typeof n === 'number')
+      : [];
+    return { expandedQueries, selectedIndices };
+  } catch {
+    // フォールバック: 旧方式で個別実行
+    const expandedQueries = await expandQuery(query, apiKey, modelPath);
+    const allQueries = [query, ...expandedQueries];
+    const selectedIndices = await selectRelevantSections(allQueries, sections, apiKey, modelPath, lines);
+    return { expandedQueries, selectedIndices };
+  }
+}
+
+/**
  * クエリを3つの言い換えに展開する（動的クエリ拡張）
  */
 async function expandQuery(query: string, apiKey: string, modelPath: string): Promise<string[]> {
@@ -1115,13 +1174,10 @@ async function searchWithGemini(query: string, memoContent: string): Promise<{ a
   const modelPath = 'gemini-3.1-flash-lite-preview';
   const lines = memoContent.split('\n');
 
-  // クエリ展開: 元クエリ + 3つの言い換えを生成
-  const expandedQueries = await expandQuery(query, apiKey, modelPath);
-  const allQueries = [query, ...expandedQueries];
-
-  // Stage1: 見出し一覧をGeminiに送ってセマンティックに絞り込む
+  // Stage1: クエリ展開 + セクション選択を1回のAPI呼び出しで実行（高速化）
   const sections = parseSections(memoContent);
-  const selectedIndices = await selectRelevantSections(allQueries, sections, apiKey, modelPath, lines);
+  const { expandedQueries, selectedIndices } = await expandQueryAndSelectSections(query, sections, apiKey, modelPath, lines);
+  const allQueries = [query, ...expandedQueries];
 
   // マッチなし → 終了（全件フォールバック禁止・料金節約）
   if (selectedIndices.length === 0) {
