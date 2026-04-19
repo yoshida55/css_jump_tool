@@ -897,7 +897,7 @@ JSON形式で返す:
 {"interpretations": ["解釈1", "解釈2", "解釈3"], "indices": [0, 3, 7]}`;
     const postData = JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 512, responseMimeType: 'application/json' }
+        generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: 'application/json' }
     });
     try {
         const raw = await callGeminiApi(apiKey, modelPath, postData);
@@ -1183,6 +1183,7 @@ async function handleMemoSearch() {
         ? activeEditor.document.getText(selection).trim()
         : '';
     let query;
+    let memoInputQp;
     {
         // QuickPickでクエリ入力（選択テキストがあれば初期値にセット）
         // メモファイルから見出し行を抽出（サジェスト用）
@@ -1334,8 +1335,10 @@ async function handleMemoSearch() {
         // QuickPick1本で完結：最後の単語で候補表示 → Enter で単語置き換え → 候補なし状態でEnter → 検索
         query = await new Promise((resolve) => {
             const qp = vscode.window.createQuickPick();
+            memoInputQp = qp;
             qp.sortByLabel = false; // カスタムソートを維持（VSCodeの自動ソートを無効化）
             qp.matchOnDetail = true; // detail行を表示＆検索対象に
+            qp.ignoreFocusOut = true; // フォーカスが外れても消えない
             qp.placeholder = 'b→background Enter, i→image Enter, の違いを教えて Enter で検索';
             qp.items = phpFunctionItems.length > 0 ? phpFunctionItems : [];
             // 見出し/メモ補完直後のフラグ（onDidChangeValue で即座に同じ項目が再表示されるのを防ぐ）
@@ -1550,6 +1553,33 @@ async function handleMemoSearch() {
             vscode.window.showErrorMessage(`Gemini検索エラー: ${e.message}`);
             return;
         }
+        // 見出しに検索ワードが全部含まれる行を先頭に差し込む（Geminiが見落としても確実にヒット）
+        const queryWords = query.replace(/[？?！!。、・（）()]/g, '').toLowerCase()
+            .split(/[\s　]+/)
+            .flatMap(w => w.split(/(?<=[a-z0-9./])(?=[\u3040-\u9fff\u4e00-\u9fff])/))
+            .filter(w => w.length > 1);
+        const allMemoLines = memoContent.split('\n');
+        const headingMatches = allMemoLines
+            .map((line, idx) => ({ line, idx }))
+            .filter(x => x.line.startsWith('## ') && queryWords.every(w => x.line.toLowerCase().includes(w)))
+            .map(x => ({ line: x.idx + 1, keyword: query, text: x.line, preview: x.line, answer: '', context: '見出し一致' }));
+        // Gemini結果と合流（見出し一致を先頭・Gemini側の重複は除去）
+        let mergedResults = [
+            ...headingMatches,
+            ...geminiResults.filter(r => !headingMatches.some(h => Math.abs(h.line - r.line) < 5))
+        ].slice(0, 8);
+        // 4件未満なら見出しをキーワード部分一致で補填（マッチ単語数が多い順→新しい順）
+        if (mergedResults.length < 4) {
+            const usedLines = new Set(mergedResults.map(r => r.line));
+            const supplements = allMemoLines
+                .map((line, idx) => ({ line, idx, score: queryWords.filter(w => line.toLowerCase().includes(w)).length }))
+                .filter(x => x.line.startsWith('## ') && !usedLines.has(x.idx + 1) && x.score > 0)
+                .sort((a, b) => b.score - a.score || b.idx - a.idx)
+                .slice(0, 4 - mergedResults.length)
+                .map(x => ({ line: x.idx + 1, keyword: query, text: x.line, preview: x.line, answer: '', context: 'キーワード補填' }));
+            mergedResults = [...mergedResults, ...supplements];
+        }
+        geminiResults = mergedResults.length > 0 ? mergedResults : geminiResults;
         if (geminiResults.length === 0) {
             return;
         }
@@ -1607,7 +1637,7 @@ async function handleMemoSearch() {
         if (aiAnswer) {
             const line1 = aiAnswer.length > 80 ? aiAnswer.slice(0, 80) + '…' : aiAnswer;
             const line2 = aiAnswer.length > 80 ? aiAnswer.slice(80) : '';
-            items.splice(2, 0, { label: `🤖 ${line1}`, description: '', detail: line2 || undefined, line: -1 });
+            items.splice(3, 0, { label: `🤖 ${line1}`, description: '', detail: line2 || undefined, line: -1 });
         }
         const selected = await vscode.window.showQuickPick(items, { placeHolder: `${geminiResults.length}件見つかりました`, matchOnDetail: true });
         if (!selected) {
@@ -1650,6 +1680,11 @@ async function handleMemoSearch() {
     }
     catch (e) {
         vscode.window.showErrorMessage(`メモファイル読み込みエラー: ${e.message}`);
+    }
+    finally {
+        memoInputQp?.hide();
+        memoInputQp?.dispose();
+        memoInputQp = undefined;
     }
 }
 /**
