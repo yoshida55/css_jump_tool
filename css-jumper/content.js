@@ -609,6 +609,9 @@ document.addEventListener("mousedown", function(event) {
 }, true);
 
 // 右クリック時に要素を記録（Ctrl+右クリック時はメニューを抑止）
+var lastRightClickedCandidates = [];
+var lastRightClickX = 0;
+var lastRightClickY = 0;
 document.addEventListener("contextmenu", function(event) {
   if (preventContextMenu) {
     event.preventDefault();
@@ -616,7 +619,35 @@ document.addEventListener("contextmenu", function(event) {
     return;
   }
   lastRightClickedElement = event.target;
-  console.log("CSS Jumper: 右クリック要素記録", lastRightClickedElement.className);
+  lastRightClickX = event.clientX;
+  lastRightClickY = event.clientY;
+
+  // 通常の要素（pointer-events あり）を収集
+  var all = document.elementsFromPoint(event.clientX, event.clientY) || [];
+  lastRightClickedCandidates = [];
+  var seen = [];
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    if (!el || el === document.body || el === document.documentElement) break;
+    if (typeof el.className === "string" && el.className.indexOf("css-jumper") !== -1) continue;
+    var hasSelector = el.id || (typeof el.className === "string" && el.className.trim());
+    if (hasSelector) { lastRightClickedCandidates.push(el); seen.push(el); }
+  }
+
+  // pointer-events:none の要素を getBoundingClientRect でスキャンして追加
+  var cx = event.clientX, cy = event.clientY;
+  var pointerNoneEls = document.querySelectorAll("[class],[id]");
+  for (var j = 0; j < pointerNoneEls.length; j++) {
+    var pe = pointerNoneEls[j];
+    if (seen.indexOf(pe) !== -1) continue;
+    if (typeof pe.className === "string" && pe.className.indexOf("css-jumper") !== -1) continue;
+    if (window.getComputedStyle(pe).pointerEvents !== "none") continue;
+    var r = pe.getBoundingClientRect();
+    if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
+      lastRightClickedCandidates.unshift(pe); // 先頭に追加（上に表示）
+    }
+  }
+  console.log("CSS Jumper: 右クリック候補", lastRightClickedCandidates.length + "件", lastRightClickedCandidates.map(function(e){ return e.tagName + "." + e.className; }));
 });
 
 // Ctrl + ↓ でクイックリサイズ
@@ -700,8 +731,10 @@ function jumpToVSCode(clickedElement, preferMobile) {
   }
 
   var classes = foundClassString ? foundClassString.trim().split(/\s+/) : [];
-  var className = classes[0] || "";
-  var allClasses = classes;
+  // 長いクラス名ほど具体的（blob-blue-large > blob）→ 長い順に並び替えて先に検索
+  var sortedClasses = classes.slice().sort(function(a, b){ return b.length - a.length; });
+  var className = sortedClasses[0] || "";
+  var allClasses = sortedClasses;
 
   // ビューポート幅を自動検知してモバイルCSS優先を判定
   // document.documentElement.clientWidth を使用（DevToolsのレスポンシブモード設定を反映）
@@ -762,13 +795,13 @@ document.addEventListener("click", function(event) {
     event.preventDefault();
     event.stopPropagation();
 
-    // 右クリックで記録した要素を使用（なければクリック要素）
-    var clickedElement = lastRightClickedElement || event.target;
-    if (!lastRightClickedElement) {
-      console.log("CSS Jumper: 右クリック要素なし、クリック要素を使用");
+    // 右クリック候補が複数あればピッカーを表示、1件なら直接ジャンプ
+    if (lastRightClickedCandidates.length > 1) {
+      showElementPicker(lastRightClickedCandidates, lastRightClickX, lastRightClickY);
+    } else {
+      var clickedElement = (lastRightClickedCandidates.length === 1 ? lastRightClickedCandidates[0] : null) || lastRightClickedElement || event.target;
+      jumpToVSCode(clickedElement, false);
     }
-
-    jumpToVSCode(clickedElement, false);
   }
 }, true);
 
@@ -859,7 +892,18 @@ function isClickInsideClipPath(el, clientX, clientY) {
 
 // 透明オーバーレイ / clip-path領域外をスキップして意味のある要素を返す
 function getBestTarget(event) {
+  // pointer-events:none の要素も含めて座標上の全要素を取得し、最上位の有意な要素を候補にする
+  var allElements = document.elementsFromPoint(event.clientX, event.clientY) || [];
   var target = event.target;
+  for (var k = 0; k < allElements.length; k++) {
+    var el = allElements[k];
+    if (!el || el === document.body || el === document.documentElement) break;
+    var es = window.getComputedStyle(el);
+    // クラスまたはIDを持ち、かつ拡張機能自身の要素でなければ先頭候補とする
+    var hasSelector = el.id || (typeof el.className === "string" && el.className.trim() && el.className.indexOf("css-jumper") === -1);
+    if (hasSelector) { target = el; break; }
+  }
+
   var disabled = [];
   var maxAttempts = 5;
 
@@ -885,10 +929,13 @@ function getBestTarget(event) {
     }
 
     // 透明なposition付き要素（z-index設定あり）はスキップ
+    // position: absolute はコンテンツ要素として扱う（スキップしない）
+    // position: fixed + 高z-index のみオーバーレイとして判定
+    var zIndex = parseInt(style.zIndex, 10);
     var isOverlay = (bg === "rgba(0, 0, 0, 0)" || bg === "transparent")
       && style.backgroundImage === "none"
       && style.borderTopWidth === "0px"
-      && style.position !== "static"
+      && (style.position === "fixed" || (style.position !== "static" && !isNaN(zIndex) && zIndex >= 10))
       && style.zIndex !== "auto";
     if (!isOverlay) break;
     target.style.pointerEvents = "none";
@@ -922,13 +969,9 @@ document.addEventListener("dblclick", function(event) {
   var bestTarget = getBestTarget(event);
 
   // デバッグ: クリックされた要素の詳細情報
-  console.log("CSS Jumper: ダブルクリック検知", {
-    ctrlKey: preferMobile,
-    tagName: bestTarget.tagName,
-    id: bestTarget.id,
-    className: bestTarget.className,
-    original: event.target !== bestTarget ? event.target.tagName + " (スキップ)" : "なし"
-  });
+  var _orig = event.target;
+  console.log("CSS Jumper: ダブルクリック検知 bestTarget=" + bestTarget.tagName + " class=" + bestTarget.className + " id=" + bestTarget.id + " position=" + window.getComputedStyle(bestTarget).position + " zIndex=" + window.getComputedStyle(bestTarget).zIndex);
+  console.log("CSS Jumper: event.target=" + _orig.tagName + " class=" + _orig.className + " id=" + _orig.id);
 
   if (preferMobile) {
     showNotification("📱 モバイル版CSSを検索中...", "info");
@@ -2958,6 +3001,55 @@ function sendAdviceRequest(question, elementInfo, answerArea, askBtn, largeEleme
 function removeAdviceUI() {
   var existing = document.getElementById("css-jumper-advice-ui");
   if (existing) existing.remove();
+}
+
+// ========================================
+// 要素ピッカー（pointer-events:none 対応）
+// ========================================
+function showElementPicker(candidates, x, y) {
+  var existing = document.getElementById("css-jumper-picker");
+  if (existing) existing.remove();
+
+  var picker = document.createElement("div");
+  picker.id = "css-jumper-picker";
+  picker.style.cssText = "position:fixed;z-index:2147483647;background:#1e1e1e;border:1px solid #555;border-radius:6px;padding:6px 0;box-shadow:0 4px 16px rgba(0,0,0,0.6);font:13px/1.4 monospace;min-width:220px;max-width:360px;";
+  picker.style.left = Math.min(x, window.innerWidth - 370) + "px";
+  picker.style.top = Math.min(y + 4, window.innerHeight - 40 * candidates.length - 20) + "px";
+
+  var label = document.createElement("div");
+  label.textContent = "どの要素にジャンプ？";
+  label.style.cssText = "color:#888;font-size:11px;padding:4px 12px 6px;border-bottom:1px solid #333;";
+  picker.appendChild(label);
+
+  candidates.forEach(function(el) {
+    var tag = el.tagName.toLowerCase();
+    var cls = (typeof el.className === "string" ? el.className.trim() : "").split(/\s+/).filter(Boolean).map(function(c){ return "." + c; }).join("");
+    var idStr = el.id ? "#" + el.id : "";
+    var pEvents = window.getComputedStyle(el).pointerEvents;
+    var badge = pEvents === "none" ? " 🔒" : "";
+
+    var btn = document.createElement("div");
+    btn.textContent = tag + idStr + cls + badge;
+    btn.style.cssText = "color:#9cdcfe;padding:6px 14px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    btn.addEventListener("mouseenter", function(){ btn.style.background = "#2a2d2e"; });
+    btn.addEventListener("mouseleave", function(){ btn.style.background = ""; });
+    btn.addEventListener("mousedown", function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      picker.remove();
+      jumpToVSCode(el, false);
+    });
+    picker.appendChild(btn);
+  });
+
+  document.documentElement.appendChild(picker);
+
+  // 外クリックで閉じる
+  setTimeout(function(){
+    document.addEventListener("mousedown", function closePicker(e){
+      if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("mousedown", closePicker, true); }
+    }, true);
+  }, 100);
 }
 
 // ========================================
