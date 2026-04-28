@@ -4207,6 +4207,53 @@ function activate(context) {
                     }
                 });
             }
+            else if (req.url === '/search-html-occurrence' && req.method === 'POST') {
+                // HTMLファイルをディスクから直接読んでN番目のclass/ID出現行を返す
+                let body = '';
+                req.on('data', (chunk) => body += chunk.toString());
+                req.on('end', () => {
+                    try {
+                        const data = JSON.parse(body);
+                        const filePath = data.filePath || '';
+                        const selector = data.selector || '';
+                        const type = data.type || 'class';
+                        const occurrenceIndex = data.occurrenceIndex || 1;
+                        if (!filePath || !selector) {
+                            res.writeHead(400);
+                            res.end(JSON.stringify({ error: 'Missing filePath or selector' }));
+                            return;
+                        }
+                        const fs = require('fs');
+                        if (!fs.existsSync(filePath)) {
+                            res.writeHead(200);
+                            res.end(JSON.stringify({ lineNumber: null }));
+                            return;
+                        }
+                        const content = fs.readFileSync(filePath, 'utf8');
+                        const lines = content.split('\n');
+                        const searchPattern = type === 'id'
+                            ? new RegExp(`id\\s*=\\s*["']${selector}["']`, 'i')
+                            : new RegExp(`class\\s*=\\s*["'][^"']*\\b${selector}\\b[^"']*["']`, 'i');
+                        let matchCount = 0;
+                        for (let i = 0; i < lines.length; i++) {
+                            if (searchPattern.test(lines[i])) {
+                                matchCount++;
+                                if (matchCount >= occurrenceIndex) {
+                                    res.writeHead(200);
+                                    res.end(JSON.stringify({ lineNumber: i + 1 }));
+                                    return;
+                                }
+                            }
+                        }
+                        res.writeHead(200);
+                        res.end(JSON.stringify({ lineNumber: null }));
+                    }
+                    catch (e) {
+                        res.writeHead(400);
+                        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                    }
+                });
+            }
             else if (req.url === '/search-php' && req.method === 'POST') {
                 // PHPファイルをタグ名・クラス・IDで検索してジャンプ
                 let body = '';

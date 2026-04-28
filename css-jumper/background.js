@@ -219,7 +219,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log("CSS Jumper: メッセージ受信", message);
   
   if (message.action === "classNameResult") {
-    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth, message.tagName, message.currentUrl);
+    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth, message.tagName, message.currentUrl, message.occurrenceIndex || 1, message.totalCount || 1, message.matchingSelectors || []);
   }
 
   // PHPソースジャンプ（data-php-src 属性経由）
@@ -339,7 +339,7 @@ function handleQuickResize(message, sender, sendResponse) {
 }
 
 // セレクタ情報（ID, クラス）を処理（最新のCSS内容を取得してから検索）
-async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagName, currentUrl) {
+async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagName, currentUrl, occurrenceIndex, totalCount, matchingSelectors) {
   var preferMediaQuery = viewportWidth && viewportWidth < 768;
   console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, viewportWidth: viewportWidth, preferMediaQuery: preferMediaQuery });
 
@@ -418,22 +418,49 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagN
     }
 
     // HTML検索 + 3点連携ジャンプ
-    var htmlResult = await searchInHtml(selector, type, projectPath);
+    var htmlResult = await searchInHtml(selector, type, projectPath, occurrenceIndex);
     if (htmlResult) {
       // CSSをフォーカス付きで開く（最終的にCSSにカーソルが当たるように）
       openInVscode(bestMatch.filePath, bestMatch.lineNumber);
       // HTMLはハイライトのみ（preserveFocus: true で開くのでフォーカスを奪わない）
       setTimeout(function() { highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber); }, 150);
       setTimeout(function() { highlightLineInVSCode(bestMatch.filePath, bestMatch.lineNumber); }, 300);
-      notifyUser("✓ " + prefix + selector + " → CSS:" + bestMatch.fileName + ":" + bestMatch.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
+      var countNote = (totalCount > 1) ? "（" + occurrenceIndex + "番目 / 全" + totalCount + "個）" : "";
+      notifyUser("✓ " + prefix + selector + countNote + " → CSS:" + bestMatch.fileName + ":" + bestMatch.lineNumber + " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
     } else {
       openInVscode(bestMatch.filePath, bestMatch.lineNumber);
       setTimeout(function() { highlightLineInVSCode(bestMatch.filePath, bestMatch.lineNumber); }, 300);
-      notifyUser("✓ " + prefix + selector + " → " + bestMatch.fileName + ":" + bestMatch.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
+      var countNote = (totalCount > 1) ? "（" + occurrenceIndex + "番目 / 全" + totalCount + "個）" : "";
+      notifyUser("✓ " + prefix + selector + countNote + " → " + bestMatch.fileName + ":" + bestMatch.lineNumber + dupNote, matches.length > 1 ? "warning" : "success");
     }
 
-    triggerBrowserHighlight(selector, type);
+    triggerBrowserHighlight(selector, type, occurrenceIndex);
     return true;
+  }
+
+  // 0. styleSheetsで取得したセレクタ文字列を直接検索（nth-child等の複雑なセレクタ対応）
+  if (matchingSelectors && matchingSelectors.length > 0) {
+    // 純粋なタグセレクタ（h2, p, div 等）は誤ジャンプの原因になるので除外
+    // .class / #id / :nth-child() 等を含むものだけ使う
+    var meaningfulSelectors = matchingSelectors.filter(function(s) {
+      return s.indexOf('.') !== -1 || s.indexOf('#') !== -1 || /:[a-z-]+\(/.test(s);
+    });
+    console.log("CSS Jumper: meaningfulSelectors", meaningfulSelectors);
+    var selectorMatch = findBySelectorText(meaningfulSelectors, targetCssFiles, projectPath, preferMediaQuery);
+    console.log("CSS Jumper: findBySelectorText 結果", selectorMatch);
+    if (selectorMatch) {
+      var htmlResult = await searchInHtml(className || id, id ? "id" : "class", projectPath, occurrenceIndex);
+      openInVscode(selectorMatch.filePath, selectorMatch.lineNumber);
+      if (htmlResult) {
+        setTimeout(function() { highlightLineInVSCode(htmlResult.filePath, htmlResult.lineNumber); }, 150);
+      }
+      setTimeout(function() { highlightLineInVSCode(selectorMatch.filePath, selectorMatch.lineNumber); }, 300);
+      var countNote = (totalCount > 1) ? "（" + occurrenceIndex + "番目 / 全" + totalCount + "個）" : "";
+      var htmlNote = htmlResult ? " / HTML:" + htmlResult.fileName + ":" + htmlResult.lineNumber : "";
+      notifyUser("✓ " + selectorMatch.selector + countNote + " → CSS:" + selectorMatch.fileName + ":" + selectorMatch.lineNumber + htmlNote, "success");
+      triggerBrowserHighlight(className || id, id ? "id" : "class", occurrenceIndex);
+      return;
+    }
   }
 
   // 1. IDで検索（最優先）
@@ -719,6 +746,61 @@ async function fetchCurrentPageCssFiles(existingCssFiles) {
   }
 }
 
+// セレクタ文字列（nth-child等含む）でCSSファイルを検索して行番号を返す
+// matchingSelectors（styleSheets由来）を優先し、CSSファイル内で最初にヒットした行を返す
+function findBySelectorText(matchingSelectors, cssFiles, projectPath, preferMediaQuery) {
+  if (!matchingSelectors || matchingSelectors.length === 0) return null;
+
+  // 特異性（長さ）で降順ソート — より具体的なセレクタを優先
+  var sorted = matchingSelectors.slice().sort(function(a, b) { return b.length - a.length; });
+  console.log("CSS Jumper: findBySelectorText 検索対象セレクタ", sorted);
+  console.log("CSS Jumper: 検索対象CSSファイル", cssFiles.map(function(f){ return f.name; }));
+
+  var results = [];
+
+  for (var si = 0; si < sorted.length; si++) {
+    var sel = sorted[si];
+    // 正規表現特殊文字をエスケープ → セレクタ間のスペースは \s+ で柔軟マッチ
+    // （ブラウザのselectorTextはスペース正規化済み。CSSファイルは複数スペースの場合あり）
+    var escaped = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ +/g, '\\s+');
+    console.log("CSS Jumper: 検索パターン", sel, "→ escaped:", escaped);
+
+    for (var fi = 0; fi < cssFiles.length; fi++) {
+      var file = cssFiles[fi];
+      if (!file.content) continue;
+      var lines = file.content.split('\n');
+      var inMedia = false;
+      for (var li = 0; li < lines.length; li++) {
+        var line = lines[li];
+        if (/@media/i.test(line)) inMedia = true;
+        if (/^\s*\}/.test(line) && inMedia) inMedia = false;
+
+        // セレクタ行: 先頭または , の直後にあり、末尾が { または ,
+        var selPattern = new RegExp('(?:^|,)\\s*' + escaped + '\\s*(?:,|\\{)', 'i');
+        if (selPattern.test(line)) {
+          var filePath = projectPath + "\\" + file.name;
+          results.push({
+            selector: sel,
+            filePath: filePath,
+            fileName: file.name,
+            lineNumber: li + 1,
+            isInMediaQuery: inMedia
+          });
+        }
+      }
+    }
+  }
+
+  if (results.length === 0) return null;
+
+  // モバイル優先のときは @media 内を先に
+  if (preferMediaQuery) {
+    var mediaResults = results.filter(function(r) { return r.isInMediaQuery; });
+    if (mediaResults.length > 0) return mediaResults[0];
+  }
+  return results[0];
+}
+
 // 全CSSファイルからセレクタの全マッチを収集（ファイルごとに1件）
 function findAllMatchesInCss(selector, type, cssFiles, projectPath, preferMediaQuery) {
   var matches = [];
@@ -868,17 +950,17 @@ function extractCssRulesForSelector(selector, type, cssFiles) {
 }
 
 // HTMLファイルでクラス名/IDを検索
-async function searchInHtml(selector, type, projectPath) {
+async function searchInHtml(selector, type, projectPath, occurrenceIndex) {
+  occurrenceIndex = occurrenceIndex || 1;
   try {
     // VS Codeから現在のプロジェクトパスを自動取得
-    var actualProjectPath = projectPath; // フォールバック
+    var actualProjectPath = projectPath;
     try {
       var vsCodeResponse = await fetch("http://127.0.0.1:3848/project-path");
       if (vsCodeResponse.ok) {
         var vsCodeData = await vsCodeResponse.json();
         if (vsCodeData.projectPath) {
           actualProjectPath = vsCodeData.projectPath;
-          console.log("CSS Jumper: VS Codeからプロジェクトパス自動取得", actualProjectPath);
         }
       }
     } catch (e) {
@@ -888,47 +970,53 @@ async function searchInHtml(selector, type, projectPath) {
     // アクティブタブのURLから HTMLファイルを特定
     var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs || !tabs[0] || !tabs[0].url) {
-      console.log("CSS Jumper: アクティブタブが見つかりません");
       return null;
     }
 
     var pageUrl = new URL(tabs[0].url);
     var htmlFileName = pageUrl.pathname.split('/').pop() || 'index.html';
-
-    // プロジェクトパスからHTMLファイルの絶対パスを作成
     var htmlFilePath = actualProjectPath + "\\" + htmlFileName;
 
-    // HTMLファイルの内容を取得
-    var htmlUrl = pageUrl.origin + "/" + htmlFileName;
-    console.log("CSS Jumper: HTML検索中", htmlUrl, selector, type);
+    // ① VS Code拡張経由でディスク上のファイルを直接検索（行番号ズレを防ぐ）
+    try {
+      var diskRes = await fetch("http://127.0.0.1:3848/search-html-occurrence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath: htmlFilePath, selector: selector, type: type, occurrenceIndex: occurrenceIndex })
+      });
+      if (diskRes.ok) {
+        var diskData = await diskRes.json();
+        if (diskData.lineNumber) {
+          console.log("CSS Jumper: HTML検索成功（ディスク直読み）", htmlFileName, diskData.lineNumber, occurrenceIndex + "番目");
+          return { filePath: htmlFilePath, fileName: htmlFileName, lineNumber: diskData.lineNumber };
+        }
+      }
+    } catch (e) {
+      console.log("CSS Jumper: ディスク直読みフォールバック→HTTP取得へ", e);
+    }
 
+    // ② フォールバック: HTTPでHTML取得して検索
+    var htmlUrl = pageUrl.origin + "/" + htmlFileName;
     var response = await fetch(htmlUrl, { cache: "no-store" });
     if (!response.ok) {
-      console.log("CSS Jumper: HTML取得失敗", response.status);
       return null;
     }
 
     var content = await response.text();
     var lines = content.split("\n");
 
-    // 検索パターン
-    var searchPattern;
-    if (type === "id") {
-      searchPattern = new RegExp('id\\s*=\\s*["\']' + selector + '["\']', 'i');
-    } else {
-      // class検索（class="btn" または class="nav btn"のようなパターン）
-      searchPattern = new RegExp('class\\s*=\\s*["\'][^"\']*\\b' + selector + '\\b[^"\']*["\']', 'i');
-    }
+    var searchPattern = type === "id"
+      ? new RegExp('id\\s*=\\s*["\']' + selector + '["\']', 'i')
+      : new RegExp('class\\s*=\\s*["\'][^"\']*\\b' + selector + '\\b[^"\']*["\']', 'i');
 
-    // 最初にマッチした行を返す
+    var matchCount = 0;
     for (var i = 0; i < lines.length; i++) {
       if (searchPattern.test(lines[i])) {
-        console.log("CSS Jumper: HTML検索成功", htmlFileName, i + 1);
-        return {
-          filePath: htmlFilePath,
-          fileName: htmlFileName,
-          lineNumber: i + 1
-        };
+        matchCount++;
+        if (matchCount >= occurrenceIndex) {
+          console.log("CSS Jumper: HTML検索成功（HTTP）", htmlFileName, i + 1, occurrenceIndex + "番目");
+          return { filePath: htmlFilePath, fileName: htmlFileName, lineNumber: i + 1 };
+        }
       }
     }
 
@@ -941,7 +1029,7 @@ async function searchInHtml(selector, type, projectPath) {
 }
 
 // ブラウザで要素をハイライト（3秒間）
-function triggerBrowserHighlight(selector, type) {
+function triggerBrowserHighlight(selector, type, occurrenceIndex) {
   console.log("CSS Jumper: ブラウザハイライト", selector, type);
 
   chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
@@ -949,7 +1037,8 @@ function triggerBrowserHighlight(selector, type) {
       chrome.tabs.sendMessage(tabs[0].id, {
         action: "highlightElement",
         selector: selector,
-        type: type
+        type: type,
+        occurrenceIndex: occurrenceIndex || 1
       }, function(response) {
         if (chrome.runtime.lastError) {
           console.error("CSS Jumper: ハイライトメッセージ送信エラー", chrome.runtime.lastError);

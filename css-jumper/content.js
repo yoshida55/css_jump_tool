@@ -98,8 +98,9 @@ function startVSCodeHighlightPolling() {
 }
 
 // セレクタに一致する要素をハイライト
-function highlightElementBySelector(type, name) {
-  console.log("CSS Jumper: ブラウザハイライト", type, name);
+function highlightElementBySelector(type, name, occurrenceIndex) {
+  occurrenceIndex = occurrenceIndex || 1;
+  console.log("CSS Jumper: ブラウザハイライト", type, name, occurrenceIndex + "番目");
 
   // 前回のハイライトを削除
   removeVSCodeHighlight();
@@ -120,8 +121,9 @@ function highlightElementBySelector(type, name) {
     return;
   }
 
-  // 最初の要素をハイライト
-  var target = elements[0];
+  // N番目の要素をハイライト（範囲外なら最後の要素）
+  var targetIndex = Math.min(occurrenceIndex - 1, elements.length - 1);
+  var target = elements[targetIndex];
   lastHighlightedElement = target;
 
   // ハイライト用のオーバーレイを作成
@@ -663,9 +665,54 @@ document.addEventListener("keydown", function(event) {
   }
 }, true);
 
+// ページのstyleSheetsから要素にマッチするCSSセレクタ一覧を取得
+// nth-child / 子孫セレクタ / 属性セレクタなど複雑なものも拾える
+function getMatchingStylesheetSelectors(element) {
+  var matched = [];
+  try {
+    for (var si = 0; si < document.styleSheets.length; si++) {
+      var sheet = document.styleSheets[si];
+      var rules;
+      try { rules = sheet.cssRules || sheet.rules; } catch (e) { continue; } // クロスオリジン
+      if (!rules) continue;
+      for (var ri = 0; ri < rules.length; ri++) {
+        var rule = rules[ri];
+        // 通常ルール
+        if (rule.selectorText) {
+          // カンマ区切りで複数セレクタが入っている場合に個別チェック
+          var parts = rule.selectorText.split(',');
+          for (var pi = 0; pi < parts.length; pi++) {
+            var sel = parts[pi].trim();
+            try {
+              if (sel && element.matches(sel)) matched.push(sel);
+            } catch (e) { /* 無効なセレクタは無視 */ }
+          }
+        }
+        // @media 内のルール
+        if (rule.cssRules) {
+          for (var mi = 0; mi < rule.cssRules.length; mi++) {
+            var mediaRule = rule.cssRules[mi];
+            if (!mediaRule.selectorText) continue;
+            var mediaParts = mediaRule.selectorText.split(',');
+            for (var mp = 0; mp < mediaParts.length; mp++) {
+              var mSel = mediaParts[mp].trim();
+              try {
+                if (mSel && element.matches(mSel)) matched.push(mSel);
+              } catch (e) { /* 無効なセレクタは無視 */ }
+            }
+          }
+        }
+      }
+    }
+  } catch (e) { /* styleSheets全体のエラーは無視 */ }
+  // 重複除去
+  return matched.filter(function(s, i, a) { return a.indexOf(s) === i; });
+}
+
 // VS Codeジャンプの共通処理
 // preferMobile: trueの場合、メディアクエリ内を優先検索
-function jumpToVSCode(clickedElement, preferMobile) {
+// originalTargetSelectors: event.target（実クリック要素）のCSSセレクタ一覧（dblclick時のみ渡す）
+function jumpToVSCode(clickedElement, preferMobile, originalTargetSelectors) {
 
   // PHPソースジャンプ（data-php-src 属性チェック）
   // PHPが出力した data-php-src="C:/path/to/file.php:42" があれば直接PHPファイルへジャンプ
@@ -736,6 +783,20 @@ function jumpToVSCode(clickedElement, preferMobile) {
   var className = sortedClasses[0] || "";
   var allClasses = sortedClasses;
 
+  // ダブルクリックした要素が同じクラスの中で何番目かを計算（HTMLジャンプ精度向上）
+  var occurrenceIndex = 1;
+  var totalCount = 1;
+  if (className && !foundId) {
+    var allSameClass = document.querySelectorAll("." + CSS.escape(className));
+    totalCount = allSameClass.length;
+    for (var oi = 0; oi < allSameClass.length; oi++) {
+      if (allSameClass[oi] === targetElement) {
+        occurrenceIndex = oi + 1;
+        break;
+      }
+    }
+  }
+
   // ビューポート幅を自動検知してモバイルCSS優先を判定
   // document.documentElement.clientWidth を使用（DevToolsのレスポンシブモード設定を反映）
   var actualWidth = document.documentElement.clientWidth || window.innerWidth;
@@ -757,6 +818,16 @@ function jumpToVSCode(clickedElement, preferMobile) {
   }
   var viewportWidth = isMobile ? 767 : actualWidth;
 
+  // styleSheetsから要素にマッチする全CSSセレクタを取得（nth-child等の複雑なセレクタ対応）
+  // clickedElement（bestTarget）と originalTargetSelectors（event.target由来）を両方マージ
+  var matchingSelectors = getMatchingStylesheetSelectors(clickedElement);
+  if (originalTargetSelectors && originalTargetSelectors.length > 0) {
+    originalTargetSelectors.forEach(function(s) {
+      if (matchingSelectors.indexOf(s) === -1) matchingSelectors.push(s);
+    });
+  }
+  console.log("CSS Jumper: matchingSelectors", matchingSelectors);
+
   try {
     chrome.runtime.sendMessage({
       action: "classNameResult",
@@ -765,7 +836,10 @@ function jumpToVSCode(clickedElement, preferMobile) {
       allClasses: allClasses,
       viewportWidth: viewportWidth,
       tagName: targetElement ? targetElement.tagName.toLowerCase() : "",
-      currentUrl: location.href
+      currentUrl: location.href,
+      occurrenceIndex: occurrenceIndex,
+      totalCount: totalCount,
+      matchingSelectors: matchingSelectors
     });
   } catch (e) {
     console.log("CSS Jumper: メッセージ送信エラー", e);
@@ -977,7 +1051,10 @@ document.addEventListener("dblclick", function(event) {
     showNotification("📱 モバイル版CSSを検索中...", "info");
   }
 
-  jumpToVSCode(bestTarget, preferMobile);
+  // event.target（実際にクリックした要素）のセレクタも取得して渡す
+  // bestTargetがオーバーレイ回避で親要素になる場合でも、h2等の本来の要素のセレクタを使えるようにする
+  var originalTargetSelectors = getMatchingStylesheetSelectors(event.target);
+  jumpToVSCode(bestTarget, preferMobile, originalTargetSelectors);
 }, true);
 
 
@@ -1100,7 +1177,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   // ブラウザで要素をハイライト（3秒間）
   if (message.action === "highlightElement") {
     console.log("CSS Jumper: ハイライトリクエスト", message.selector, message.type);
-    highlightElementBySelector(message.type, message.selector);
+    highlightElementBySelector(message.type, message.selector, message.occurrenceIndex || 1);
 
     // 3秒後に自動消去
     setTimeout(function() {
