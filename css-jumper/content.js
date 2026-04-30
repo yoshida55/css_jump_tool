@@ -821,12 +821,33 @@ function jumpToVSCode(clickedElement, preferMobile, originalTargetSelectors) {
   // styleSheetsから要素にマッチする全CSSセレクタを取得（nth-child等の複雑なセレクタ対応）
   // clickedElement（bestTarget）と originalTargetSelectors（event.target由来）を両方マージ
   var matchingSelectors = getMatchingStylesheetSelectors(clickedElement);
+
+  // event.target から bestTarget の間にある中間要素（H2など、クラスなしタグ）のセレクタも収集
+  // → .home_about_body h2 のような子孫セレクタを先頭に追加（優先度高）
+  var intermediateEl = event.target;
+  while (intermediateEl && intermediateEl !== clickedElement) {
+    var interSelectors = getMatchingStylesheetSelectors(intermediateEl);
+    interSelectors.forEach(function(s) {
+      if (matchingSelectors.indexOf(s) === -1) matchingSelectors.unshift(s);
+    });
+    intermediateEl = intermediateEl.parentElement;
+  }
+
   if (originalTargetSelectors && originalTargetSelectors.length > 0) {
     originalTargetSelectors.forEach(function(s) {
       if (matchingSelectors.indexOf(s) === -1) matchingSelectors.push(s);
     });
   }
   console.log("CSS Jumper: matchingSelectors", matchingSelectors);
+
+  // クリック位置（event.target）からbestTargetまでのタグ名配列
+  // 例: H2テキストをクリック → bestTargetが.wrapperなら ['h2'] → .wrapper h2 セレクタを優先するヒントになる
+  var innerTagChain = [];
+  var tagEl = event.target;
+  while (tagEl && tagEl !== clickedElement) {
+    innerTagChain.push(tagEl.tagName.toLowerCase());
+    tagEl = tagEl.parentElement;
+  }
 
   try {
     chrome.runtime.sendMessage({
@@ -839,7 +860,8 @@ function jumpToVSCode(clickedElement, preferMobile, originalTargetSelectors) {
       currentUrl: location.href,
       occurrenceIndex: occurrenceIndex,
       totalCount: totalCount,
-      matchingSelectors: matchingSelectors
+      matchingSelectors: matchingSelectors,
+      innerTagChain: innerTagChain
     });
   } catch (e) {
     console.log("CSS Jumper: メッセージ送信エラー", e);

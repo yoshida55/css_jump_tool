@@ -148,6 +148,22 @@ chrome.contextMenus.onClicked.addListener(function(info, tab) {
 // 最小ウィンドウ幅（これ以下に縮めない）
 var MIN_WINDOW_WIDTH = 400;
 
+// VS Code拡張のHTTPサーバーポート候補（2つのVS Codeが同時起動していても両方動くよう順に試す）
+var VSCODE_PORTS = [3848, 3849];
+
+// 指定パスに対してポートを順番に試し、最初に成功したレスポンスを返す
+async function fetchVSCode(path, options) {
+  for (var i = 0; i < VSCODE_PORTS.length; i++) {
+    try {
+      var res = await fetch("http://127.0.0.1:" + VSCODE_PORTS[i] + path, options);
+      if (res.ok) return res;
+    } catch (e) {
+      // 次のポートを試す
+    }
+  }
+  return null;
+}
+
 // 精密なビューポートリサイズ関数（クローム幅計算 + 微調整）
 function resizeToTargetViewport(tabId, windowId, targetViewportWidth, attempt, callback) {
   chrome.windows.get(windowId, function(win) {
@@ -219,7 +235,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   console.log("CSS Jumper: メッセージ受信", message);
   
   if (message.action === "classNameResult") {
-    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth, message.tagName, message.currentUrl, message.occurrenceIndex || 1, message.totalCount || 1, message.matchingSelectors || []);
+    handleSelectorInfo(message.id, message.className, message.allClasses, message.viewportWidth, message.tagName, message.currentUrl, message.occurrenceIndex || 1, message.totalCount || 1, message.matchingSelectors || [], message.innerTagChain || []);
   }
 
   // PHPソースジャンプ（data-php-src 属性経由）
@@ -339,7 +355,7 @@ function handleQuickResize(message, sender, sendResponse) {
 }
 
 // セレクタ情報（ID, クラス）を処理（最新のCSS内容を取得してから検索）
-async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagName, currentUrl, occurrenceIndex, totalCount, matchingSelectors) {
+async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagName, currentUrl, occurrenceIndex, totalCount, matchingSelectors, innerTagChain) {
   var preferMediaQuery = viewportWidth && viewportWidth < 768;
   console.log("CSS Jumper: セレクタ情報処理開始", { id: id, className: className, viewportWidth: viewportWidth, preferMediaQuery: preferMediaQuery });
 
@@ -446,7 +462,7 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagN
       return s.indexOf('.') !== -1 || s.indexOf('#') !== -1 || /:[a-z-]+\(/.test(s);
     });
     console.log("CSS Jumper: meaningfulSelectors", meaningfulSelectors);
-    var selectorMatch = findBySelectorText(meaningfulSelectors, targetCssFiles, projectPath, preferMediaQuery);
+    var selectorMatch = findBySelectorText(meaningfulSelectors, targetCssFiles, projectPath, preferMediaQuery, innerTagChain);
     console.log("CSS Jumper: findBySelectorText 結果", selectorMatch);
     if (selectorMatch) {
       var htmlResult = await searchInHtml(className || id, id ? "id" : "class", projectPath, occurrenceIndex);
@@ -495,24 +511,25 @@ async function handleSelectorInfo(id, className, allClasses, viewportWidth, tagN
   notifyUser("「" + targetName + "」が見つかりません\n検索対象: " + fileNames, "error");
 }
 
-// PHPファイルをVS Code拡張経由で検索してジャンプ
+// PHPファイルをVS Code拡張経由で検索してジャンプ（3848→3849の順に試し、結果があったほうを使う）
 async function searchPhpAndJump(tagName, classes, id, currentUrl) {
-  try {
-    var res = await fetch("http://127.0.0.1:3848/search-php", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tagName: tagName, classes: classes || [], id: id || "", currentUrl: currentUrl || "" })
-    });
-    if (!res.ok) return false;
-    var data = await res.json();
-    if (!data.filePath) return false;
-    openInVscode(data.filePath, data.lineNumber);
-    notifyUser("PHP: " + data.filePath.split(/[/\\]/).pop() + ":" + data.lineNumber, "success");
-    return true;
-  } catch (e) {
-    console.log("CSS Jumper: PHP検索失敗", e);
-    return false;
+  var body = JSON.stringify({ tagName: tagName, classes: classes || [], id: id || "", currentUrl: currentUrl || "" });
+  var options = { method: "POST", headers: { "Content-Type": "application/json" }, body: body };
+  for (var i = 0; i < VSCODE_PORTS.length; i++) {
+    try {
+      var res = await fetch("http://127.0.0.1:" + VSCODE_PORTS[i] + "/search-php", options);
+      if (!res.ok) continue;
+      var data = await res.json();
+      if (data.filePath) {
+        openInVscode(data.filePath, data.lineNumber);
+        notifyUser("PHP: " + data.filePath.split(/[/\\]/).pop() + ":" + data.lineNumber, "success");
+        return true;
+      }
+    } catch (e) {
+      console.log("CSS Jumper: PHP検索 port " + VSCODE_PORTS[i] + " 失敗", e);
+    }
   }
+  return false;
 }
 
 // CSSファイルの内容をLive Serverから取得して更新
@@ -748,11 +765,48 @@ async function fetchCurrentPageCssFiles(existingCssFiles) {
 
 // セレクタ文字列（nth-child等含む）でCSSファイルを検索して行番号を返す
 // matchingSelectors（styleSheets由来）を優先し、CSSファイル内で最初にヒットした行を返す
-function findBySelectorText(matchingSelectors, cssFiles, projectPath, preferMediaQuery) {
+function findBySelectorText(matchingSelectors, cssFiles, projectPath, preferMediaQuery, innerTagChain) {
   if (!matchingSelectors || matchingSelectors.length === 0) return null;
 
-  // 特異性（長さ）で降順ソート — より具体的なセレクタを優先
-  var sorted = matchingSelectors.slice().sort(function(a, b) { return b.length - a.length; });
+  // ソート優先度（高→低）:
+  //   4. 末尾タグ = innerTagChain[0]（実際にクリックした要素のタグ）← 最優先
+  //   3. 末尾タグが innerTagChain に含まれる（中間の article 等）
+  //   2. 末尾タグがある（chain外）
+  //   1. 通常のクラス/IDセレクタ
+  //   isJsStateOnly はさらに後回し / 同率なら文字数が長いほど優先
+  function getLastSegment(sel) {
+    return sel.split(/[\s>+~]/).pop().trim();
+  }
+  function hasTagAtEnd(sel) {
+    var last = getLastSegment(sel);
+    return /^[a-z][a-z0-9]*$/i.test(last) && last.indexOf('.') === -1 && last.indexOf('#') === -1;
+  }
+  // innerTagChain[0] = event.target のタグ名（実際にクリックした要素）
+  function tagMatchesClickTarget(sel) {
+    if (!innerTagChain || innerTagChain.length === 0) return false;
+    return getLastSegment(sel) === innerTagChain[0];
+  }
+  function tagAtEndMatchesChain(sel) {
+    if (!innerTagChain || innerTagChain.length === 0) return false;
+    var last = getLastSegment(sel);
+    return innerTagChain.indexOf(last) !== -1;
+  }
+  function isJsStateOnly(sel) {
+    var classes = sel.match(/\.[a-zA-Z_-]+/g) || [];
+    if (classes.length === 0) return false;
+    return classes.every(function(c) {
+      return /^\.(js[_-]|is[_-]|has[_-]|active$|show$|hide$|open$|close$|visible$|hidden$|selected$|checked$|disabled$|loaded$|loading$|scrolled$|animate)/.test(c);
+    });
+  }
+  var sorted = matchingSelectors.slice().sort(function(a, b) {
+    var aScore = tagMatchesClickTarget(a) ? 4 : (tagAtEndMatchesChain(a) ? 3 : (hasTagAtEnd(a) ? 2 : 1));
+    var bScore = tagMatchesClickTarget(b) ? 4 : (tagAtEndMatchesChain(b) ? 3 : (hasTagAtEnd(b) ? 2 : 1));
+    if (bScore !== aScore) return bScore - aScore;
+    var aJs = isJsStateOnly(a) ? 1 : 0;
+    var bJs = isJsStateOnly(b) ? 1 : 0;
+    if (aJs !== bJs) return aJs - bJs;
+    return b.length - a.length;
+  });
   console.log("CSS Jumper: findBySelectorText 検索対象セレクタ", sorted);
   console.log("CSS Jumper: 検索対象CSSファイル", cssFiles.map(function(f){ return f.name; }));
 
@@ -953,11 +1007,11 @@ function extractCssRulesForSelector(selector, type, cssFiles) {
 async function searchInHtml(selector, type, projectPath, occurrenceIndex) {
   occurrenceIndex = occurrenceIndex || 1;
   try {
-    // VS Codeから現在のプロジェクトパスを自動取得
+    // VS Codeから現在のプロジェクトパスを自動取得（3848→3849の順に試す）
     var actualProjectPath = projectPath;
     try {
-      var vsCodeResponse = await fetch("http://127.0.0.1:3848/project-path");
-      if (vsCodeResponse.ok) {
+      var vsCodeResponse = await fetchVSCode("/project-path");
+      if (vsCodeResponse) {
         var vsCodeData = await vsCodeResponse.json();
         if (vsCodeData.projectPath) {
           actualProjectPath = vsCodeData.projectPath;
@@ -977,14 +1031,14 @@ async function searchInHtml(selector, type, projectPath, occurrenceIndex) {
     var htmlFileName = pageUrl.pathname.split('/').pop() || 'index.html';
     var htmlFilePath = actualProjectPath + "\\" + htmlFileName;
 
-    // ① VS Code拡張経由でディスク上のファイルを直接検索（行番号ズレを防ぐ）
+    // ① VS Code拡張経由でディスク上のファイルを直接検索（3848→3849の順に試す）
     try {
-      var diskRes = await fetch("http://127.0.0.1:3848/search-html-occurrence", {
+      var diskRes = await fetchVSCode("/search-html-occurrence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath: htmlFilePath, selector: selector, type: type, occurrenceIndex: occurrenceIndex })
       });
-      if (diskRes.ok) {
+      if (diskRes) {
         var diskData = await diskRes.json();
         if (diskData.lineNumber) {
           console.log("CSS Jumper: HTML検索成功（ディスク直読み）", htmlFileName, diskData.lineNumber, occurrenceIndex + "番目");
@@ -1048,48 +1102,76 @@ function triggerBrowserHighlight(selector, type, occurrenceIndex) {
   });
 }
 
-// VS Codeを開く（Native Messaging経由、code --goto方式）
+// VS Codeを開く（3848→3849の順に試す）
 function openInVscode(filePath, lineNumber) {
-  // URLエンコードされたパスをデコード（日本語フォルダ対応）
   var decodedPath = decodeURIComponent(filePath);
   console.log("CSS Jumper: VS Codeを開く", decodedPath, lineNumber);
+  tryOpenInVscode(decodedPath, lineNumber, 0);
+}
 
-  // VS Code拡張のHTTPサーバー経由で開く（Native Messaging不要）
-  fetch("http://127.0.0.1:3848/open-file", {
+function tryOpenInVscode(filePath, lineNumber, portIndex) {
+  if (portIndex >= VSCODE_PORTS.length) {
+    notifyUser("🔍debug: 全ポートでWS外 → force再試行", "warning");
+    forceOpenInVscode(filePath, lineNumber, 0);
+    return;
+  }
+  notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + "に接続中...", "info");
+  fetch("http://127.0.0.1:" + VSCODE_PORTS[portIndex] + "/open-file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filePath: decodedPath, lineNumber: lineNumber })
+    body: JSON.stringify({ filePath: filePath, lineNumber: lineNumber })
   }).then(function(res) {
-    if (!res.ok) {
-      console.error("CSS Jumper: open-file失敗", res.status);
-      notifyUser("VS Codeを開けませんでした（ステータス: " + res.status + "）", "error");
+    if (res.status === 409) {
+      notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " WS外(409)→次へ", "warning");
+      tryOpenInVscode(filePath, lineNumber, portIndex + 1);
+    } else if (!res.ok) {
+      notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " エラー" + res.status + "→次へ", "error");
+      tryOpenInVscode(filePath, lineNumber, portIndex + 1);
     } else {
-      console.log("CSS Jumper: open-file成功");
+      notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " 成功！", "success");
     }
-  }).catch(function(err) {
-    console.error("CSS Jumper: open-file接続失敗", err);
-    notifyUser("VS Codeを開けませんでした（VS Code拡張が起動しているか確認してください）", "error");
+  }).catch(function(e) {
+    notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " 接続失敗→次へ", "error");
+    tryOpenInVscode(filePath, lineNumber, portIndex + 1);
   });
 }
 
-// VS Code拡張にHTTPリクエストを送ってハイライト表示
-function highlightLineInVSCode(filePath, lineNumber) {
-  // URLエンコードされたパスをデコード（日本語フォルダ対応）
-  var decodedPath = decodeURIComponent(filePath);
-  console.log("CSS Jumper: VS Code行ハイライト", decodedPath, lineNumber);
-
-  fetch("http://127.0.0.1:3848/highlight-line", {
+// フォールバック: ワークスペースに関わらず最初に繋がったVS Codeで強制オープン
+function forceOpenInVscode(filePath, lineNumber, portIndex) {
+  if (portIndex >= VSCODE_PORTS.length) {
+    notifyUser("VS Codeを開けませんでした（VS Code拡張が起動しているか確認してください）", "error");
+    return;
+  }
+  fetch("http://127.0.0.1:" + VSCODE_PORTS[portIndex] + "/open-file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filePath: decodedPath, lineNumber: lineNumber })
-  })
-  .then(function(res) { return res.json(); })
-  .then(function(data) {
-    console.log("CSS Jumper: ハイライトリクエスト成功", data);
-  })
-  .catch(function(err) {
-    console.log("CSS Jumper: ハイライトリクエスト失敗", err);
+    body: JSON.stringify({ filePath: filePath, lineNumber: lineNumber, force: true })
+  }).then(function(res) {
+    if (!res.ok) {
+      forceOpenInVscode(filePath, lineNumber, portIndex + 1);
+    } else {
+      notifyUser("🔍debug: force port" + VSCODE_PORTS[portIndex] + " 成功！", "success");
+    }
+  }).catch(function() {
+    forceOpenInVscode(filePath, lineNumber, portIndex + 1);
   });
+}
+
+// VS Code拡張にHTTPリクエストを送ってハイライト表示（3848→3849の順に試す）
+async function highlightLineInVSCode(filePath, lineNumber) {
+  var decodedPath = decodeURIComponent(filePath);
+  console.log("CSS Jumper: VS Code行ハイライト", decodedPath, lineNumber);
+  var body = JSON.stringify({ filePath: decodedPath, lineNumber: lineNumber });
+  var res = await fetchVSCode("/highlight-line", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body
+  });
+  if (res) {
+    console.log("CSS Jumper: ハイライトリクエスト成功");
+  } else {
+    console.log("CSS Jumper: ハイライトリクエスト失敗（全ポート試行済み）");
+  }
 }
 
 // ユーザーに通知（アクティブタブへ）

@@ -4125,11 +4125,9 @@ function activate(context) {
                 res.end();
                 return;
             }
-            // shutdownエンドポイント（古いサーバーを停止させる）
-            if (req.url === '/shutdown') {
+            if (req.url === '/ping') {
                 res.writeHead(200);
-                res.end(JSON.stringify({ status: 'shutting down' }));
-                setTimeout(() => forceCloseServer(), 100);
+                res.end(JSON.stringify({ status: 'ok' }));
                 return;
             }
             if (req.url === '/selector') {
@@ -4357,6 +4355,25 @@ function activate(context) {
                             res.end(JSON.stringify({ error: 'Missing filePath' }));
                             return;
                         }
+                        // force: true なら無条件で開く。false（デフォルト）はワークスペース外なら 409 を返す
+                        // → Chrome が 409 を受けたら「このVS Codeには該当プロジェクトがない」と判断して次のポートを試す
+                        const force = data.force === true;
+                        if (!force) {
+                            const folders = vscode.workspace.workspaceFolders;
+                            // ワークスペース未設定の VS Code は「どのファイルも担当しない」として 409 を返す
+                            if (!folders || folders.length === 0) {
+                                res.writeHead(409);
+                                res.end(JSON.stringify({ status: 'not_in_workspace' }));
+                                return;
+                            }
+                            const fileNorm = vscode.Uri.file(filePath).fsPath.toLowerCase();
+                            const inWorkspace = folders.some(f => fileNorm.startsWith(f.uri.fsPath.toLowerCase()));
+                            if (!inWorkspace) {
+                                res.writeHead(409);
+                                res.end(JSON.stringify({ status: 'not_in_workspace' }));
+                                return;
+                            }
+                        }
                         const openInEditor = (uri) => {
                             vscode.workspace.openTextDocument(uri).then(doc => {
                                 vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false }).then(editor => {
@@ -4391,9 +4408,29 @@ function activate(context) {
                                 setTimeout(() => deco.dispose(), 3000);
                                 // VS Codeウィンドウをアクティブに（複数起動時に埋もれないよう）
                                 vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
-                                // PowerShell AppActivate でOSレベルのウィンドウ前面化（コンソール非表示）
+                                // SwitchToThisWindow + AttachThreadInput で Windows フォーカス盗み防止を突破
+                                // -EncodedCommand (UTF-16LE base64) で日本語ワークスペース名の文字化けを回避
                                 const cp = require('child_process');
-                                cp.exec('powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(\'Visual Studio Code\')"', { windowsHide: true });
+                                const wsName = vscode.workspace.workspaceFolders?.[0]?.name ?? '';
+                                const psScript = `
+$ws = '${wsName.replace(/'/g, "''")}';
+$procs = Get-Process Code -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero };
+if ($ws -ne '') { $matched = $procs | Where-Object { $_.MainWindowTitle -like "*$ws*" }; if ($matched) { $procs = $matched } };
+$proc = $procs | Select-Object -First 1;
+if ($proc) {
+  Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class F{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll")]public static extern int GetWindowThreadProcessId(IntPtr h,out int p);[DllImport("kernel32.dll")]public static extern int GetCurrentThreadId();[DllImport("user32.dll")]public static extern bool AttachThreadInput(int a,int b,bool f);[DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int n);[DllImport("user32.dll")]public static extern bool BringWindowToTop(IntPtr h);}' -EA SilentlyContinue;
+  $t = $proc.MainWindowHandle;
+  [F]::ShowWindow($t,9);
+  $fg=[F]::GetForegroundWindow(); $dummy=0;
+  $fgTh=[F]::GetWindowThreadProcessId($fg,[ref]$dummy);
+  $myTh=[F]::GetCurrentThreadId();
+  [F]::AttachThreadInput($myTh,$fgTh,$true);
+  [F]::BringWindowToTop($t);
+  [F]::SetForegroundWindow($t);
+  [F]::AttachThreadInput($myTh,$fgTh,$false);
+}`;
+                                const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+                                cp.exec(`powershell -NoProfile -EncodedCommand ${encoded}`, { windowsHide: true });
                             });
                         }, async (_err) => {
                             // パスが見つからない場合、ワークスペース内でファイル名検索
@@ -4694,35 +4731,26 @@ ${explanation}
         });
         return server;
     }
-    function startHighlightServer(retries = 5) {
-        // 古いサーバーにshutdownリクエストを送る
-        const shutdownReq = http.request({
-            host: '127.0.0.1', port: 3848, path: '/shutdown', method: 'POST', timeout: 1000
-        }, (res) => {
-            // shutdownレスポンス受信 → 古いサーバーが停止処理を開始
-            res.resume();
+    function startHighlightServer(port = 3848) {
+        const maxPort = 3849; // 3848 か 3849 のどちらかを使う
+        browserHighlightServer = createHighlightServer();
+        browserHighlightServer.listen(port, '127.0.0.1', () => {
+            console.log(`CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port ${port})`);
         });
-        shutdownReq.on('error', () => { }); // 古いサーバーがなくてもOK
-        shutdownReq.end();
-        // 古いサーバーの停止を待ってから起動
-        setTimeout(() => {
-            browserHighlightServer = createHighlightServer();
-            browserHighlightServer.listen(3848, '127.0.0.1', () => {
-                console.log('CSS to HTML Jumper: ブラウザハイライトサーバー起動 (port 3848)');
-            });
-            browserHighlightServer.on('error', (err) => {
-                if (err.code === 'EADDRINUSE' && retries > 0) {
-                    console.log('CSS to HTML Jumper: ポート3848使用中、' + (6 - retries) + '回目リトライ...');
-                    setTimeout(() => startHighlightServer(retries - 1), 2000);
-                }
-                else if (err.code === 'EADDRINUSE') {
-                    console.log('CSS to HTML Jumper: ポート3848の確保に失敗（リトライ上限）');
-                }
-                else {
-                    console.error('CSS to HTML Jumper: サーバーエラー', err);
-                }
-            });
-        }, 1500); // shutdownリクエスト後1.5秒待ってから起動
+        browserHighlightServer.on('error', (err) => {
+            if (err.code === 'EADDRINUSE' && port < maxPort) {
+                // 3848 が別の VS Code に占有されている → 3849 を試す
+                console.log(`CSS to HTML Jumper: ポート${port}は使用中。ポート${port + 1}を試みます...`);
+                browserHighlightServer = null;
+                startHighlightServer(port + 1);
+            }
+            else if (err.code === 'EADDRINUSE') {
+                console.log(`CSS to HTML Jumper: ポート${port}も使用中。3つ目のVS Codeには未対応のためサーバー起動を断念`);
+            }
+            else {
+                console.error('CSS to HTML Jumper: サーバーエラー', err);
+            }
+        });
     }
     startHighlightServer();
     // 拡張機能終了時にサーバーを強制クローズ
