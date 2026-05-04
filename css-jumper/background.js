@@ -823,11 +823,16 @@ function findBySelectorText(matchingSelectors, cssFiles, projectPath, preferMedi
       var file = cssFiles[fi];
       if (!file.content) continue;
       var lines = file.content.split('\n');
-      var inMedia = false;
+      // ブレース深度スタックで @media 内を正確に判定（単純フラグだと } でリセットされるバグがある）
+      var braceDepth = 0;
+      var mediaStack = [];
       for (var li = 0; li < lines.length; li++) {
         var line = lines[li];
-        if (/@media/i.test(line)) inMedia = true;
-        if (/^\s*\}/.test(line) && inMedia) inMedia = false;
+        var openBraces = (line.match(/{/g) || []).length;
+        var closeBraces = (line.match(/}/g) || []).length;
+        if (/@media[\s(]/i.test(line)) mediaStack.push(braceDepth);
+        braceDepth += openBraces;
+        var isInMediaQuery = mediaStack.length > 0 && braceDepth > mediaStack[mediaStack.length - 1];
 
         // セレクタ行: 先頭または , の直後にあり、末尾が { または ,
         var selPattern = new RegExp('(?:^|,)\\s*' + escaped + '\\s*(?:,|\\{)', 'i');
@@ -838,9 +843,11 @@ function findBySelectorText(matchingSelectors, cssFiles, projectPath, preferMedi
             filePath: filePath,
             fileName: file.name,
             lineNumber: li + 1,
-            isInMediaQuery: inMedia
+            isInMediaQuery: isInMediaQuery
           });
         }
+        braceDepth -= closeBraces;
+        while (mediaStack.length > 0 && braceDepth <= mediaStack[mediaStack.length - 1]) mediaStack.pop();
       }
     }
   }

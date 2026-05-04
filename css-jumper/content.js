@@ -822,14 +822,19 @@ function jumpToVSCode(clickedElement, preferMobile, originalTargetSelectors) {
   // clickedElement（bestTarget）と originalTargetSelectors（event.target由来）を両方マージ
   var matchingSelectors = getMatchingStylesheetSelectors(clickedElement);
 
-  // event.target から bestTarget の間にある中間要素（H2など、クラスなしタグ）のセレクタも収集
-  // → .home_about_body h2 のような子孫セレクタを先頭に追加（優先度高）
+  // event.target から clickedElement の間にある中間要素のセレクタも収集
+  // ただしクラス/IDを持たない要素（span, h2等）はスキップ
+  // → .home_hero_title span のようなセレクタが誤って優先されるバグを防ぐ
   var intermediateEl = event.target;
   while (intermediateEl && intermediateEl !== clickedElement) {
-    var interSelectors = getMatchingStylesheetSelectors(intermediateEl);
-    interSelectors.forEach(function(s) {
-      if (matchingSelectors.indexOf(s) === -1) matchingSelectors.unshift(s);
-    });
+    var _intCls = intermediateEl.className;
+    var _intHasOwn = intermediateEl.id || (typeof _intCls === "string" && _intCls.trim());
+    if (_intHasOwn) {
+      var interSelectors = getMatchingStylesheetSelectors(intermediateEl);
+      interSelectors.forEach(function(s) {
+        if (matchingSelectors.indexOf(s) === -1) matchingSelectors.unshift(s);
+      });
+    }
     intermediateEl = intermediateEl.parentElement;
   }
 
@@ -891,13 +896,31 @@ document.addEventListener("click", function(event) {
     event.preventDefault();
     event.stopPropagation();
 
-    // 右クリック候補が複数あればピッカーを表示、1件なら直接ジャンプ
-    if (lastRightClickedCandidates.length > 1) {
-      showElementPicker(lastRightClickedCandidates, lastRightClickX, lastRightClickY);
-    } else {
-      var clickedElement = (lastRightClickedCandidates.length === 1 ? lastRightClickedCandidates[0] : null) || lastRightClickedElement || event.target;
-      jumpToVSCode(clickedElement, false);
+    // Alt+クリックした位置の一番内側の要素に直接ジャンプ
+    var allAtPoint = document.elementsFromPoint(event.clientX, event.clientY) || [];
+    var clickedElement = null;
+    for (var _i = 0; _i < allAtPoint.length; _i++) {
+      var _el = allAtPoint[_i];
+      if (!_el || _el === document.body || _el === document.documentElement) break;
+      if (typeof _el.className === "string" && _el.className.indexOf("css-jumper") !== -1) continue;
+      var _hasSelector = _el.id || (typeof _el.className === "string" && _el.className.trim());
+      if (_hasSelector && hasDirectCSS(_el)) { clickedElement = _el; break; }
     }
+
+    // レスポンシブモード時（767px以下）、SP版CSSがない要素なら親を遡ってSP版がある要素を探す
+    var _vw = document.documentElement.clientWidth || window.innerWidth;
+    if (_vw <= 767 && clickedElement && !hasMediaQueryCSS(clickedElement)) {
+      var _parent = clickedElement.parentElement;
+      while (_parent && _parent !== document.body) {
+        if (hasDirectCSS(_parent) && hasMediaQueryCSS(_parent)) {
+          clickedElement = _parent;
+          break;
+        }
+        _parent = _parent.parentElement;
+      }
+    }
+
+    jumpToVSCode(clickedElement || event.target, false);
   }
 }, true);
 
@@ -3102,6 +3125,68 @@ function removeAdviceUI() {
   if (existing) existing.remove();
 }
 
+// CSSセレクタが要素のクラス/IDを「末尾で直接」ターゲットにしているか確認
+// 例: ".home_hero_title { }" → OK / ".parent .home_hero_title { }" → OK（末尾がクラス）
+//     ".home_hero .home_hero_title" の .home_hero 側 → NG（末尾が違うクラス）
+function selectorDirectlyTargets(selectorText, classes, id) {
+  var selectors = selectorText.split(',');
+  for (var i = 0; i < selectors.length; i++) {
+    var lastPart = selectors[i].trim().split(/[\s>+~]+/).pop() || "";
+    for (var c = 0; c < classes.length; c++) {
+      if (lastPart.indexOf('.' + classes[c]) !== -1) return true;
+    }
+    if (id && lastPart.indexOf('#' + id) !== -1) return true;
+  }
+  return false;
+}
+
+// 要素のクラス/IDを直接ターゲットにしたCSSルールがあるか確認
+function hasDirectCSS(el) {
+  var classes = (typeof el.className === "string" ? el.className.trim() : "").split(/\s+/).filter(Boolean);
+  var id = el.id;
+  if (!classes.length && !id) return false;
+  try {
+    var sheets = document.styleSheets;
+    for (var s = 0; s < sheets.length; s++) {
+      var rules;
+      try { rules = sheets[s].cssRules || []; } catch(e) { continue; }
+      for (var r = 0; r < rules.length; r++) {
+        var rule = rules[r];
+        if (rule.type === CSSRule.STYLE_RULE && rule.selectorText && selectorDirectlyTargets(rule.selectorText, classes, id)) return true;
+        if (rule.type === CSSRule.MEDIA_RULE) {
+          var mr = rule.cssRules || [];
+          for (var m = 0; m < mr.length; m++) {
+            if (mr[m].selectorText && selectorDirectlyTargets(mr[m].selectorText, classes, id)) return true;
+          }
+        }
+      }
+    }
+  } catch(e) {}
+  return false;
+}
+
+// 要素がいずれかの @media ブロック内にCSSルールを持つか確認
+function hasMediaQueryCSS(el) {
+  try {
+    var sheets = document.styleSheets;
+    for (var s = 0; s < sheets.length; s++) {
+      var rules;
+      try { rules = sheets[s].cssRules || []; } catch(e) { continue; }
+      for (var r = 0; r < rules.length; r++) {
+        if (rules[r].type === CSSRule.MEDIA_RULE) {
+          var mediaRules = rules[r].cssRules || [];
+          for (var mr = 0; mr < mediaRules.length; mr++) {
+            try {
+              if (mediaRules[mr].selectorText && el.matches(mediaRules[mr].selectorText)) return true;
+            } catch(e) {}
+          }
+        }
+      }
+    }
+  } catch(e) {}
+  return false;
+}
+
 // ========================================
 // 要素ピッカー（pointer-events:none 対応）
 // ========================================
@@ -3111,13 +3196,14 @@ function showElementPicker(candidates, x, y) {
 
   var picker = document.createElement("div");
   picker.id = "css-jumper-picker";
-  picker.style.cssText = "position:fixed;z-index:2147483647;background:#1e1e1e;border:1px solid #555;border-radius:6px;padding:6px 0;box-shadow:0 4px 16px rgba(0,0,0,0.6);font:13px/1.4 monospace;min-width:220px;max-width:360px;";
-  picker.style.left = Math.min(x, window.innerWidth - 370) + "px";
-  picker.style.top = Math.min(y + 4, window.innerHeight - 40 * candidates.length - 20) + "px";
+  var pickerMaxW = Math.min(560, window.innerWidth - 20);
+  picker.style.cssText = "position:fixed;z-index:2147483647;background:#1e1e1e;border:1px solid #555;border-radius:12px;padding:12px 0;box-shadow:0 6px 32px rgba(0,0,0,0.8);font:24px/1.6 monospace;min-width:200px;max-width:" + pickerMaxW + "px;box-sizing:border-box;";
+  picker.style.left = Math.max(10, Math.min(x, window.innerWidth - pickerMaxW - 10)) + "px";
+  picker.style.top = Math.min(y + 4, window.innerHeight - 80 * candidates.length - 32) + "px";
 
   var label = document.createElement("div");
   label.textContent = "どの要素にジャンプ？";
-  label.style.cssText = "color:#888;font-size:11px;padding:4px 12px 6px;border-bottom:1px solid #333;";
+  label.style.cssText = "color:#aaa;font-size:18px;padding:8px 20px 10px;border-bottom:1px solid #333;";
   picker.appendChild(label);
 
   candidates.forEach(function(el) {
@@ -3126,10 +3212,11 @@ function showElementPicker(candidates, x, y) {
     var idStr = el.id ? "#" + el.id : "";
     var pEvents = window.getComputedStyle(el).pointerEvents;
     var badge = pEvents === "none" ? " 🔒" : "";
+    var spBadge = hasMediaQueryCSS(el) ? " 📱" : "";
 
     var btn = document.createElement("div");
-    btn.textContent = tag + idStr + cls + badge;
-    btn.style.cssText = "color:#9cdcfe;padding:6px 14px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    btn.textContent = tag + idStr + cls + badge + spBadge;
+    btn.style.cssText = "color:#9cdcfe;padding:14px 24px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:24px;";
     btn.addEventListener("mouseenter", function(){ btn.style.background = "#2a2d2e"; });
     btn.addEventListener("mouseleave", function(){ btn.style.background = ""; });
     btn.addEventListener("mousedown", function(e){
