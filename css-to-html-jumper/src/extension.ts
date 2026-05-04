@@ -5,7 +5,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
 import * as os from 'os';
-import { cssProperties, analyzeValue } from './cssProperties';
+import { cssProperties, analyzeValue, validCssProperties } from './cssProperties';
 import { jsMethods } from './jsProperties';
 import { registerAiHoverProvider } from './aiHoverProvider';
 import { annotatePhpCode, WP_FUNCTION_MAP } from './wpFunctions';
@@ -9509,6 +9509,71 @@ ${selectedText}
       if (editor) { editor.setDecorations(cssOrphanDecorationType, []); }
     })
   );
+
+  // CSSプロパティ名バリデーション（タイポに赤い波線）
+  const cssPropertyWavyDecorationType = vscode.window.createTextEditorDecorationType({
+    textDecoration: 'underline wavy rgba(255, 80, 80, 0.9)'
+  });
+  context.subscriptions.push(cssPropertyWavyDecorationType);
+
+  function runCssPropertyCheck(doc: vscode.TextDocument) {
+    if (doc.languageId !== 'css') { return; }
+
+    const lines = doc.getText().split('\n');
+    const decorations: vscode.DecorationOptions[] = [];
+    let inBlockComment = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      if (inBlockComment) {
+        if (line.includes('*/')) { inBlockComment = false; }
+        continue;
+      }
+      if (line.includes('/*')) {
+        if (!line.includes('*/')) { inBlockComment = true; }
+        line = line.replace(/\/\*.*?\*\//g, '').replace(/\/\*.*/g, '');
+      }
+
+      const trimmed = line.trim();
+      // セレクター行・空行・@ルール・閉じ括弧はスキップ
+      if (!trimmed || trimmed.startsWith('@') || trimmed.includes('{') || trimmed === '}' || trimmed.startsWith('*')) { continue; }
+
+      const propMatch = trimmed.match(/^([\w-]+)\s*:/);
+      if (!propMatch) { continue; }
+      const propName = propMatch[1].toLowerCase();
+
+      // CSS変数（--xxx）はスキップ
+      if (propName.startsWith('-')) { continue; }
+
+      if (!validCssProperties.has(propName)) {
+        const colStart = line.search(/\S/);
+        const start = new vscode.Position(i, colStart < 0 ? 0 : colStart);
+        const end = new vscode.Position(i, colStart + propMatch[1].length);
+        decorations.push({
+          range: new vscode.Range(start, end),
+          hoverMessage: `⚠ \`${propName}\` は不明なCSSプロパティです（タイポの可能性）`
+        });
+      }
+    }
+
+    const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+    if (editor) { editor.setDecorations(cssPropertyWavyDecorationType, decorations); }
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(doc => runCssPropertyCheck(doc)),
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor) { runCssPropertyCheck(editor.document); }
+    }),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+      if (editor) { editor.setDecorations(cssPropertyWavyDecorationType, []); }
+    })
+  );
+
+  if (vscode.window.activeTextEditor) {
+    runCssPropertyCheck(vscode.window.activeTextEditor.document);
+  }
 
   // PHP関数名「もしかして」チェック（保存時のみ）
   const phpFunctionCheckDiag = vscode.languages.createDiagnosticCollection('phpFunctionCheck');

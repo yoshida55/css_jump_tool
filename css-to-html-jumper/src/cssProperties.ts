@@ -453,6 +453,89 @@ export const cssProperties: { [key: string]: CssPropertyInfo } = {
   }
 };
 
+// CSSプロパティ名バリデーション用（タイポ検出）
+export const validCssProperties = new Set<string>([
+  // Display & Layout
+  'display','position','top','right','bottom','left','z-index',
+  'float','clear','overflow','overflow-x','overflow-y','overflow-clip-margin',
+  'visibility','box-sizing','box-decoration-break',
+  // Flexbox
+  'flex','flex-direction','flex-wrap','flex-flow',
+  'flex-grow','flex-shrink','flex-basis',
+  'justify-content','justify-items','justify-self',
+  'align-items','align-content','align-self',
+  'place-items','place-content','place-self','gap','row-gap','column-gap',
+  // Grid
+  'grid','grid-template','grid-template-columns','grid-template-rows','grid-template-areas',
+  'grid-auto-columns','grid-auto-rows','grid-auto-flow',
+  'grid-column','grid-column-start','grid-column-end',
+  'grid-row','grid-row-start','grid-row-end','grid-area',
+  // Size
+  'width','height','min-width','min-height','max-width','max-height',
+  'aspect-ratio','resize','contain',
+  // Margin & Padding
+  'margin','margin-top','margin-right','margin-bottom','margin-left',
+  'margin-inline','margin-inline-start','margin-inline-end',
+  'margin-block','margin-block-start','margin-block-end',
+  'padding','padding-top','padding-right','padding-bottom','padding-left',
+  'padding-inline','padding-inline-start','padding-inline-end',
+  'padding-block','padding-block-start','padding-block-end',
+  // Border
+  'border','border-top','border-right','border-bottom','border-left',
+  'border-width','border-top-width','border-right-width','border-bottom-width','border-left-width',
+  'border-style','border-top-style','border-right-style','border-bottom-style','border-left-style',
+  'border-color','border-top-color','border-right-color','border-bottom-color','border-left-color',
+  'border-radius','border-top-left-radius','border-top-right-radius',
+  'border-bottom-left-radius','border-bottom-right-radius',
+  'border-image','border-image-source','border-image-slice','border-collapse','border-spacing',
+  'outline','outline-width','outline-style','outline-color','outline-offset',
+  // Background
+  'background','background-color','background-image','background-position',
+  'background-size','background-repeat','background-attachment',
+  'background-origin','background-clip','background-blend-mode',
+  // Typography
+  'color','font','font-family','font-size','font-weight','font-style',
+  'font-variant','font-stretch','font-display',
+  'line-height','letter-spacing','word-spacing','word-break','word-wrap',
+  'text-align','text-align-last','text-decoration','text-decoration-line',
+  'text-decoration-color','text-decoration-style','text-decoration-thickness',
+  'text-transform','text-indent','text-overflow','text-shadow',
+  'text-wrap','white-space','vertical-align',
+  'quotes','content','counter-increment','counter-reset',
+  // List
+  'list-style','list-style-type','list-style-position','list-style-image',
+  // Table
+  'table-layout','caption-side','empty-cells',
+  // Object
+  'object-fit','object-position',
+  // Transform & Animation
+  'transform','transform-origin','transform-style','perspective','perspective-origin',
+  'backface-visibility','rotate','scale','translate',
+  'transition','transition-property','transition-duration',
+  'transition-timing-function','transition-delay',
+  'animation','animation-name','animation-duration','animation-timing-function',
+  'animation-delay','animation-iteration-count','animation-direction',
+  'animation-fill-mode','animation-play-state',
+  // Shadow & Filter
+  'box-shadow','filter','backdrop-filter','mix-blend-mode','isolation',
+  // Opacity & Color
+  'opacity','color-scheme','accent-color',
+  // Cursor & Pointer
+  'cursor','pointer-events','user-select',
+  // Scroll
+  'scroll-behavior','scroll-snap-type','scroll-snap-align',
+  'scroll-margin','scroll-padding','overscroll-behavior',
+  // Columns
+  'columns','column-count','column-width','column-gap','column-rule',
+  'column-span','column-fill',
+  // Clip & Mask
+  'clip-path','mask','mask-image','mask-size','mask-position','mask-repeat',
+  // Misc
+  'will-change','appearance','image-rendering','print-color-adjust',
+  'paint-order','shape-outside','shape-margin',
+  'line-clamp','-webkit-line-clamp',
+]);
+
 // 値の解析（transformなど）
 export function analyzeValue(property: string, value: string): string[] {
   const tips: string[] = [];

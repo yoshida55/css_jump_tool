@@ -49,7 +49,8 @@
       "Bash(git -C \"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\" show 0f970ce --stat)",
       "Bash(git -C \"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\" show 0f970ce -- css-to-html-jumper/src/extension.ts)",
       "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code\" --install-extension \"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-to-html-jumper\\\\css-to-html-jumper-1.10.1.vsix\" --force)",
-      "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code.cmd\" --install-extension \"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-to-html-jumper\\\\css-to-html-jumper-1.10.1.vsix\" --force)"
+      "Bash(\"C:\\\\Users\\\\sensh\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\\\\bin\\\\code.cmd\" --install-extension \"d:\\\\01_AI\\\\10_Python\\\\00_Python_src\\\\99_commit\\\\62_HTMLからCSSへジャンプ\\\\css-to-html-jumper\\\\css-to-html-jumper-1.10.1.vsix\" --force)",
+      "Bash(\"C:/Users/sensh/AppData/Local/Programs/Microsoft VS Code/bin/code\" --install-extension \"d:/01_AI/10_Python/00_Python_src/99_commit/62_HTMLからCSSへジャンプ/css-to-html-jumper/css-to-html-jumper-1.10.1.vsix\" --force)"
     ],
     "additionalDirectories": [
       "C:\\Users\\sensh\\.claude\\skills\\memo-format",
