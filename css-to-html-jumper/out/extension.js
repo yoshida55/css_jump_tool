@@ -8943,7 +8943,7 @@ ${selectedText}
     }
     context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => runCssOrphanCheck(doc)), vscode.window.onDidChangeActiveTextEditor(editor => {
         if (editor) {
-            runCssOrphanCheck(editor.document);
+            setTimeout(() => runCssOrphanCheck(editor.document), 1000);
         }
     }), vscode.workspace.onDidCloseTextDocument(doc => {
         const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
