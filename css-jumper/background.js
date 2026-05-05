@@ -798,7 +798,14 @@ function findBySelectorText(matchingSelectors, cssFiles, projectPath, preferMedi
       return /^\.(js[_-]|is[_-]|has[_-]|active$|show$|hide$|open$|close$|visible$|hidden$|selected$|checked$|disabled$|loaded$|loading$|scrolled$|animate)/.test(c);
     });
   }
+  // :hover/:focus/:active 等の擬似クラスを含むセレクタは後回し（通常定義を優先）
+  function hasPseudoState(sel) {
+    return /:hover\b|:focus\b|:active\b|:focus-within\b/.test(sel);
+  }
   var sorted = matchingSelectors.slice().sort(function(a, b) {
+    var aHover = hasPseudoState(a) ? 1 : 0;
+    var bHover = hasPseudoState(b) ? 1 : 0;
+    if (aHover !== bHover) return aHover - bHover; // :hover系を後回し
     var aScore = tagMatchesClickTarget(a) ? 4 : (tagAtEndMatchesChain(a) ? 3 : (hasTagAtEnd(a) ? 2 : 1));
     var bScore = tagMatchesClickTarget(b) ? 4 : (tagAtEndMatchesChain(b) ? 3 : (hasTagAtEnd(b) ? 2 : 1));
     if (bScore !== aScore) return bScore - aScore;

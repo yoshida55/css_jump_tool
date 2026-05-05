@@ -77,10 +77,10 @@ function startVSCodeHighlightPolling() {
       .then(function(res) { return res.json(); })
       .then(function(data) {
         if (data && data.type && data.name) {
-          var selectorKey = data.type + ":" + data.name;
+          var selectorKey = data.type + ":" + data.name + ":" + (data.occurrenceIndex || 1);
           if (selectorKey !== lastHighlightedSelector) {
             lastHighlightedSelector = selectorKey;
-            highlightElementBySelector(data.type, data.name);
+            highlightElementBySelector(data.type, data.name, data.occurrenceIndex || 1);
           } else {
             // 同じセレクタ → 位置だけ更新（スクロール追従）
             updateHighlightPosition();

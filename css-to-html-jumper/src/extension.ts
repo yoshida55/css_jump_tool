@@ -4177,7 +4177,7 @@ async function extractRelatedCssRules(htmlContent: string, cssFilePaths: string[
 }
 
 // ブラウザハイライト用のセレクタ情報を保持
-let currentBrowserSelector: { type: 'class' | 'id' | 'tag'; name: string; timestamp: number } | null = null;
+let currentBrowserSelector: { type: 'class' | 'id' | 'tag'; name: string; occurrenceIndex: number; timestamp: number } | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('CSS to HTML Jumper: 拡張機能が有効化されました');
@@ -4288,7 +4288,8 @@ export function activate(context: vscode.ExtensionContext) {
           res.writeHead(200);
           res.end(JSON.stringify({
             type: currentBrowserSelector.type,
-            name: currentBrowserSelector.name
+            name: currentBrowserSelector.name,
+            occurrenceIndex: currentBrowserSelector.occurrenceIndex || 1
           }));
         } else {
           res.writeHead(200);
@@ -4963,9 +4964,9 @@ ${explanation}
         }
         const word = document.getText(wordRange);
         if (word.startsWith('.')) {
-          currentBrowserSelector = { type: 'class', name: word.substring(1), timestamp: Date.now() };
+          currentBrowserSelector = { type: 'class', name: word.substring(1), occurrenceIndex: 1, timestamp: Date.now() };
         } else if (word.startsWith('#')) {
-          currentBrowserSelector = { type: 'id', name: word.substring(1), timestamp: Date.now() };
+          currentBrowserSelector = { type: 'id', name: word.substring(1), occurrenceIndex: 1, timestamp: Date.now() };
         } else {
           currentBrowserSelector = null;
         }
@@ -4994,12 +4995,15 @@ ${explanation}
 
     let found = false;
 
+    const cursorLineNum = editor.selection.active.line;
+    const allLines = editor.document.getText().split('\n');
+
     // id属性チェック
     if (idMatch && idMatch.index !== undefined) {
       const valStart = line.indexOf('"', idMatch.index) + 1;
       const valEnd = valStart + idMatch[1].length;
       if (cursorCol >= valStart && cursorCol <= valEnd) {
-        currentBrowserSelector = { type: 'id', name: idMatch[1].trim(), timestamp: Date.now() };
+        currentBrowserSelector = { type: 'id', name: idMatch[1].trim(), occurrenceIndex: 1, timestamp: Date.now() };
         found = true;
       }
     }
@@ -5016,7 +5020,14 @@ ${explanation}
           const clsStart = line.indexOf(cls, pos);
           const clsEnd = clsStart + cls.length;
           if (cursorCol >= clsStart && cursorCol <= clsEnd) {
-            currentBrowserSelector = { type: 'class', name: cls, timestamp: Date.now() };
+            // 現在行までに同クラスが何回出現するかカウント
+            const escaped = cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const clsLineRe = new RegExp('\\bclass\\s*=\\s*"[^"]*\\b' + escaped + '\\b');
+            let occ = 0;
+            for (let li = 0; li <= cursorLineNum; li++) {
+              if (clsLineRe.test(allLines[li])) { occ++; }
+            }
+            currentBrowserSelector = { type: 'class', name: cls, occurrenceIndex: occ, timestamp: Date.now() };
             found = true;
             break;
           }
@@ -5287,6 +5298,7 @@ ${explanation}
         currentBrowserSelector = {
           type: selectorType,
           name: selectorName,
+          occurrenceIndex: 1,
           timestamp: Date.now()
         };
 
