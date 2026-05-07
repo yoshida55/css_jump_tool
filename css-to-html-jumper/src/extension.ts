@@ -4980,6 +4980,7 @@ ${explanation}
   // HTML専用：クリック時にブラウザハイライト用セレクタを更新
   // ========================================
   const onSelectionChange = vscode.window.onDidChangeTextEditorSelection((e) => {
+    if (e.kind !== vscode.TextEditorSelectionChangeKind.Mouse) { return; } // ファイルオープン時は無視
     const editor = e.textEditor;
     if (!editor) { return; }
     const lang = editor.document.languageId;
