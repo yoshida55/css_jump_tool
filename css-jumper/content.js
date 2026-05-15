@@ -1054,8 +1054,8 @@ function getBestTarget(event) {
     var isOverlay = (bg === "rgba(0, 0, 0, 0)" || bg === "transparent")
       && style.backgroundImage === "none"
       && style.borderTopWidth === "0px"
-      && (style.position === "fixed" || (style.position !== "static" && !isNaN(zIndex) && zIndex >= 10))
-      && style.zIndex !== "auto";
+      && style.position === "fixed"
+      && !isNaN(zIndex) && zIndex >= 10;
     if (!isOverlay) break;
     target.style.pointerEvents = "none";
     disabled.push(target);
