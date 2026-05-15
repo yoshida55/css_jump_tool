@@ -126,6 +126,8 @@ let pendingQuizEvaluation: {
 } | null = null;
 
 let statusBarItem: vscode.StatusBarItem | null = null;
+let spMode = false;
+let spModeStatusBar: vscode.StatusBarItem | null = null;
 
 // ========================================
 // クイズ履歴のファイル保存・読込
@@ -4940,6 +4942,29 @@ ${explanation}
     });
   }
 
+  // PC/SPモード切り替えステータスバー
+  spModeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 200);
+  spModeStatusBar.command = 'cssToHtmlJumper.toggleSpMode';
+  spModeStatusBar.tooltip = 'クリックでPC/SPモードを切り替え（Ctrl+Clickのジャンプ先が変わります）';
+  spModeStatusBar.text = '$(device-desktop) PC';
+  spModeStatusBar.color = undefined;
+  spModeStatusBar.backgroundColor = undefined;
+  spModeStatusBar.show();
+  context.subscriptions.push(spModeStatusBar);
+
+  context.subscriptions.push(vscode.commands.registerCommand('cssToHtmlJumper.toggleSpMode', () => {
+    spMode = !spMode;
+    if (spModeStatusBar) {
+      spModeStatusBar.text = spMode ? '$(device-mobile) SP' : '$(device-desktop) PC';
+      spModeStatusBar.backgroundColor = spMode
+        ? new vscode.ThemeColor('statusBarItem.warningBackground')
+        : undefined;
+      spModeStatusBar.color = spMode
+        ? new vscode.ThemeColor('statusBarItem.warningForeground')
+        : undefined;
+    }
+  }));
+
   startHighlightServer();
 
   // 拡張機能終了時にサーバーを強制クローズ
@@ -8057,14 +8082,15 @@ ${crossThinkQuestion}`;
         const word = document.getText(wordRange);
         if (!word) { return null; }
 
+        // :[pseudo] や ::before 等は除外し、ベースセレクタのみマッチ
         const cssPattern = selectorType === 'class'
-          ? new RegExp(`\\.${escapeRegex(word)}[\\s{,:(\\[]`)
-          : new RegExp(`#${escapeRegex(word)}[\\s{,:(\\[]`);
+          ? new RegExp(`\\.${escapeRegex(word)}[\\s{,(\\[]`)
+          : new RegExp(`#${escapeRegex(word)}[\\s{,(\\[]`);
 
         // プラグイン・コアのCSSを除外して検索
         const cssUris = await vscode.workspace.findFiles(
           '**/*.css',
-          '**/{node_modules,wp-includes,wp-admin,plugins}/**'
+          '**/{node_modules,wp-includes,wp-admin,plugins,bkup,backup,_bkup,_backup}/**'
         );
         const locations: vscode.Location[] = [];
 
@@ -8073,12 +8099,38 @@ ${crossThinkQuestion}`;
           try {
             const cssDoc = await vscode.workspace.openTextDocument(cssUri);
             const lines = cssDoc.getText().split('\n');
+            let pcMatch: vscode.Location | null = null;
+            let spMatch: vscode.Location | null = null;
+            let mediaDepth = 0;
+            let braceDepth = 0;
             for (let i = 0; i < lines.length; i++) {
-              if (cssPattern.test(lines[i])) {
-                locations.push(new vscode.Location(cssUri, new vscode.Position(i, 0)));
-                break;
+              const line = lines[i];
+              if (/@media\b/.test(line)) { mediaDepth = braceDepth + (line.match(/{/g) || []).length; }
+              braceDepth += (line.match(/{/g) || []).length;
+              const inMedia = mediaDepth > 0 && braceDepth > mediaDepth;
+              if (cssPattern.test(line)) {
+                // プロパティなしの空ルール（スケルトン）はスキップ
+                const hasProps = (() => {
+                  const openIdx = line.indexOf('{');
+                  if (openIdx === -1) { return false; }
+                  const closeIdx = line.indexOf('}', openIdx + 1);
+                  if (closeIdx !== -1) { return line.slice(openIdx + 1, closeIdx).includes(':'); }
+                  for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
+                    const t = lines[j].trim();
+                    if (t.startsWith('}')) { return false; }
+                    if (t.includes(':') && !t.startsWith('//') && !t.startsWith('*')) { return true; }
+                  }
+                  return false;
+                })();
+                if (!hasProps) { continue; }
+                if (inMedia && !spMatch) { spMatch = new vscode.Location(cssUri, new vscode.Position(i, 0)); }
+                if (!inMedia && !pcMatch) { pcMatch = new vscode.Location(cssUri, new vscode.Position(i, 0)); }
               }
+              braceDepth -= (line.match(/}/g) || []).length;
+              if (mediaDepth > 0 && braceDepth <= mediaDepth) { mediaDepth = 0; }
             }
+            const hit = spMode ? (spMatch || pcMatch) : (pcMatch || spMatch);
+            if (hit) { locations.push(hit); }
           } catch { /* ignore */ }
         }
 
@@ -8091,15 +8143,25 @@ ${crossThinkQuestion}`;
           return true;
         });
 
-        // クラスが存在する場合
+        // クラスが存在する場合：PC/SPモードで絞り込んだ最良の1件を返す（ピッカー非表示）
         if (unique.length > 0) {
           if (isArrayPattern) {
-            // ['class' => '...'] は built-in が処理しないので当プロバイダーで返す
             return unique;
-          } else {
-            // class="..." は VS Code built-in に任せる
-            return null;
           }
+          // 標準CSSフォルダ優先 → 距離で順位付け（バックアップ等の非標準フォルダを後回し）
+          const standardCssDirs = ['css', 'styles', 'stylesheets', 'assets', 'style', 'scss', 'static'];
+          const htmlDir = path.dirname(document.uri.fsPath);
+          unique.sort((a, b) => {
+            const aDirName = path.basename(path.dirname(a.uri.fsPath)).toLowerCase();
+            const bDirName = path.basename(path.dirname(b.uri.fsPath)).toLowerCase();
+            const aStandard = standardCssDirs.includes(aDirName) ? 0 : 1;
+            const bStandard = standardCssDirs.includes(bDirName) ? 0 : 1;
+            if (aStandard !== bStandard) { return aStandard - bStandard; }
+            const distA = path.relative(htmlDir, path.dirname(a.uri.fsPath)).split(path.sep).length;
+            const distB = path.relative(htmlDir, path.dirname(b.uri.fsPath)).split(path.sep).length;
+            return distA - distB;
+          });
+          return unique[0];
         }
 
         // ─── クラスが未定義 → CSSスケルトン追記 ───
@@ -10390,7 +10452,17 @@ function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
   };
 
   // CSSルールをパース（@media等は中身も対象）
-  interface CssRule { selector: string; props: Map<string, { value: string; line: number; offset: number }>; selectorLine: number; selectorOffset: number; }
+  interface CssRule { selector: string; props: Map<string, { value: string; line: number; offset: number }>; selectorLine: number; selectorOffset: number; isInMedia: boolean; }
+  const isInsideMedia = (pos: number): boolean => {
+    const before = text.slice(0, pos);
+    const lastMedia = before.lastIndexOf('@media');
+    if (lastMedia === -1) { return false; }
+    let depth = 0;
+    for (const ch of before.slice(lastMedia)) {
+      if (ch === '{') { depth++; } else if (ch === '}') { depth--; }
+    }
+    return depth > 0;
+  };
   const rules: CssRule[] = [];
   // @keyframes内のルール（0%, 100%, from, to）は除外
   const keyframeStopRegex = /^(from|to|\d+%(\s*,\s*\d+%)*)$/i;
@@ -10413,7 +10485,7 @@ function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
     }
     const leadingMatch = m[1].match(/^(\s*(?:\/\*[\s\S]*?\*\/\s*)*)/); // 先頭の空白・コメントをスキップ
     const selectorOffset = m.index + (leadingMatch ? leadingMatch[0].length : 0);
-    rules.push({ selector, props, selectorLine: doc.positionAt(selectorOffset).line, selectorOffset });
+    rules.push({ selector, props, selectorLine: doc.positionAt(selectorOffset).line, selectorOffset, isInMedia: isInsideMedia(selectorOffset) });
   }
 
   // ① 同じルール内のプロパティ重複チェック（同じファイルを走査する前に重複チェック）
@@ -10463,14 +10535,18 @@ function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
   }
 
   // ③ 同じセレクタが複数定義されているチェック
-  const selectorMap = new Map<string, { line: number; offset: number }[]>();
+  const selectorMap = new Map<string, { line: number; offset: number; isInMedia: boolean }[]>();
   for (const rule of rules) {
     const sel = rule.selector.replace(/\s+/g, ' ').toLowerCase();
     if (!selectorMap.has(sel)) { selectorMap.set(sel, []); }
-    selectorMap.get(sel)!.push({ line: rule.selectorLine, offset: rule.selectorOffset });
+    selectorMap.get(sel)!.push({ line: rule.selectorLine, offset: rule.selectorOffset, isInMedia: rule.isInMedia });
   }
   for (const [sel, locations] of selectorMap) {
     if (locations.length < 2) { continue; }
+    // PC定義とスマホ(@media)定義の混在は意図的なので除外
+    const hasMedia = locations.some(l => l.isInMedia);
+    const hasNonMedia = locations.some(l => !l.isInMedia);
+    if (hasMedia && hasNonMedia) { continue; }
     // 最初の定義に警告
     const first = locations[0];
     if (hasIgnoreComment(doc, first.offset)) { continue; }
@@ -10483,7 +10559,29 @@ function runCssDupCheck(doc: vscode.TextDocument): vscode.DecorationOptions[] {
     });
   }
 
-  // ④ 同じプロパティセットを持つセレクタのマージ提案
+  // ④ 疑似要素ヒント（ベースセレクタの行に「疑似要素あり」を表示）
+  const pseudoMap = new Map<string, Set<string>>();
+  for (const rule of rules) {
+    const pseudoMatch = rule.selector.match(/^(.+?)\s*::(before|after|placeholder|first-line|first-letter|marker|selection)$/i);
+    if (!pseudoMatch) { continue; }
+    const base = pseudoMatch[1].replace(/\s+/g, ' ').toLowerCase();
+    const pseudo = '::' + pseudoMatch[2].toLowerCase();
+    if (!pseudoMap.has(base)) { pseudoMap.set(base, new Set()); }
+    pseudoMap.get(base)!.add(pseudo);
+  }
+  for (const rule of rules) {
+    const sel = rule.selector.replace(/\s+/g, ' ').toLowerCase();
+    const pseudos = pseudoMap.get(sel);
+    if (!pseudos || pseudos.size === 0) { continue; }
+    const start = doc.positionAt(rule.selectorOffset);
+    const end = lineEndPos(doc, rule.selectorOffset);
+    decorations.push({
+      range: new vscode.Range(start, end),
+      renderOptions: { after: { contentText: `  [参考] 疑似要素あり（${Array.from(pseudos).join(', ')}）` } }
+    });
+  }
+
+  // ⑤ 同じプロパティセットを持つセレクタのマージ提案
   const propSignatureMap = new Map<string, string[]>();
   for (const rule of rules) {
     if (rule.props.size < 3) { continue; } // 3つ以上一致したときだけ提案

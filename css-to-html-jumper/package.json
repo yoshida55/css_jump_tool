@@ -30,6 +30,11 @@
     ],
     "commands": [
       {
+        "command": "cssToHtmlJumper.toggleSpMode",
+        "title": "PC/SPモードを切り替え",
+        "category": "CSS to HTML"
+      },
+      {
         "command": "cssToHtmlJumper.toggleCssHints",
         "title": "CSS ヒント表示をトグル（ON/OFF）",
         "category": "CSS to HTML"
