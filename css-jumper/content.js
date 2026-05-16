@@ -1047,15 +1047,12 @@ function getBestTarget(event) {
       continue;
     }
 
-    // 透明なposition付き要素（z-index設定あり）はスキップ
-    // position: absolute はコンテンツ要素として扱う（スキップしない）
-    // position: fixed + 高z-index のみオーバーレイとして判定
     var zIndex = parseInt(style.zIndex, 10);
     var isOverlay = (bg === "rgba(0, 0, 0, 0)" || bg === "transparent")
       && style.backgroundImage === "none"
       && style.borderTopWidth === "0px"
-      && style.position === "fixed"
-      && !isNaN(zIndex) && zIndex >= 10;
+      && (style.position === "fixed" || (style.position !== "static" && !isNaN(zIndex) && zIndex >= 10))
+      && style.zIndex !== "auto";
     if (!isOverlay) break;
     target.style.pointerEvents = "none";
     disabled.push(target);

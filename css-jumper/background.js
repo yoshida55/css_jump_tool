@@ -550,7 +550,7 @@ async function refreshCssContents(cssFiles, projectPath) {
         
         console.log("CSS Jumper: CSS取得中", cssUrl);
         
-        var response = await fetch(cssUrl, { cache: "no-store" });
+        var response = await fetch(cssUrl, { cache: "no-cache" });
         if (response.ok) {
           var content = await response.text();
           refreshedFile.content = content;
@@ -1023,17 +1023,6 @@ async function searchInHtml(selector, type, projectPath, occurrenceIndex) {
   try {
     // VS Codeから現在のプロジェクトパスを自動取得（3848→3849の順に試す）
     var actualProjectPath = projectPath;
-    try {
-      var vsCodeResponse = await fetchVSCode("/project-path");
-      if (vsCodeResponse) {
-        var vsCodeData = await vsCodeResponse.json();
-        if (vsCodeData.projectPath) {
-          actualProjectPath = vsCodeData.projectPath;
-        }
-      }
-    } catch (e) {
-      console.log("CSS Jumper: VS Code連携失敗、設定値を使用", projectPath);
-    }
 
     // アクティブタブのURLから HTMLファイルを特定
     var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1125,27 +1114,20 @@ function openInVscode(filePath, lineNumber) {
 
 function tryOpenInVscode(filePath, lineNumber, portIndex) {
   if (portIndex >= VSCODE_PORTS.length) {
-    notifyUser("🔍debug: 全ポートでWS外 → force再試行", "warning");
     forceOpenInVscode(filePath, lineNumber, 0);
     return;
   }
-  notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + "に接続中...", "info");
   fetch("http://127.0.0.1:" + VSCODE_PORTS[portIndex] + "/open-file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filePath: filePath, lineNumber: lineNumber })
   }).then(function(res) {
     if (res.status === 409) {
-      notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " WS外(409)→次へ", "warning");
       tryOpenInVscode(filePath, lineNumber, portIndex + 1);
     } else if (!res.ok) {
-      notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " エラー" + res.status + "→次へ", "error");
       tryOpenInVscode(filePath, lineNumber, portIndex + 1);
-    } else {
-      notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " 成功！", "success");
     }
   }).catch(function(e) {
-    notifyUser("🔍debug: port" + VSCODE_PORTS[portIndex] + " 接続失敗→次へ", "error");
     tryOpenInVscode(filePath, lineNumber, portIndex + 1);
   });
 }
